@@ -37,8 +37,9 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Pencil, Trash2, CheckCircle, XCircle, Users, Clock, Search } from "lucide-react";
+import { Pencil, Trash2, CheckCircle, XCircle, Users, Clock, Search, Eye, FileText, X } from "lucide-react";
 import { useForm } from "react-hook-form";
+import { Textarea } from "@/components/ui/textarea";
 import type { VehicleType, Brand, VehicleModel } from "@shared/schema";
 
 type Driver = {
@@ -75,6 +76,22 @@ type FormData = {
   serviceLocationId: string;
 };
 
+type DriverDocument = {
+  id: string;
+  driverId: string;
+  documentTypeId: string;
+  documentTypeName?: string;
+  documentUrl: string;
+  status: "pending" | "approved" | "rejected";
+  rejectionReason: string | null;
+  createdAt: string;
+};
+
+type ServiceLocation = {
+  id: string;
+  name: string;
+};
+
 export default function MotoristasAguardando() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -84,6 +101,14 @@ export default function MotoristasAguardando() {
   const [driverToDelete, setDriverToDelete] = useState<Driver | null>(null);
   const [selectedBrandId, setSelectedBrandId] = useState<string>("");
   const [searchTerm, setSearchTerm] = useState("");
+
+  // Estados para o modal de visualização de detalhes
+  const [viewDetailsOpen, setViewDetailsOpen] = useState(false);
+  const [selectedDriver, setSelectedDriver] = useState<Driver | null>(null);
+  const [driverDocuments, setDriverDocuments] = useState<DriverDocument[]>([]);
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [rejectingDocId, setRejectingDocId] = useState<string | null>(null);
+  const [rejectionReason, setRejectionReason] = useState("");
 
   const { data: allDrivers = [], isLoading } = useQuery<Driver[]>({
     queryKey: ["/api/drivers"],
@@ -160,6 +185,94 @@ export default function MotoristasAguardando() {
       setValue("modelId", "");
     }
   }, [brandIdValue, selectedBrandId, setValue]);
+
+  // Função para carregar documentos do motorista
+  const loadDriverDocuments = async (driverId: string) => {
+    try {
+      const response = await fetch(`/api/drivers/${driverId}/documents`, {
+        credentials: 'include'
+      });
+      if (!response.ok) {
+        throw new Error("Erro ao carregar documentos");
+      }
+      const data = await response.json();
+      console.log("Documentos carregados:", data);
+      setDriverDocuments(data.documents || []);
+    } catch (error) {
+      console.error("Erro ao carregar documentos:", error);
+      toast({
+        title: "Erro",
+        description: "Erro ao carregar documentos do motorista",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Mutation para aprovar documento
+  const approveDocumentMutation = useMutation({
+    mutationFn: async (documentId: string) => {
+      const response = await fetch(`/api/drivers/documents/${documentId}/approve`, {
+        method: "POST",
+        credentials: 'include',
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Erro ao aprovar documento");
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      if (selectedDriver) {
+        loadDriverDocuments(selectedDriver.id);
+      }
+      toast({
+        title: "Sucesso",
+        description: "Documento aprovado com sucesso",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Erro",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Mutation para rejeitar documento
+  const rejectDocumentMutation = useMutation({
+    mutationFn: async ({ documentId, reason }: { documentId: string; reason: string }) => {
+      const response = await fetch(`/api/drivers/documents/${documentId}/reject`, {
+        method: "POST",
+        credentials: 'include',
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rejectionReason: reason }),
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Erro ao rejeitar documento");
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      if (selectedDriver) {
+        loadDriverDocuments(selectedDriver.id);
+      }
+      setRejectingDocId(null);
+      setRejectionReason("");
+      toast({
+        title: "Sucesso",
+        description: "Documento rejeitado",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Erro",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
 
   const updateMutation = useMutation({
     mutationFn: async ({ id, data }: { id: string; data: FormData }) => {
@@ -337,6 +450,65 @@ export default function MotoristasAguardando() {
     rejectMutation.mutate(driverId);
   };
 
+  const handleViewDetails = async (driver: Driver) => {
+    setSelectedDriver(driver);
+    setViewDetailsOpen(true);
+    await loadDriverDocuments(driver.id);
+  };
+
+  const handleCloseViewDetails = () => {
+    setViewDetailsOpen(false);
+    setSelectedDriver(null);
+    setDriverDocuments([]);
+    setSelectedImage(null);
+    setRejectingDocId(null);
+    setRejectionReason("");
+  };
+
+  const handleApproveDocument = (documentId: string) => {
+    approveDocumentMutation.mutate(documentId);
+  };
+
+  const handleStartRejectDocument = (documentId: string) => {
+    setRejectingDocId(documentId);
+    setRejectionReason("");
+  };
+
+  const handleConfirmRejectDocument = () => {
+    if (!rejectingDocId || !rejectionReason.trim()) {
+      toast({
+        title: "Erro",
+        description: "Por favor, informe o motivo da rejeição",
+        variant: "destructive",
+      });
+      return;
+    }
+    rejectDocumentMutation.mutate({
+      documentId: rejectingDocId,
+      reason: rejectionReason,
+    });
+  };
+
+  // Buscar nome da cidade
+  const getCityName = (cityId: string) => {
+    const city = serviceLocations.find((loc: any) => loc.id === cityId);
+    return city?.name || "-";
+  };
+
+  // Buscar nome da marca
+  const getBrandName = (brandId: string | null) => {
+    if (!brandId) return "-";
+    const brand = brands.find((b) => b.id === brandId);
+    return brand?.name || "-";
+  };
+
+  // Buscar nome do modelo
+  const getModelName = (modelId: string | null) => {
+    if (!modelId) return "-";
+    const model = allModels.find((m: any) => m.id === modelId);
+    return model?.name || "-";
+  };
+
   return (
     <div className="container mx-auto py-8 px-4">
       {/* Cards de Estatísticas */}
@@ -415,6 +587,14 @@ export default function MotoristasAguardando() {
                     <TableCell>{driver.carNumber || "-"}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleViewDetails(driver)}
+                          title="Ver detalhes e documentos"
+                        >
+                          <Eye className="h-4 w-4 text-blue-600" />
+                        </Button>
                         <Button
                           variant="ghost"
                           size="sm"
@@ -651,6 +831,265 @@ export default function MotoristasAguardando() {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de visualização de detalhes do motorista */}
+      <Dialog open={viewDetailsOpen} onOpenChange={handleCloseViewDetails}>
+        <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Detalhes do Motorista</DialogTitle>
+          </DialogHeader>
+
+          {selectedDriver && (
+            <div className="space-y-6">
+              {/* Dados Pessoais */}
+              <div className="border rounded-lg p-4">
+                <h3 className="font-semibold mb-4 flex items-center gap-2">
+                  <Users className="h-5 w-5" />
+                  Dados Pessoais
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="text-sm text-muted-foreground">Nome</label>
+                    <p className="font-medium">{selectedDriver.name}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-muted-foreground">CPF</label>
+                    <p className="font-medium">{selectedDriver.cpf || "-"}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-muted-foreground">Email</label>
+                    <p className="font-medium">{selectedDriver.email || "-"}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-muted-foreground">WhatsApp</label>
+                    <p className="font-medium">{selectedDriver.mobile}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-muted-foreground">Cidade</label>
+                    <p className="font-medium">{getCityName(selectedDriver.serviceLocationId)}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Dados do Veículo */}
+              <div className="border rounded-lg p-4">
+                <h3 className="font-semibold mb-4">Dados do Veículo</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="text-sm text-muted-foreground">Categoria</label>
+                    <p className="font-medium">{selectedDriver.vehicleTypeName || "-"}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-muted-foreground">Marca</label>
+                    <p className="font-medium">{getBrandName(selectedDriver.brandId)}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-muted-foreground">Modelo</label>
+                    <p className="font-medium">{getModelName(selectedDriver.modelId)}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-muted-foreground">Placa</label>
+                    <p className="font-medium">{selectedDriver.carNumber || "-"}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-muted-foreground">Cor</label>
+                    <p className="font-medium">{selectedDriver.carColor || "-"}</p>
+                  </div>
+                  <div>
+                    <label className="text-sm text-muted-foreground">Ano</label>
+                    <p className="font-medium">{selectedDriver.carYear || "-"}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Documentos */}
+              <div className="border rounded-lg p-4">
+                <h3 className="font-semibold mb-4 flex items-center gap-2">
+                  <FileText className="h-5 w-5" />
+                  Documentos ({driverDocuments.length})
+                </h3>
+
+                {driverDocuments.length === 0 ? (
+                  <p className="text-center text-muted-foreground py-4">
+                    Nenhum documento enviado
+                  </p>
+                ) : (
+                  <div className="space-y-4">
+                    {driverDocuments.map((doc) => (
+                      <div
+                        key={doc.id}
+                        className="border rounded-lg p-4 space-y-3"
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2">
+                              <p className="font-medium">{doc.documentTypeName || "Documento"}</p>
+                              {doc.status === "approved" && (
+                                <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">
+                                  Aprovado
+                                </span>
+                              )}
+                              {doc.status === "rejected" && (
+                                <span className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded">
+                                  Rejeitado
+                                </span>
+                              )}
+                              {doc.status === "pending" && (
+                                <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded">
+                                  Pendente
+                                </span>
+                              )}
+                            </div>
+                            {doc.rejectionReason && (
+                              <p className="text-sm text-red-600 mt-1">
+                                Motivo da rejeição: {doc.rejectionReason}
+                              </p>
+                            )}
+                          </div>
+
+                          <div className="flex gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setSelectedImage(doc.documentUrl)}
+                            >
+                              <Eye className="h-4 w-4 mr-1" />
+                              Ver
+                            </Button>
+                            {doc.status !== "approved" && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="text-green-600 hover:text-green-700"
+                                onClick={() => handleApproveDocument(doc.id)}
+                                disabled={approveDocumentMutation.isPending}
+                              >
+                                <CheckCircle className="h-4 w-4 mr-1" />
+                                Aprovar
+                              </Button>
+                            )}
+                            {doc.status !== "rejected" && rejectingDocId !== doc.id && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="text-red-600 hover:text-red-700"
+                                onClick={() => handleStartRejectDocument(doc.id)}
+                              >
+                                <XCircle className="h-4 w-4 mr-1" />
+                                Negar
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Campo de rejeição */}
+                        {rejectingDocId === doc.id && (
+                          <div className="space-y-2 border-t pt-3">
+                            <Label>Motivo da Rejeição *</Label>
+                            <Textarea
+                              placeholder="Descreva o motivo da rejeição do documento..."
+                              value={rejectionReason}
+                              onChange={(e) => setRejectionReason(e.target.value)}
+                              rows={3}
+                            />
+                            <div className="flex gap-2">
+                              <Button
+                                variant="default"
+                                size="sm"
+                                onClick={handleConfirmRejectDocument}
+                                disabled={rejectDocumentMutation.isPending || !rejectionReason.trim()}
+                              >
+                                Confirmar Rejeição
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  setRejectingDocId(null);
+                                  setRejectionReason("");
+                                }}
+                              >
+                                Cancelar
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Preview da imagem em miniatura */}
+                        <div className="mt-2">
+                          <img
+                            src={doc.documentUrl}
+                            alt={doc.documentTypeName || "Documento"}
+                            className="max-w-xs h-32 object-cover rounded cursor-pointer hover:opacity-80 transition-opacity"
+                            onClick={() => setSelectedImage(doc.documentUrl)}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Ações principais */}
+              <div className="flex gap-3 justify-end border-t pt-4">
+                <Button
+                  variant="outline"
+                  onClick={handleCloseViewDetails}
+                >
+                  Fechar
+                </Button>
+                <Button
+                  variant="default"
+                  className="bg-green-600 hover:bg-green-700"
+                  onClick={() => {
+                    handleApprove(selectedDriver.id);
+                    handleCloseViewDetails();
+                  }}
+                >
+                  <CheckCircle className="h-4 w-4 mr-2" />
+                  Aprovar Motorista
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => {
+                    handleReject(selectedDriver.id);
+                    handleCloseViewDetails();
+                  }}
+                >
+                  <XCircle className="h-4 w-4 mr-2" />
+                  Rejeitar Motorista
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal para visualizar imagem em tamanho completo */}
+      <Dialog open={!!selectedImage} onOpenChange={() => setSelectedImage(null)}>
+        <DialogContent className="max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>Visualização do Documento</DialogTitle>
+          </DialogHeader>
+          {selectedImage && (
+            <div className="relative">
+              <img
+                src={selectedImage}
+                alt="Documento"
+                className="w-full h-auto rounded"
+              />
+              <Button
+                variant="ghost"
+                size="icon"
+                className="absolute top-2 right-2 bg-white/90 hover:bg-white"
+                onClick={() => setSelectedImage(null)}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 

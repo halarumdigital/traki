@@ -130,6 +130,8 @@ export interface IStorage {
   getAllDrivers(): Promise<Driver[]>;
   getDriver(id: string): Promise<Driver | undefined>;
   getDriverByUserId(userId: string): Promise<Driver | undefined>;
+  getDriverByMobile(mobile: string): Promise<Driver | undefined>;
+  getDriverByEmail(email: string): Promise<Driver | undefined>;
   getDriversByLocation(serviceLocationId: string): Promise<Driver[]>;
   getAvailableDrivers(serviceLocationId: string, vehicleTypeId: string): Promise<Driver[]>;
   createDriver(data: InsertDriver): Promise<Driver>;
@@ -550,6 +552,7 @@ export class DatabaseStorage implements IStorage {
       .select({
         id: requests.id,
         requestNumber: requests.requestNumber,
+        customerName: requests.customerName,
         userId: requests.userId,
         driverId: requests.driverId,
         driverName: drivers.name,
@@ -726,6 +729,7 @@ export class DatabaseStorage implements IStorage {
         cpf: drivers.cpf,
         email: drivers.email,
         mobile: drivers.mobile,
+        phone: drivers.mobile, // Alias para compatibilidade com o mapa
         carModel: drivers.carModel,
         carNumber: drivers.carNumber,
         carColor: drivers.carColor,
@@ -733,6 +737,7 @@ export class DatabaseStorage implements IStorage {
         brandId: drivers.brandId,
         modelId: drivers.modelId,
         serviceLocationId: drivers.serviceLocationId,
+        cityId: drivers.serviceLocationId, // Alias para compatibilidade com o mapa
         serviceLocationName: serviceLocations.name,
         vehicleTypeId: drivers.vehicleTypeId,
         vehicleTypeName: vehicleTypes.name,
@@ -742,6 +747,8 @@ export class DatabaseStorage implements IStorage {
         rating: drivers.rating,
         latitude: drivers.latitude,
         longitude: drivers.longitude,
+        currentLatitude: drivers.latitude, // Alias para compatibilidade com o mapa
+        currentLongitude: drivers.longitude, // Alias para compatibilidade com o mapa
         createdAt: drivers.createdAt,
         updatedAt: drivers.updatedAt,
       })
@@ -760,6 +767,16 @@ export class DatabaseStorage implements IStorage {
 
   async getDriverByUserId(userId: string): Promise<Driver | undefined> {
     const [driver] = await db.select().from(drivers).where(eq(drivers.userId, userId));
+    return driver || undefined;
+  }
+
+  async getDriverByMobile(mobile: string): Promise<Driver | undefined> {
+    const [driver] = await db.select().from(drivers).where(eq(drivers.mobile, mobile));
+    return driver || undefined;
+  }
+
+  async getDriverByEmail(email: string): Promise<Driver | undefined> {
+    const [driver] = await db.select().from(drivers).where(eq(drivers.email, email));
     return driver || undefined;
   }
 

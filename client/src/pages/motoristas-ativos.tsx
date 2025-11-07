@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { io, Socket } from "socket.io-client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -44,7 +45,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Pencil, Trash2, Plus, Eye, Ban, MessageSquare, Search, Users, UserCheck, Star, Circle, DollarSign, TrendingUp, MapPin } from "lucide-react";
+import { Pencil, Trash2, Plus, Eye, Ban, MessageSquare, Search, Users, UserCheck, Star, Circle, DollarSign, TrendingUp, MapPin, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
 import { useForm } from "react-hook-form";
 import type { VehicleType, Brand, VehicleModel } from "@shared/schema";
 
@@ -139,6 +140,10 @@ export default function MotoristasAtivos() {
   const [selectedBrandId, setSelectedBrandId] = useState<string>("");
   const [viewDialogOpen, setViewDialogOpen] = useState(false);
   const [viewingDriver, setViewingDriver] = useState<Driver | null>(null);
+  const [sortConfig, setSortConfig] = useState<{ key: keyof Driver | 'vehicleTypeName'; direction: 'asc' | 'desc' | null }>({
+    key: 'name',
+    direction: null
+  });
 
   const { data: allDrivers = [], isLoading } = useQuery<Driver[]>({
     queryKey: ["/api/drivers"],
@@ -146,6 +151,46 @@ export default function MotoristasAtivos() {
 
   // Filtrar apenas motoristas ativos e aprovados
   const drivers = allDrivers.filter((driver) => driver.active && driver.approve);
+
+  // 🔴 Socket.IO - Atualização em tempo real
+  useEffect(() => {
+    const socket: Socket = io(window.location.origin, {
+      withCredentials: true,
+    });
+
+    socket.on("connect", () => {
+      console.log("✅ Conectado ao Socket.IO - Motoristas Ativos");
+    });
+
+    // Escutar mudanças de status dos motoristas
+    socket.on("driver-status-changed", (data: {
+      driverId: string;
+      driverName: string;
+      available: boolean;
+      timestamp: string;
+    }) => {
+      console.log("📡 Status do motorista mudou:", data);
+
+      // Atualizar a lista de motoristas
+      queryClient.invalidateQueries({ queryKey: ["/api/drivers"] });
+
+      // Mostrar toast de notificação
+      toast({
+        title: data.available ? "✅ Motorista Online" : "⭕ Motorista Offline",
+        description: `${data.driverName} está ${data.available ? "disponível" : "indisponível"}`,
+        duration: 3000,
+      });
+    });
+
+    socket.on("disconnect", () => {
+      console.log("❌ Desconectado do Socket.IO");
+    });
+
+    // Cleanup ao desmontar componente
+    return () => {
+      socket.close();
+    };
+  }, [queryClient, toast]);
 
   const { data: vehicleTypes = [] } = useQuery<VehicleType[]>({
     queryKey: ["/api/vehicle-types"],
@@ -163,18 +208,19 @@ export default function MotoristasAtivos() {
     queryKey: ["/api/service-locations"],
   });
 
-  const { data: driverDocuments = [] } = useQuery<any[]>({
-    queryKey: ["/api/drivers", viewingDriver?.id, "documents"],
+  const { data: driverDocuments = [] } = useQuery<any>({
+    queryKey: [`/api/drivers/${viewingDriver?.id}/documents`],
     enabled: !!viewingDriver?.id,
+    select: (data) => data?.documents || [],
   });
 
   const { data: driverNotes = [] } = useQuery<any[]>({
-    queryKey: ["/api/drivers", viewingDriver?.id, "notes"],
+    queryKey: [`/api/drivers/${viewingDriver?.id}/notes`],
     enabled: !!viewingDriver?.id,
   });
 
   const { data: driverTrips = [] } = useQuery<any[]>({
-    queryKey: ["/api/drivers", viewingDriver?.id, "trips"],
+    queryKey: [`/api/drivers/${viewingDriver?.id}/trips`],
     enabled: !!viewingDriver?.id,
   });
 
@@ -188,8 +234,38 @@ export default function MotoristasAtivos() {
     (model: any) => model.brandId === selectedBrandId
   );
 
+  // Função para ordenar colunas
+  const handleSort = (key: keyof Driver | 'vehicleTypeName') => {
+    let direction: 'asc' | 'desc' | null = 'asc';
+
+    if (sortConfig.key === key) {
+      if (sortConfig.direction === 'asc') {
+        direction = 'desc';
+      } else if (sortConfig.direction === 'desc') {
+        direction = null;
+      }
+    }
+
+    setSortConfig({ key, direction });
+  };
+
+  // Função para renderizar o ícone de ordenação
+  const getSortIcon = (columnKey: keyof Driver | 'vehicleTypeName') => {
+    if (sortConfig.key !== columnKey) {
+      return <ArrowUpDown className="h-4 w-4" />;
+    }
+
+    if (sortConfig.direction === 'asc') {
+      return <ArrowUp className="h-4 w-4" />;
+    } else if (sortConfig.direction === 'desc') {
+      return <ArrowDown className="h-4 w-4" />;
+    }
+
+    return <ArrowUpDown className="h-4 w-4" />;
+  };
+
   // Filtrar motoristas pela busca
-  const filteredDrivers = drivers.filter((driver) => {
+  const searchedDrivers = drivers.filter((driver) => {
     if (!searchTerm.trim()) return true;
 
     const search = searchTerm.toLowerCase();
@@ -198,6 +274,37 @@ export default function MotoristasAtivos() {
     const cpf = driver.cpf?.toLowerCase() || "";
 
     return name.includes(search) || email.includes(search) || cpf.includes(search);
+  });
+
+  // Aplicar ordenação
+  const filteredDrivers = [...searchedDrivers].sort((a, b) => {
+    if (!sortConfig.direction) return 0;
+
+    const key = sortConfig.key;
+    let aValue: any;
+    let bValue: any;
+
+    // Para o status, queremos online (true) primeiro em ordem ascendente
+    if (key === 'available') {
+      aValue = a.available ? 1 : 0;
+      bValue = b.available ? 1 : 0;
+    } else if (key === 'rating') {
+      // Para avaliação, converter para número
+      aValue = typeof a.rating === 'string' ? parseFloat(a.rating) : (a.rating || 0);
+      bValue = typeof b.rating === 'string' ? parseFloat(b.rating) : (b.rating || 0);
+    } else {
+      aValue = a[key as keyof Driver] || "";
+      bValue = b[key as keyof Driver] || "";
+    }
+
+    // Ordenação
+    if (aValue < bValue) {
+      return sortConfig.direction === 'asc' ? -1 : 1;
+    }
+    if (aValue > bValue) {
+      return sortConfig.direction === 'asc' ? 1 : -1;
+    }
+    return 0;
   });
 
   // Estatísticas
@@ -506,12 +613,15 @@ export default function MotoristasAtivos() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Motoristas Online</CardTitle>
-            <UserCheck className="h-4 w-4 text-green-600" />
+            <div className="flex items-center gap-2">
+              <div className="h-2 w-2 bg-green-500 rounded-full animate-pulse" />
+              <UserCheck className="h-4 w-4 text-green-600" />
+            </div>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-green-600">{totalOnline}</div>
             <p className="text-xs text-muted-foreground">
-              Motoristas disponíveis para corridas agora
+              Motoristas disponíveis • Atualização em tempo real
             </p>
           </CardContent>
         </Card>
@@ -552,14 +662,78 @@ export default function MotoristasAtivos() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Nome</TableHead>
-                  <TableHead>CPF</TableHead>
-                  <TableHead>WhatsApp</TableHead>
-                  <TableHead>Email</TableHead>
-                  <TableHead>Categoria</TableHead>
-                  <TableHead>Placa</TableHead>
-                  <TableHead>Avaliação</TableHead>
-                  <TableHead>Status</TableHead>
+                  <TableHead>
+                    <button
+                      className="flex items-center gap-1 hover:text-primary transition-colors"
+                      onClick={() => handleSort('name')}
+                    >
+                      Nome
+                      {getSortIcon('name')}
+                    </button>
+                  </TableHead>
+                  <TableHead>
+                    <button
+                      className="flex items-center gap-1 hover:text-primary transition-colors"
+                      onClick={() => handleSort('cpf')}
+                    >
+                      CPF
+                      {getSortIcon('cpf')}
+                    </button>
+                  </TableHead>
+                  <TableHead>
+                    <button
+                      className="flex items-center gap-1 hover:text-primary transition-colors"
+                      onClick={() => handleSort('mobile')}
+                    >
+                      WhatsApp
+                      {getSortIcon('mobile')}
+                    </button>
+                  </TableHead>
+                  <TableHead>
+                    <button
+                      className="flex items-center gap-1 hover:text-primary transition-colors"
+                      onClick={() => handleSort('email')}
+                    >
+                      Email
+                      {getSortIcon('email')}
+                    </button>
+                  </TableHead>
+                  <TableHead>
+                    <button
+                      className="flex items-center gap-1 hover:text-primary transition-colors"
+                      onClick={() => handleSort('vehicleTypeName')}
+                    >
+                      Categoria
+                      {getSortIcon('vehicleTypeName')}
+                    </button>
+                  </TableHead>
+                  <TableHead>
+                    <button
+                      className="flex items-center gap-1 hover:text-primary transition-colors"
+                      onClick={() => handleSort('carNumber')}
+                    >
+                      Placa
+                      {getSortIcon('carNumber')}
+                    </button>
+                  </TableHead>
+                  <TableHead>
+                    <button
+                      className="flex items-center gap-1 hover:text-primary transition-colors"
+                      onClick={() => handleSort('rating')}
+                    >
+                      Avaliação
+                      {getSortIcon('rating')}
+                    </button>
+                  </TableHead>
+                  <TableHead>
+                    <button
+                      className="flex items-center gap-1 hover:text-primary transition-colors"
+                      onClick={() => handleSort('available')}
+                    >
+                      Status
+                      {getSortIcon('available')}
+                    </button>
+                  </TableHead>
                   <TableHead className="text-right">Ações</TableHead>
                 </TableRow>
               </TableHeader>
@@ -578,9 +752,9 @@ export default function MotoristasAtivos() {
                     <TableCell>
                       <div className="flex items-center gap-1">
                         <Circle
-                          className={`h-2 w-2 ${driver.available ? 'fill-green-500 text-green-500' : 'fill-gray-400 text-gray-400'}`}
+                          className={`h-2 w-2 ${driver.available ? 'fill-green-500 text-green-500 animate-pulse' : 'fill-gray-400 text-gray-400'}`}
                         />
-                        <span className={`text-sm ${driver.available ? 'text-green-600' : 'text-gray-500'}`}>
+                        <span className={`text-sm font-medium ${driver.available ? 'text-green-600' : 'text-gray-500'}`}>
                           {driver.available ? 'Online' : 'Offline'}
                         </span>
                       </div>

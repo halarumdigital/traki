@@ -8,6 +8,7 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { EmpresaSidebar } from "@/components/empresa-sidebar";
 import Login from "@/pages/login";
 import Dashboard from "@/pages/dashboard";
+import Mapa from "@/pages/mapa";
 import Usuarios from "@/pages/usuarios";
 import Cidades from "@/pages/cidades";
 import Categorias from "@/pages/categorias";
@@ -87,6 +88,7 @@ function Router() {
           <main className="flex-1 overflow-auto p-6">
             <Switch>
               <Route path="/dashboard" component={Dashboard} />
+              <Route path="/mapa" component={Mapa} />
               <Route path="/usuarios" component={Usuarios} />
               <Route path="/cidades" component={Cidades} />
               <Route path="/categorias" component={Categorias} />

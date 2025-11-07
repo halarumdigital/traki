@@ -42,6 +42,7 @@ import "@/styles/google-maps-fix.css";
 interface Delivery {
   id: string;
   requestNumber: string;
+  customerName: string | null;
   createdAt: string;
   driverName: string | null;
   status: string;
@@ -102,6 +103,7 @@ export default function EmpresaEntregas() {
   const [deliveryPoints, setDeliveryPoints] = useState([
     {
       id: 1,
+      customerName: "",
       cep: "",
       address: "",
       number: "",
@@ -315,6 +317,7 @@ export default function EmpresaEntregas() {
     const newId = Math.max(...deliveryPoints.map(p => p.id)) + 1;
     setDeliveryPoints([...deliveryPoints, {
       id: newId,
+      customerName: "",
       cep: "",
       address: "",
       number: "",
@@ -694,6 +697,7 @@ export default function EmpresaEntregas() {
       estimatedAmount: routeInfo?.price || null,
       distance: routeInfo?.distance?.toString() || null,
       estimatedTime: routeInfo?.duration?.toString() || null,
+      customerName: validDeliveryPoints[0]?.customerName || null,
     });
   };
 
@@ -735,6 +739,7 @@ export default function EmpresaEntregas() {
               <TableHeader>
                 <TableRow>
                   <TableHead>ID</TableHead>
+                  <TableHead>Cliente</TableHead>
                   <TableHead>Data/Hora</TableHead>
                   <TableHead>Entregador</TableHead>
                   <TableHead>Previsão</TableHead>
@@ -748,6 +753,9 @@ export default function EmpresaEntregas() {
                   <TableRow key={delivery.id}>
                     <TableCell className="font-mono text-xs">
                       {delivery.requestNumber || delivery.id.substring(0, 8)}
+                    </TableCell>
+                    <TableCell>
+                      {delivery.customerName || <span className="text-muted-foreground italic">-</span>}
                     </TableCell>
                     <TableCell>
                       {format(new Date(delivery.createdAt), "dd/MM/yyyy HH:mm", {
@@ -846,6 +854,11 @@ export default function EmpresaEntregas() {
               </div>
 
               <div>
+                <label className="text-sm text-muted-foreground">Nome do Cliente</label>
+                <p>{selectedDelivery.customerName || "-"}</p>
+              </div>
+
+              <div>
                 <label className="text-sm text-muted-foreground">
                   Endereço de Retirada
                 </label>
@@ -869,10 +882,14 @@ export default function EmpresaEntregas() {
                 )}
               </div>
 
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="text-sm text-muted-foreground">Entregador</label>
                   <p>{selectedDelivery.driverName || "Aguardando"}</p>
+                </div>
+                <div>
+                  <label className="text-sm text-muted-foreground">Distância</label>
+                  <p>{selectedDelivery.totalDistance ? `${selectedDelivery.totalDistance} km` : "-"}</p>
                 </div>
                 <div>
                   <label className="text-sm text-muted-foreground">Tempo Estimado</label>
@@ -1029,6 +1046,17 @@ export default function EmpresaEntregas() {
                         </div>
                       </AccordionTrigger>
                       <AccordionContent className="space-y-3 pb-4">
+                        <div>
+                          <Label htmlFor={`customerName-${point.id}`} className="text-xs">Nome do Cliente</Label>
+                          <Input
+                            id={`customerName-${point.id}`}
+                            value={point.customerName}
+                            onChange={(e) => updateDeliveryPoint(point.id, "customerName", e.target.value)}
+                            placeholder="Nome completo do cliente"
+                            className="h-9"
+                          />
+                        </div>
+
                         <div>
                           <Label htmlFor={`deliveryCep-${point.id}`} className="text-xs">CEP</Label>
                           <div className="flex gap-2">

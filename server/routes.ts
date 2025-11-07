@@ -1,16 +1,32 @@
 import express, { type Express } from "express";
 import { createServer, type Server } from "http";
+import { Server as SocketIOServer } from "socket.io";
 import { storage } from "./storage";
-import { loginSchema, insertSettingsSchema } from "@shared/schema";
+import { loginSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications } from "@shared/schema";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
-import { pool } from "./db";
+import { pool, db } from "./db";
+import { eq, and, sql } from "drizzle-orm";
 import bcrypt from "bcrypt";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import { initializeFirebase, sendPushNotification, sendPushToMultipleDevices } from "./firebase";
 
 const PgSession = connectPgSimple(session);
+
+// Função para calcular distância entre duas coordenadas usando Haversine (em km)
+function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371; // Raio da Terra em km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
 
 // Configuração do multer para upload de arquivos
 const uploadsDir = path.join(process.cwd(), "uploads");
@@ -21,6 +37,22 @@ if (!fs.existsSync(uploadsDir)) {
 const storageMulter = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, uploadsDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, uniqueSuffix + path.extname(file.originalname));
+  },
+});
+
+// Storage específico para documentos do motorista
+const documentsDriverDir = path.join(process.cwd(), "uploads", "documents_driver");
+if (!fs.existsSync(documentsDriverDir)) {
+  fs.mkdirSync(documentsDriverDir, { recursive: true });
+}
+
+const storageDocumentsDriver = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, documentsDriverDir);
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
@@ -44,6 +76,31 @@ const upload = multer({
   },
 });
 
+const uploadDocument = multer({
+  storage: storageDocumentsDriver,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB para documentos
+  fileFilter: (req, file, cb) => {
+    console.log("🔍 Verificando arquivo:");
+    console.log("  - Nome:", file.originalname);
+    console.log("  - MIME type:", file.mimetype);
+    console.log("  - Campo:", file.fieldname);
+
+    const allowedTypes = /jpeg|jpg|png|pdf/;
+    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedTypes.test(file.mimetype);
+
+    if (mimetype && extname) {
+      console.log("  ✓ Arquivo aceito");
+      return cb(null, true);
+    } else {
+      console.log("  ✗ Arquivo rejeitado - tipo não permitido");
+      console.log("    Extensão válida:", extname);
+      console.log("    MIME type válido:", mimetype);
+      cb(new Error("Apenas imagens (jpeg, jpg, png) e PDF são permitidos"));
+    }
+  },
+});
+
 declare module "express-session" {
   interface SessionData {
     userId?: string;
@@ -54,6 +111,10 @@ declare module "express-session" {
     companyEmail?: string;
     companyName?: string;
     isCompany?: boolean;
+    driverId?: string;
+    driverName?: string;
+    driverMobile?: string;
+    isDriver?: boolean;
   }
 }
 
@@ -274,6 +335,224 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Erro ao buscar dados da empresa:", error);
       return res.status(500).json({ message: "Erro ao buscar dados da empresa" });
+    }
+  });
+
+  // ========================================
+  // SOLICITAÇÕES DE ENTREGA (EMPRESA)
+  // ========================================
+
+  // POST /api/company/requests - Criar solicitação de entrega
+  app.post("/api/company/requests", async (req, res) => {
+    try {
+      // Verificar autenticação da empresa
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Empresa não autenticada" });
+      }
+
+      const { zoneTypeId, pickupAddress, pickupLat, pickupLng, deliveryAddress, deliveryLat, deliveryLng, customerName, notes } = req.body;
+
+      // Validação básica
+      if (!zoneTypeId || !pickupAddress || !pickupLat || !pickupLng || !deliveryAddress || !deliveryLat || !deliveryLng) {
+        return res.status(400).json({ message: "Dados incompletos" });
+      }
+
+      console.log("📦 Nova solicitação de entrega da empresa:", req.session.companyName);
+
+      // 1. Buscar configurações
+      const settings = await storage.getSettings();
+      const driverSearchRadius = settings?.driverSearchRadius || 10; // km
+      const driverAcceptanceTimeout = settings?.driverAcceptanceTimeout || 30; // segundos
+      const adminCommissionPercentage = settings?.adminCommissionPercentage || 20; // %
+
+      console.log("⚙️ Configurações:");
+      console.log(`   - Raio de busca: ${driverSearchRadius} km`);
+      console.log(`   - Tempo de aceitação: ${driverAcceptanceTimeout}s`);
+      console.log(`   - Comissão admin: ${adminCommissionPercentage}%`);
+
+      // 2. Calcular distância e tempo estimado
+      const distance = calculateDistance(pickupLat, pickupLng, deliveryLat, deliveryLng);
+      const estimatedTime = Math.ceil((distance / 40) * 60); // Assumindo 40 km/h, resultado em minutos
+
+      console.log(`📍 Distância calculada: ${distance.toFixed(2)} km`);
+      console.log(`⏱️ Tempo estimado: ${estimatedTime} min`);
+
+      // 3. Calcular valor da entrega (implementar lógica de precificação)
+      // Por enquanto, vou usar um valor fixo baseado na distância
+      const basePrice = 5.00; // R$ 5 base
+      const pricePerKm = 2.50; // R$ 2.50 por km
+      const totalAmount = basePrice + (distance * pricePerKm);
+      const adminCommission = totalAmount * (adminCommissionPercentage / 100);
+      const driverAmount = totalAmount - adminCommission;
+
+      console.log(`💰 Valores:`);
+      console.log(`   - Total: R$ ${totalAmount.toFixed(2)}`);
+      console.log(`   - Comissão: R$ ${adminCommission.toFixed(2)}`);
+      console.log(`   - Motorista recebe: R$ ${driverAmount.toFixed(2)}`);
+
+      // 4. Buscar motoristas dentro do raio usando Haversine
+      const driversQuery = await db.execute(sql`
+        SELECT
+          id,
+          name,
+          email,
+          fcm_token,
+          latitude,
+          longitude,
+          (6371 * acos(
+            cos(radians(${pickupLat})) *
+            cos(radians(latitude)) *
+            cos(radians(longitude) - radians(${pickupLng})) +
+            sin(radians(${pickupLat})) *
+            sin(radians(latitude))
+          )) AS distance
+        FROM drivers
+        WHERE active = true
+          AND approve = true
+          AND available = true
+          AND fcm_token IS NOT NULL
+          AND latitude IS NOT NULL
+          AND longitude IS NOT NULL
+        HAVING distance <= ${driverSearchRadius}
+        ORDER BY distance ASC
+      `);
+
+      const availableDrivers = driversQuery.rows as any[];
+
+      if (availableDrivers.length === 0) {
+        console.log("❌ Nenhum motorista disponível no raio de busca");
+        return res.status(404).json({
+          message: "Nenhum motorista disponível no momento",
+          details: "Tente novamente em alguns minutos ou aumente o raio de busca."
+        });
+      }
+
+      console.log(`✅ ${availableDrivers.length} motorista(s) encontrado(s) no raio de ${driverSearchRadius} km`);
+
+      // 5. Gerar número da solicitação
+      const requestNumber = `REQ-${Date.now()}`;
+
+      // 6. Buscar dados da empresa
+      const [company] = await db
+        .select()
+        .from(companies)
+        .where(eq(companies.id, req.session.companyId))
+        .limit(1);
+
+      // 7. Criar registro de solicitação
+      const [newRequest] = await db
+        .insert(requests)
+        .values({
+          requestNumber,
+          companyId: req.session.companyId,
+          customerName: customerName || null,
+          zoneTypeId,
+          notes: notes || null,
+          requestEtaAmount: totalAmount.toFixed(2),
+        })
+        .returning();
+
+      console.log(`✅ Solicitação criada: ${newRequest.id}`);
+
+      // 8. Criar registro de localização
+      await db
+        .insert(requestPlaces)
+        .values({
+          requestId: newRequest.id,
+          pickLat: pickupLat.toString(),
+          pickLng: pickupLng.toString(),
+          pickAddress: pickupAddress,
+          dropLat: deliveryLat.toString(),
+          dropLng: deliveryLng.toString(),
+          dropAddress: deliveryAddress,
+        });
+
+      console.log(`✅ Localizações registradas`);
+
+      // 9. Criar registro de cobrança
+      await db
+        .insert(requestBills)
+        .values({
+          requestId: newRequest.id,
+          basePrice: basePrice.toFixed(2),
+          baseDistance: "0",
+          pricePerDistance: pricePerKm.toFixed(2),
+          distancePrice: (distance * pricePerKm).toFixed(2),
+          pricePerTime: "0",
+          timePrice: "0",
+        });
+
+      console.log(`✅ Cobrança registrada`);
+
+      // 10. Calcular tempo de expiração
+      const expiresAt = new Date(Date.now() + driverAcceptanceTimeout * 1000);
+
+      // 11. Criar notificações para cada motorista e disparar push
+      const fcmTokens: string[] = [];
+      const notificationPromises = availableDrivers.map(async (driver) => {
+        // Criar registro de notificação
+        await db
+          .insert(driverNotifications)
+          .values({
+            requestId: newRequest.id,
+            driverId: driver.id,
+            status: "notified",
+            expiresAt,
+          });
+
+        if (driver.fcm_token) {
+          fcmTokens.push(driver.fcm_token);
+        }
+      });
+
+      await Promise.all(notificationPromises);
+      console.log(`✅ ${notificationPromises.length} notificações registradas`);
+
+      // 12. Enviar notificações push para todos os motoristas
+      if (fcmTokens.length > 0) {
+        const notificationData = {
+          type: "new_delivery_request",
+          requestId: newRequest.id,
+          requestNumber: newRequest.requestNumber,
+          companyName: company?.name || "Empresa",
+          pickupAddress,
+          deliveryAddress,
+          distance: distance.toFixed(1),
+          estimatedTime: estimatedTime.toString(),
+          driverAmount: driverAmount.toFixed(2),
+          expiresAt: expiresAt.toISOString(),
+        };
+
+        await sendPushToMultipleDevices(
+          fcmTokens,
+          "🚚 Nova Solicitação de Entrega!",
+          `${company?.name || "Empresa"} - ${distance.toFixed(1)}km - R$ ${driverAmount.toFixed(2)}`,
+          notificationData
+        );
+
+        console.log(`✅ Notificações push enviadas para ${fcmTokens.length} motorista(s)`);
+      }
+
+      return res.json({
+        success: true,
+        message: "Solicitação criada com sucesso!",
+        data: {
+          requestId: newRequest.id,
+          requestNumber: newRequest.requestNumber,
+          distance: distance.toFixed(2),
+          estimatedTime,
+          totalAmount: totalAmount.toFixed(2),
+          driverAmount: driverAmount.toFixed(2),
+          driversNotified: availableDrivers.length,
+          expiresAt: expiresAt.toISOString(),
+        },
+      });
+    } catch (error) {
+      console.error("❌ Erro ao criar solicitação:", error);
+      return res.status(500).json({
+        message: "Erro ao criar solicitação",
+        error: error instanceof Error ? error.message : "Erro desconhecido"
+      });
     }
   });
 
@@ -1112,7 +1391,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ message: "Não autenticado" });
       }
 
-      const { name, state } = req.body;
+      const { name, state, latitude, longitude } = req.body;
 
       if (!name || !state) {
         return res.status(400).json({ message: "Nome e estado são obrigatórios" });
@@ -1121,6 +1400,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const city = await storage.createServiceLocation({
         name,
         state,
+        latitude: latitude || null,
+        longitude: longitude || null,
         active: true,
       });
 
@@ -1139,12 +1420,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const { id } = req.params;
-      const { name, state, active } = req.body;
+      const { name, state, active, latitude, longitude } = req.body;
 
       const city = await storage.updateServiceLocation(id, {
         name,
         state,
         active,
+        latitude: latitude || null,
+        longitude: longitude || null,
       });
 
       if (!city) {
@@ -1260,6 +1543,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { id } = req.params;
       const { password, ...otherData } = req.body;
 
+      // Buscar motorista atual para comparar o status de aprovação
+      const [currentDriver] = await db
+        .select()
+        .from(drivers)
+        .where(eq(drivers.id, id))
+        .limit(1);
+
+      if (!currentDriver) {
+        return res.status(404).json({ message: "Motorista não encontrado" });
+      }
+
       let updateData = { ...otherData };
 
       // Se a senha foi fornecida, fazer o hash
@@ -1271,6 +1565,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (!updated) {
         return res.status(404).json({ message: "Motorista não encontrado" });
+      }
+
+      // 🔔 Enviar notificação push se o status de aprovação mudou
+      if ('approve' in otherData && currentDriver.fcmToken) {
+        const wasApproved = currentDriver.approve;
+        const isNowApproved = otherData.approve;
+
+        if (!wasApproved && isNowApproved) {
+          // Motorista foi aprovado
+          await sendPushNotification(
+            currentDriver.fcmToken,
+            "🎉 Cadastro Aprovado!",
+            "Parabéns! Seu cadastro foi aprovado pelo administrador. Agora você pode fazer login e começar a trabalhar.",
+            {
+              type: "driver_approved",
+              driverId: id,
+            }
+          );
+        } else if (wasApproved && !isNowApproved) {
+          // Motorista foi desaprovado/rejeitado
+          await sendPushNotification(
+            currentDriver.fcmToken,
+            "❌ Cadastro Rejeitado",
+            "Seu cadastro foi rejeitado pelo administrador. Entre em contato com o suporte para mais informações.",
+            {
+              type: "driver_rejected",
+              driverId: id,
+            }
+          );
+        }
       }
 
       return res.json(updated);
@@ -1308,10 +1632,183 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { id } = req.params;
       const documents = await storage.getDriverDocuments(id);
 
-      return res.json(documents);
+      return res.json({
+        success: true,
+        documents: documents
+      });
     } catch (error) {
       console.error("Erro ao buscar documentos do motorista:", error);
       return res.status(500).json({ message: "Erro ao buscar documentos" });
+    }
+  });
+
+  // POST /api/drivers/documents/:documentId/approve - Aprovar documento
+  app.post("/api/drivers/documents/:documentId/approve", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { documentId } = req.params;
+
+      // Buscar documento para obter informações
+      const [document] = await db
+        .select({
+          id: driverDocuments.id,
+          driverId: driverDocuments.driverId,
+          documentTypeId: driverDocuments.documentTypeId,
+          documentTypeName: driverDocumentTypes.name,
+        })
+        .from(driverDocuments)
+        .leftJoin(driverDocumentTypes, eq(driverDocuments.documentTypeId, driverDocumentTypes.id))
+        .where(eq(driverDocuments.id, documentId))
+        .limit(1);
+
+      if (!document) {
+        return res.status(404).json({ message: "Documento não encontrado" });
+      }
+
+      // Atualizar status do documento para aprovado
+      const [updatedDoc] = await db
+        .update(driverDocuments)
+        .set({
+          status: "approved",
+          rejectionReason: null,
+        })
+        .where(eq(driverDocuments.id, documentId))
+        .returning();
+
+      // 🔔 Enviar notificação push para o motorista
+      const [driver] = await db
+        .select()
+        .from(drivers)
+        .where(eq(drivers.id, document.driverId))
+        .limit(1);
+
+      if (driver && driver.fcmToken) {
+        // Verificar quantos documentos estão aprovados agora
+        const allDocs = await db
+          .select()
+          .from(driverDocuments)
+          .where(eq(driverDocuments.driverId, document.driverId));
+
+        const approvedCount = allDocs.filter(d => d.status === "approved").length;
+        const totalCount = allDocs.length;
+
+        await sendPushNotification(
+          driver.fcmToken,
+          "✅ Documento Aprovado",
+          `Seu documento "${document.documentTypeName || 'documento'}" foi aprovado! ${approvedCount}/${totalCount} documentos aprovados. Continue aguardando a análise final.`,
+          {
+            type: "document_approved",
+            driverId: driver.id,
+            documentId: documentId,
+            documentType: document.documentTypeName || "",
+            approvedCount: approvedCount.toString(),
+            totalCount: totalCount.toString(),
+          }
+        );
+      }
+
+      return res.json({
+        success: true,
+        message: "Documento aprovado com sucesso",
+        data: updatedDoc
+      });
+    } catch (error) {
+      console.error("Erro ao aprovar documento:", error);
+      return res.status(500).json({ message: "Erro ao aprovar documento" });
+    }
+  });
+
+  // POST /api/drivers/documents/:documentId/reject - Rejeitar documento
+  app.post("/api/drivers/documents/:documentId/reject", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { documentId } = req.params;
+      const { rejectionReason } = req.body;
+
+      if (!rejectionReason) {
+        return res.status(400).json({
+          message: "O motivo da rejeição é obrigatório"
+        });
+      }
+
+      // Buscar documento para obter informações
+      const [document] = await db
+        .select({
+          id: driverDocuments.id,
+          driverId: driverDocuments.driverId,
+          documentTypeId: driverDocuments.documentTypeId,
+          documentTypeName: driverDocumentTypes.name,
+        })
+        .from(driverDocuments)
+        .leftJoin(driverDocumentTypes, eq(driverDocuments.documentTypeId, driverDocumentTypes.id))
+        .where(eq(driverDocuments.id, documentId))
+        .limit(1);
+
+      if (!document) {
+        return res.status(404).json({ message: "Documento não encontrado" });
+      }
+
+      // Atualizar status do documento para rejeitado
+      const [updatedDoc] = await db
+        .update(driverDocuments)
+        .set({
+          status: "rejected",
+          rejectionReason: rejectionReason,
+        })
+        .where(eq(driverDocuments.id, documentId))
+        .returning();
+
+      // 🔔 Enviar notificação push para o motorista
+      const [driver] = await db
+        .select()
+        .from(drivers)
+        .where(eq(drivers.id, document.driverId))
+        .limit(1);
+
+      console.log(`📲 Tentando enviar notificação de rejeição de documento:`, {
+        driverId: document.driverId,
+        documentType: document.documentTypeName,
+        hasFcmToken: !!driver?.fcmToken,
+        fcmToken: driver?.fcmToken ? `${driver.fcmToken.substring(0, 20)}...` : 'null'
+      });
+
+      if (driver && driver.fcmToken) {
+        const result = await sendPushNotification(
+          driver.fcmToken,
+          "📄 Documento Rejeitado",
+          `Seu documento "${document.documentTypeName || 'documento'}" foi rejeitado. Motivo: ${rejectionReason}. Por favor, envie novamente.`,
+          {
+            type: "document_rejected",
+            driverId: driver.id,
+            documentId: documentId,
+            documentType: document.documentTypeName || "",
+            rejectionReason: rejectionReason,
+          }
+        );
+
+        if (result) {
+          console.log(`✅ Notificação de documento rejeitado enviada com sucesso!`);
+        } else {
+          console.log(`❌ Falha ao enviar notificação - Firebase pode não estar configurado`);
+        }
+      } else {
+        console.log(`⚠️ Notificação não enviada: ${!driver ? 'motorista não encontrado' : 'motorista sem FCM token'}`);
+      }
+
+      return res.json({
+        success: true,
+        message: "Documento rejeitado",
+        data: updatedDoc
+      });
+    } catch (error) {
+      console.error("Erro ao rejeitar documento:", error);
+      return res.status(500).json({ message: "Erro ao rejeitar documento" });
     }
   });
 
@@ -1471,6 +1968,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         estimatedAmount,
         distance,
         estimatedTime,
+        customerName,
       } = req.body;
 
       if (!pickupAddress || !dropoffAddress || !vehicleTypeId) {
@@ -1489,6 +1987,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         requestNumber,
         companyId: req.session.companyId,
         userId: null, // Company requests don't have userId
+        customerName: customerName || null,
         serviceLocationId: serviceLocationId || null,
         zoneTypeId: vehicleTypeId,
         totalDistance: distance || null,
@@ -1524,6 +2023,92 @@ export async function registerRoutes(app: Express): Promise<Server> {
            VALUES ($1, $2)`,
           [request.id, estimatedAmount]
         );
+      }
+
+      // Buscar configurações de busca e timeout
+      const settingsResult = await pool.query(
+        `SELECT driver_search_radius, min_time_to_find_driver, driver_acceptance_timeout
+         FROM settings LIMIT 1`
+      );
+      const searchRadius = settingsResult.rows[0]?.driver_search_radius
+        ? parseFloat(settingsResult.rows[0].driver_search_radius)
+        : 10; // Default 10km
+      const minTimeToFindDriver = settingsResult.rows[0]?.min_time_to_find_driver || 120; // Default 120s
+      const driverAcceptanceTimeout = settingsResult.rows[0]?.driver_acceptance_timeout || 30; // Default 30s
+
+      // Buscar motoristas disponíveis e online com localização
+      const availableDrivers = await pool.query(`
+        SELECT id, name, fcm_token, latitude, longitude
+        FROM drivers
+        WHERE available = true
+          AND approve = true
+          AND active = true
+          AND fcm_token IS NOT NULL
+          AND latitude IS NOT NULL
+          AND longitude IS NOT NULL
+      `);
+
+      // Buscar dados da empresa para incluir na notificação
+      const company = await storage.getCompany(req.session.companyId);
+
+      // Filtrar motoristas dentro do raio de pesquisa
+      const pickupLat = parseFloat(pickupAddress.lat);
+      const pickupLng = parseFloat(pickupAddress.lng);
+
+      const driversWithinRadius = availableDrivers.rows.filter(driver => {
+        const driverLat = parseFloat(driver.latitude);
+        const driverLng = parseFloat(driver.longitude);
+
+        if (isNaN(driverLat) || isNaN(driverLng)) {
+          return false;
+        }
+
+        const distanceToPickup = calculateDistance(
+          pickupLat,
+          pickupLng,
+          driverLat,
+          driverLng
+        );
+
+        return distanceToPickup <= searchRadius;
+      });
+
+      console.log(`✓ ${driversWithinRadius.length} de ${availableDrivers.rows.length} motoristas estão dentro do raio de ${searchRadius} km`);
+
+      // Enviar notificação push para motoristas dentro do raio
+      if (driversWithinRadius.length > 0) {
+        const fcmTokens = driversWithinRadius
+          .map(driver => driver.fcm_token)
+          .filter(token => token);
+
+        if (fcmTokens.length > 0) {
+          const notificationTitle = "Nova Entrega Disponível!";
+          const notificationBody = `${company?.name || 'Cliente'} solicitou uma entrega. ${pickupAddress.address} → ${dropoffAddress.address}`;
+
+          // Enviar notificação para motoristas dentro do raio
+          await sendPushToMultipleDevices(
+            fcmTokens,
+            notificationTitle,
+            notificationBody,
+            {
+              type: "new_delivery",
+              deliveryId: request.id,
+              requestNumber: requestNumber,
+              pickupAddress: pickupAddress.address,
+              dropoffAddress: dropoffAddress.address,
+              estimatedAmount: estimatedAmount?.toString() || "0",
+              distance: distance?.toString() || "0",
+              estimatedTime: estimatedTime?.toString() || "0",
+              customerName: customerName || "",
+              acceptanceTimeout: driverAcceptanceTimeout.toString(), // Tempo para aceitar (segundos)
+              searchTimeout: minTimeToFindDriver.toString(), // Tempo total de busca (segundos)
+            }
+          );
+
+          console.log(`✓ Notificação enviada para ${fcmTokens.length} motoristas dentro do raio`);
+        }
+      } else {
+        console.log(`⚠️ Nenhum motorista disponível dentro do raio de ${searchRadius} km`);
       }
 
       return res.status(201).json({
@@ -1589,6 +2174,1910 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ========================================
+  // DRIVER API ROUTES (Mobile App)
+  // ========================================
+
+  // GET /api/v1/driver/service-locations - Listar cidades disponíveis
+  app.get("/api/v1/driver/service-locations", async (req, res) => {
+    try {
+      const locations = await db
+        .select({
+          id: serviceLocations.id,
+          name: serviceLocations.name,
+        })
+        .from(serviceLocations)
+        .where(eq(serviceLocations.active, true))
+        .orderBy(serviceLocations.name);
+
+      return res.json({
+        success: true,
+        data: locations
+      });
+    } catch (error) {
+      console.error("Erro ao buscar cidades:", error);
+      return res.status(500).json({ message: "Erro ao buscar cidades" });
+    }
+  });
+
+  // GET /api/v1/driver/vehicle-types - Listar tipos de veículos
+  app.get("/api/v1/driver/vehicle-types", async (req, res) => {
+    try {
+      const types = await db
+        .select({
+          id: vehicleTypes.id,
+          name: vehicleTypes.name,
+          icon: vehicleTypes.icon,
+          capacity: vehicleTypes.capacity,
+        })
+        .from(vehicleTypes)
+        .where(eq(vehicleTypes.active, true))
+        .orderBy(vehicleTypes.name);
+
+      return res.json({
+        success: true,
+        data: types
+      });
+    } catch (error) {
+      console.error("Erro ao buscar tipos de veículos:", error);
+      return res.status(500).json({ message: "Erro ao buscar tipos de veículos" });
+    }
+  });
+
+  // GET /api/v1/driver/brands - Listar marcas de veículos
+  app.get("/api/v1/driver/brands", async (req, res) => {
+    try {
+      const brandsList = await db
+        .select({
+          id: brands.id,
+          name: brands.name,
+        })
+        .from(brands)
+        .where(eq(brands.active, true))
+        .orderBy(brands.name);
+
+      return res.json({
+        success: true,
+        data: brandsList
+      });
+    } catch (error) {
+      console.error("Erro ao buscar marcas:", error);
+      return res.status(500).json({ message: "Erro ao buscar marcas" });
+    }
+  });
+
+  // GET /api/v1/driver/models/:brandId - Listar modelos por marca
+  app.get("/api/v1/driver/models/:brandId", async (req, res) => {
+    try {
+      const { brandId } = req.params;
+
+      const models = await db
+        .select({
+          id: vehicleModels.id,
+          name: vehicleModels.name,
+          brandId: vehicleModels.brandId,
+        })
+        .from(vehicleModels)
+        .where(
+          and(
+            eq(vehicleModels.brandId, brandId),
+            eq(vehicleModels.active, true)
+          )
+        )
+        .orderBy(vehicleModels.name);
+
+      return res.json({
+        success: true,
+        data: models
+      });
+    } catch (error) {
+      console.error("Erro ao buscar modelos:", error);
+      return res.status(500).json({ message: "Erro ao buscar modelos" });
+    }
+  });
+
+  // GET /api/v1/driver/document-types - Listar tipos de documentos obrigatórios
+  app.get("/api/v1/driver/document-types", async (req, res) => {
+    try {
+      const documentTypes = await db
+        .select({
+          id: driverDocumentTypes.id,
+          name: driverDocumentTypes.name,
+          description: driverDocumentTypes.description,
+          required: driverDocumentTypes.required,
+        })
+        .from(driverDocumentTypes)
+        .where(eq(driverDocumentTypes.active, true))
+        .orderBy(driverDocumentTypes.name);
+
+      return res.json({
+        success: true,
+        data: documentTypes
+      });
+    } catch (error) {
+      console.error("Erro ao buscar tipos de documentos:", error);
+      return res.status(500).json({ message: "Erro ao buscar tipos de documentos" });
+    }
+  });
+
+  // POST /api/v1/driver/register - Registro de motorista
+  app.post("/api/v1/driver/register", async (req, res) => {
+    try {
+      const {
+        name,
+        cpf,
+        mobile,
+        email,
+        password,
+        serviceLocationId,
+        vehicleTypeId,
+        carMake,
+        carModel,
+        carNumber,
+        carColor,
+        carYear,
+        deviceToken,
+        loginBy
+      } = req.body;
+
+      // Validação completa - todos os campos são obrigatórios
+      if (!name || !mobile || !password || !cpf || !email || !serviceLocationId ||
+          !vehicleTypeId || !carMake || !carModel || !carNumber || !carColor || !carYear) {
+        return res.status(400).json({
+          message: "Todos os campos são obrigatórios: nome, CPF, telefone, email, senha, cidade, tipo de veículo, marca, modelo, placa, cor e ano"
+        });
+      }
+
+      // Validação: carMake e carModel devem ser UUIDs (IDs das tabelas brands e vehicle_models)
+      const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+      if (!uuidPattern.test(carMake)) {
+        return res.status(400).json({
+          message: `O campo 'carMake' deve conter o ID (UUID) da marca, não o nome. Valor inválido recebido: '${carMake}'. Use o endpoint GET /api/v1/driver/brands para obter a lista de marcas com seus IDs.`
+        });
+      }
+
+      if (!uuidPattern.test(carModel)) {
+        return res.status(400).json({
+          message: `O campo 'carModel' deve conter o ID (UUID) do modelo, não o nome. Valor inválido recebido: '${carModel}'. Use o endpoint GET /api/v1/driver/models/:brandId para obter a lista de modelos com seus IDs.`
+        });
+      }
+
+      // Verifica se já existe motorista com esse telefone
+      const existingDriver = await storage.getDriverByMobile(mobile);
+      if (existingDriver) {
+        return res.status(400).json({
+          message: "Já existe um motorista cadastrado com este telefone"
+        });
+      }
+
+      // Hash da senha
+      const hashedPassword = await bcrypt.hash(password, 10);
+
+      // Cria motorista (todos campos obrigatórios)
+      // carMake e carModel vêm do app como IDs, então devem ir para brandId e modelId
+      const driver = await storage.createDriver({
+        name,
+        cpf,
+        mobile,
+        email,
+        password: hashedPassword,
+        serviceLocationId,
+        vehicleTypeId,
+        brandId: carMake,  // O app envia o ID da marca no campo carMake
+        modelId: carModel, // O app envia o ID do modelo no campo carModel
+        carNumber,
+        carColor,
+        carYear,
+        fcmToken: deviceToken || null,
+        active: true,
+        approve: false, // Precisa ser aprovado pelo admin
+        available: false,
+        uploadedDocuments: false,
+      });
+
+      return res.status(201).json({
+        success: true,
+        message: "Motorista registrado com sucesso. Agora envie seus documentos e aguarde a aprovação do administrador.",
+        data: {
+          id: driver.id,
+          name: driver.name,
+          mobile: driver.mobile,
+          email: driver.email,
+          approve: driver.approve,
+          statusEndpoint: `/api/v1/driver/status/${driver.id}`
+        }
+      });
+    } catch (error) {
+      console.error("Erro ao registrar motorista:", error);
+      return res.status(500).json({ message: "Erro ao registrar motorista" });
+    }
+  });
+
+  // POST /api/v1/driver/validate-mobile-for-login - Validar email do motorista
+  app.post("/api/v1/driver/validate-mobile-for-login", async (req, res) => {
+    try {
+      const { email } = req.body;
+
+      console.log("🔍 Validando motorista:", { email });
+
+      // Verificar se forneceu email
+      if (!email) {
+        return res.status(400).json({
+          success: false,
+          message: "Email é obrigatório"
+        });
+      }
+
+      // Buscar por email
+      const driver = await storage.getDriverByEmail(email);
+
+      if (!driver) {
+        return res.status(404).json({
+          success: false,
+          message: "Motorista não encontrado. Verifique o email ou cadastre-se."
+        });
+      }
+
+      console.log("✅ Motorista encontrado:", driver.name);
+
+      // Retornar dados básicos do motorista
+      return res.json({
+        success: true,
+        message: "Motorista encontrado",
+        data: {
+          id: driver.id,
+          name: driver.name,
+          email: driver.email,
+          mobile: driver.mobile,
+          profilePicture: driver.profilePicture,
+          requirePassword: true, // Sempre requer senha
+          active: driver.active,
+          approve: driver.approve,
+        }
+      });
+    } catch (error) {
+      console.error("❌ Erro ao validar motorista:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Erro ao validar motorista"
+      });
+    }
+  });
+
+  // POST /api/v1/driver/login - Login de motorista
+  app.post("/api/v1/driver/login", async (req, res) => {
+    try {
+      const { email, password, deviceToken } = req.body;
+
+      console.log("🔐 Tentativa de login:", { email, hasPassword: !!password });
+
+      // Validar que tem email e senha
+      if (!email || !password) {
+        return res.status(400).json({
+          message: "Email e senha são obrigatórios"
+        });
+      }
+
+      // Busca motorista por email
+      const driver = await storage.getDriverByEmail(email);
+
+      if (!driver) {
+        return res.status(401).json({
+          message: "Email ou senha incorretos"
+        });
+      }
+
+      // Verifica senha
+      if (!driver.password) {
+        return res.status(401).json({
+          message: "Email ou senha incorretos"
+        });
+      }
+
+      const validPassword = await bcrypt.compare(password, driver.password);
+      if (!validPassword) {
+        return res.status(401).json({
+          message: "Email ou senha incorretos"
+        });
+      }
+
+      // Verifica se está ativo (mas permite login mesmo sem aprovação)
+      if (!driver.active) {
+        return res.status(403).json({
+          message: "Sua conta foi desativada. Entre em contato com o suporte."
+        });
+      }
+
+      // Atualiza FCM token se fornecido
+      if (deviceToken) {
+        await storage.updateDriver(driver.id, {
+          fcmToken: deviceToken
+        });
+      }
+
+      // Cria sessão
+      req.session.driverId = driver.id;
+      req.session.driverName = driver.name;
+      req.session.driverMobile = driver.mobile;
+      req.session.isDriver = true;
+
+      // Gera token simples (em produção use JWT)
+      const accessToken = Buffer.from(JSON.stringify({
+        id: driver.id,
+        type: 'driver',
+        timestamp: Date.now()
+      })).toString('base64');
+
+      return res.json({
+        success: true,
+        message: "Login realizado com sucesso",
+        accessToken: accessToken, // Token para apps mobile
+        data: {
+          id: driver.id,
+          name: driver.name,
+          mobile: driver.mobile,
+          email: driver.email,
+          profilePicture: driver.profilePicture,
+          active: driver.active,
+          approve: driver.approve,
+          available: driver.available,
+          rating: driver.rating,
+          vehicleTypeId: driver.vehicleTypeId,
+          carMake: driver.carMake,
+          carModel: driver.carModel,
+          carNumber: driver.carNumber,
+          carColor: driver.carColor,
+          uploadedDocuments: driver.uploadedDocuments,
+        }
+      });
+    } catch (error) {
+      console.error("Erro ao fazer login:", error);
+      return res.status(500).json({ message: "Erro ao fazer login" });
+    }
+  });
+
+  // GET /api/v1/driver - Obter dados do motorista logado
+  app.get("/api/v1/driver", async (req, res) => {
+    try {
+      let driverId = req.session.driverId;
+
+      // Se não tiver sessão, tenta obter do token Bearer
+      if (!driverId) {
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          const token = authHeader.substring(7);
+          try {
+            const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf8'));
+            if (decoded.type === 'driver' && decoded.id) {
+              driverId = decoded.id;
+            }
+          } catch (e) {
+            console.error("Token inválido:", e);
+          }
+        }
+      }
+
+      if (!driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const driver = await storage.getDriver(driverId);
+      if (!driver) {
+        return res.status(404).json({ message: "Motorista não encontrado" });
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          id: driver.id,
+          name: driver.name,
+          mobile: driver.mobile,
+          email: driver.email,
+          cpf: driver.cpf,
+          profilePicture: driver.profilePicture,
+          active: driver.active,
+          approve: driver.approve,
+          available: driver.available,
+          rating: driver.rating,
+          ratingTotal: driver.ratingTotal,
+          noOfRatings: driver.noOfRatings,
+          serviceLocationId: driver.serviceLocationId,
+          vehicleTypeId: driver.vehicleTypeId,
+          carMake: driver.carMake,
+          carModel: driver.carModel,
+          carNumber: driver.carNumber,
+          carColor: driver.carColor,
+          carYear: driver.carYear,
+          uploadedDocuments: driver.uploadedDocuments,
+          latitude: driver.latitude,
+          longitude: driver.longitude,
+        }
+      });
+    } catch (error) {
+      console.error("Erro ao buscar dados do motorista:", error);
+      return res.status(500).json({ message: "Erro ao buscar dados do motorista" });
+    }
+  });
+
+  // GET /api/v1/driver/me - Buscar perfil completo do motorista (com nomes, não só IDs)
+  app.get("/api/v1/driver/me", async (req, res) => {
+    try {
+      let driverId = req.session.driverId;
+
+      // Se não tiver sessão, tenta obter do token Bearer
+      if (!driverId) {
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          const token = authHeader.substring(7);
+          try {
+            const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf8'));
+            if (decoded.type === 'driver' && decoded.id) {
+              driverId = decoded.id;
+            }
+          } catch (e) {
+            console.error("Token inválido:", e);
+          }
+        }
+      }
+
+      if (!driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      // Buscar motorista com JOINs para pegar os nomes
+      const [driver] = await db
+        .select({
+          id: drivers.id,
+          name: drivers.name,
+          mobile: drivers.mobile,
+          email: drivers.email,
+          cpf: drivers.cpf,
+          profilePicture: drivers.profilePicture,
+          active: drivers.active,
+          approve: drivers.approve,
+          available: drivers.available,
+          rating: drivers.rating,
+          ratingTotal: drivers.ratingTotal,
+          noOfRatings: drivers.noOfRatings,
+
+          // IDs
+          serviceLocationId: drivers.serviceLocationId,
+          vehicleTypeId: drivers.vehicleTypeId,
+          carMakeId: drivers.carMake,
+          carModelId: drivers.carModel,
+
+          // Dados do carro
+          carNumber: drivers.carNumber,
+          carColor: drivers.carColor,
+          carYear: drivers.carYear,
+
+          // Nomes das relações
+          cityName: serviceLocations.name,
+          cityState: serviceLocations.state,
+          vehicleTypeName: vehicleTypes.name,
+          brandName: brands.name,
+          modelName: models.name,
+        })
+        .from(drivers)
+        .leftJoin(serviceLocations, eq(drivers.serviceLocationId, serviceLocations.id))
+        .leftJoin(vehicleTypes, eq(drivers.vehicleTypeId, vehicleTypes.id))
+        .leftJoin(brands, eq(drivers.carMake, brands.id))
+        .leftJoin(models, eq(drivers.carModel, models.id))
+        .where(eq(drivers.id, driverId))
+        .limit(1);
+
+      if (!driver) {
+        return res.status(404).json({ message: "Motorista não encontrado" });
+      }
+
+      // Buscar documentos do motorista
+      const documents = await db
+        .select({
+          id: driverDocuments.id,
+          documentTypeId: driverDocuments.documentTypeId,
+          documentTypeName: driverDocumentTypes.name,
+          filePath: driverDocuments.filePath,
+          status: driverDocuments.status,
+          uploadedAt: driverDocuments.uploadedAt,
+        })
+        .from(driverDocuments)
+        .innerJoin(driverDocumentTypes, eq(driverDocuments.documentTypeId, driverDocumentTypes.id))
+        .where(eq(driverDocuments.driverId, driverId))
+        .orderBy(driverDocuments.uploadedAt);
+
+      return res.json({
+        success: true,
+        data: {
+          // Dados pessoais
+          personalData: {
+            id: driver.id,
+            fullName: driver.name,
+            cpf: driver.cpf,
+            email: driver.email,
+            whatsapp: driver.mobile,
+            city: driver.cityName ? `${driver.cityName} - ${driver.cityState}` : null,
+            cityId: driver.serviceLocationId,
+            profilePicture: driver.profilePicture,
+          },
+
+          // Dados do veículo
+          vehicleData: {
+            category: driver.vehicleTypeName,
+            categoryId: driver.vehicleTypeId,
+            brand: driver.brandName,
+            brandId: driver.carMakeId,
+            model: driver.modelName,
+            modelId: driver.carModelId,
+            plate: driver.carNumber,
+            color: driver.carColor,
+            year: driver.carYear,
+          },
+
+          // Status
+          status: {
+            active: driver.active,
+            approved: driver.approve,
+            available: driver.available,
+          },
+
+          // Rating
+          rating: {
+            average: driver.rating,
+            total: driver.ratingTotal,
+            count: driver.noOfRatings,
+          },
+
+          // Documentos
+          documents: documents.map(doc => ({
+            id: doc.id,
+            documentTypeId: doc.documentTypeId,
+            documentType: doc.documentTypeName,
+            filePath: doc.filePath,
+            status: doc.status,
+            uploadedAt: doc.uploadedAt,
+          })),
+        }
+      });
+    } catch (error) {
+      console.error("Erro ao buscar perfil completo do motorista:", error);
+      return res.status(500).json({ message: "Erro ao buscar perfil do motorista" });
+    }
+  });
+
+  // POST /api/v1/driver/profile - Atualizar perfil do motorista
+  app.post("/api/v1/driver/profile", upload.single("profile_picture"), async (req, res) => {
+    try {
+      if (!req.session.driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const {
+        name,
+        email,
+        carMake,
+        carModel,
+        carNumber,
+        carColor,
+        carYear,
+      } = req.body;
+
+      const updateData: any = {};
+
+      if (name) updateData.name = name;
+      if (email) updateData.email = email;
+      if (carMake) updateData.carMake = carMake;
+      if (carModel) updateData.carModel = carModel;
+      if (carNumber) updateData.carNumber = carNumber;
+      if (carColor) updateData.carColor = carColor;
+      if (carYear) updateData.carYear = carYear;
+
+      // Se houver upload de imagem
+      if (req.file) {
+        updateData.profilePicture = `/uploads/${req.file.filename}`;
+      }
+
+      const updatedDriver = await storage.updateDriver(req.session.driverId, updateData);
+
+      if (!updatedDriver) {
+        return res.status(404).json({ message: "Motorista não encontrado" });
+      }
+
+      return res.json({
+        success: true,
+        message: "Perfil atualizado com sucesso",
+        data: {
+          id: updatedDriver.id,
+          name: updatedDriver.name,
+          email: updatedDriver.email,
+          profilePicture: updatedDriver.profilePicture,
+          carMake: updatedDriver.carMake,
+          carModel: updatedDriver.carModel,
+          carNumber: updatedDriver.carNumber,
+          carColor: updatedDriver.carColor,
+          carYear: updatedDriver.carYear,
+        }
+      });
+    } catch (error) {
+      console.error("Erro ao atualizar perfil:", error);
+      return res.status(500).json({ message: "Erro ao atualizar perfil" });
+    }
+  });
+
+  // POST /api/v1/driver/documents - Enviar documento do motorista
+  app.post("/api/v1/driver/documents", (req, res, next) => {
+    console.log("\n🚀 POST /api/v1/driver/documents - Requisição recebida");
+    console.log("  - Content-Type:", req.headers["content-type"]);
+    console.log("  - Session exists:", !!req.session);
+    console.log("  - Session driverId:", req.session?.driverId);
+    next();
+  }, uploadDocument.single("document"), async (req, res) => {
+    try {
+      // Debug: verificar o que está vindo no body
+      console.log("\n📤 Após multer processamento:");
+      console.log("  - req.body:", req.body);
+      console.log("  - req.session.driverId:", req.session.driverId);
+      console.log("  - req.file:", req.file ? "✓ arquivo presente" : "✗ sem arquivo");
+
+      // Permitir envio com sessão OU com driverId no body (para uploads após cadastro)
+      const driverId = req.session.driverId || req.body.driverId;
+
+      if (!driverId) {
+        return res.status(401).json({
+          message: "Driver ID é obrigatório. Forneça via sessão ou no corpo da requisição.",
+          debug: {
+            hasSession: !!req.session.driverId,
+            hasBodyDriverId: !!req.body.driverId,
+            body: req.body
+          }
+        });
+      }
+
+      const { documentTypeId } = req.body;
+
+      if (!documentTypeId) {
+        return res.status(400).json({
+          message: "O tipo de documento é obrigatório"
+        });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({
+          message: "Nenhum arquivo foi enviado"
+        });
+      }
+
+      // Verificar se o motorista existe
+      const [driver] = await db
+        .select()
+        .from(drivers)
+        .where(eq(drivers.id, driverId))
+        .limit(1);
+
+      if (!driver) {
+        return res.status(404).json({
+          message: "Motorista não encontrado"
+        });
+      }
+
+      // Salvar documento no banco
+      const documentPath = `/uploads/documents_driver/${req.file.filename}`;
+
+      // Verificar se já existe um documento deste tipo para o motorista
+      const existingDoc = await db
+        .select()
+        .from(driverDocuments)
+        .where(
+          and(
+            eq(driverDocuments.driverId, driverId),
+            eq(driverDocuments.documentTypeId, documentTypeId)
+          )
+        )
+        .limit(1);
+
+      let document;
+
+      if (existingDoc.length > 0) {
+        // Atualizar documento existente (reenvio)
+        console.log(`📝 Atualizando documento existente (tipo: ${documentTypeId})`);
+        const [updated] = await db
+          .update(driverDocuments)
+          .set({
+            documentUrl: documentPath,
+            status: "pending", // Resetar status para pendente
+            rejectionReason: null, // Limpar motivo de rejeição anterior
+            updatedAt: new Date(),
+          })
+          .where(eq(driverDocuments.id, existingDoc[0].id))
+          .returning();
+        document = updated;
+      } else {
+        // Inserir novo documento (primeiro envio)
+        console.log(`✨ Inserindo novo documento (tipo: ${documentTypeId})`);
+        const [inserted] = await db
+          .insert(driverDocuments)
+          .values({
+            driverId: driverId,
+            documentTypeId: documentTypeId,
+            documentUrl: documentPath,
+            status: "pending",
+          })
+          .returning();
+        document = inserted;
+      }
+
+      // 📸 Se o documento for uma selfie, atualizar a foto de perfil do motorista
+      const [documentType] = await db
+        .select()
+        .from(driverDocumentTypes)
+        .where(eq(driverDocumentTypes.id, documentTypeId))
+        .limit(1);
+
+      if (documentType && documentType.name.toLowerCase() === 'selfie') {
+        console.log(`📸 Atualizando foto de perfil do motorista com a selfie`);
+        await db
+          .update(drivers)
+          .set({
+            profilePicture: documentPath,
+          })
+          .where(eq(drivers.id, driverId));
+
+        console.log(`✅ Foto de perfil atualizada: ${documentPath}`);
+      }
+
+      // Verificar se todos os documentos obrigatórios foram enviados
+      const requiredDocs = await db
+        .select()
+        .from(driverDocumentTypes)
+        .where(
+          and(
+            eq(driverDocumentTypes.required, true),
+            eq(driverDocumentTypes.active, true)
+          )
+        );
+
+      const uploadedDocs = await db
+        .select()
+        .from(driverDocuments)
+        .where(eq(driverDocuments.driverId, driverId));
+
+      const allRequiredUploaded = requiredDocs.every(reqDoc =>
+        uploadedDocs.some(upDoc => upDoc.documentTypeId === reqDoc.id)
+      );
+
+      // Se todos os documentos obrigatórios foram enviados, atualizar motorista
+      if (allRequiredUploaded) {
+        await storage.updateDriver(driverId, {
+          uploadedDocuments: true
+        });
+      }
+
+      return res.status(201).json({
+        success: true,
+        message: "Documento enviado com sucesso",
+        data: {
+          id: document.id,
+          documentTypeId: document.documentTypeId,
+          documentUrl: document.documentUrl,
+          status: document.status,
+          allRequiredUploaded: allRequiredUploaded
+        }
+      });
+    } catch (error) {
+      console.error("Erro ao enviar documento:", error);
+      return res.status(500).json({ message: "Erro ao enviar documento" });
+    }
+  });
+
+  // GET /api/v1/driver/documents - Listar documentos enviados pelo motorista
+  app.get("/api/v1/driver/documents", async (req, res) => {
+    try {
+      if (!req.session.driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const documents = await db
+        .select({
+          id: driverDocuments.id,
+          documentTypeId: driverDocuments.documentTypeId,
+          documentTypeName: driverDocumentTypes.name,
+          documentUrl: driverDocuments.documentUrl,
+          status: driverDocuments.status,
+          rejectionReason: driverDocuments.rejectionReason,
+          createdAt: driverDocuments.createdAt,
+        })
+        .from(driverDocuments)
+        .leftJoin(
+          driverDocumentTypes,
+          eq(driverDocuments.documentTypeId, driverDocumentTypes.id)
+        )
+        .where(eq(driverDocuments.driverId, req.session.driverId))
+        .orderBy(driverDocuments.createdAt);
+
+      return res.json({
+        success: true,
+        data: documents
+      });
+    } catch (error) {
+      console.error("Erro ao buscar documentos:", error);
+      return res.status(500).json({ message: "Erro ao buscar documentos" });
+    }
+  });
+
+  // ========================================
+  // DELIVERY REQUESTS (MOTORISTA)
+  // ========================================
+
+  // GET /api/v1/driver/pending-requests - Listar solicitações pendentes
+  app.get("/api/v1/driver/pending-requests", async (req, res) => {
+    try {
+      if (!req.session.driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const driverId = req.session.driverId;
+
+      // Buscar notificações do motorista que ainda não expiraram
+      const notifications = await db
+        .select({
+          notificationId: driverNotifications.id,
+          requestId: requests.id,
+          requestNumber: requests.requestNumber,
+          status: driverNotifications.status,
+          expiresAt: driverNotifications.expiresAt,
+          companyId: requests.companyId,
+          customerName: requests.customerName,
+          zoneTypeId: requests.zoneTypeId,
+          notes: requests.notes,
+        })
+        .from(driverNotifications)
+        .innerJoin(requests, eq(driverNotifications.requestId, requests.id))
+        .where(
+          and(
+            eq(driverNotifications.driverId, driverId),
+            eq(driverNotifications.status, "notified")
+          )
+        )
+        .orderBy(driverNotifications.notifiedAt);
+
+      // Buscar detalhes completos de cada solicitação
+      const pendingRequests = await Promise.all(
+        notifications.map(async (notification) => {
+          // Buscar dados da empresa
+          const [company] = await db
+            .select({
+              name: companies.name,
+            })
+            .from(companies)
+            .where(eq(companies.id, notification.companyId!))
+            .limit(1);
+
+          // Buscar localizações
+          const [place] = await db
+            .select()
+            .from(requestPlaces)
+            .where(eq(requestPlaces.requestId, notification.requestId))
+            .limit(1);
+
+          // Buscar cobrança
+          const [bill] = await db
+            .select()
+            .from(requestBills)
+            .where(eq(requestBills.requestId, notification.requestId))
+            .limit(1);
+
+          if (!place) {
+            return null;
+          }
+
+          // Calcular distância e tempo
+          const distance = calculateDistance(
+            parseFloat(place.pickLat),
+            parseFloat(place.pickLng),
+            parseFloat(place.dropLat),
+            parseFloat(place.dropLng)
+          );
+          const estimatedTime = Math.ceil((distance / 40) * 60);
+
+          // Calcular valor do motorista
+          const settings = await storage.getSettings();
+          const adminCommissionPercentage = settings?.adminCommissionPercentage || 20;
+          const totalAmount = bill ? parseFloat(bill.basePrice) + parseFloat(bill.distancePrice) : 0;
+          const adminCommission = totalAmount * (adminCommissionPercentage / 100);
+          const driverAmount = totalAmount - adminCommission;
+
+          return {
+            notificationId: notification.notificationId,
+            requestId: notification.requestId,
+            requestNumber: notification.requestNumber,
+            companyName: company?.name || "Empresa",
+            customerName: notification.customerName,
+            pickupAddress: place.pickAddress,
+            pickupLat: parseFloat(place.pickLat),
+            pickupLng: parseFloat(place.pickLng),
+            deliveryAddress: place.dropAddress,
+            deliveryLat: parseFloat(place.dropLat),
+            deliveryLng: parseFloat(place.dropLng),
+            distance: distance.toFixed(2),
+            estimatedTime: estimatedTime.toString(),
+            driverAmount: driverAmount.toFixed(2),
+            notes: notification.notes,
+            expiresAt: notification.expiresAt?.toISOString(),
+            status: notification.status,
+          };
+        })
+      );
+
+      // Filtrar nulls (caso alguma solicitação não tenha lugar)
+      const validRequests = pendingRequests.filter((r) => r !== null);
+
+      return res.json({
+        success: true,
+        data: validRequests,
+      });
+    } catch (error) {
+      console.error("Erro ao buscar solicitações pendentes:", error);
+      return res.status(500).json({
+        message: "Erro ao buscar solicitações pendentes",
+      });
+    }
+  });
+
+  // POST /api/v1/driver/requests/:id/accept - Aceitar solicitação
+  app.post("/api/v1/driver/requests/:id/accept", async (req, res) => {
+    try {
+      if (!req.session.driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const requestId = req.params.id;
+      const driverId = req.session.driverId;
+
+      console.log(`✅ Motorista ${driverId} aceitando solicitação ${requestId}`);
+
+      // Verificar se a solicitação ainda está disponível
+      const [request] = await db
+        .select()
+        .from(requests)
+        .where(eq(requests.id, requestId))
+        .limit(1);
+
+      if (!request) {
+        return res.status(404).json({
+          message: "Solicitação não encontrada",
+        });
+      }
+
+      if (request.driverId) {
+        return res.status(409).json({
+          message: "Esta solicitação já foi aceita por outro motorista",
+        });
+      }
+
+      // Verificar se a notificação do motorista ainda está válida
+      const [notification] = await db
+        .select()
+        .from(driverNotifications)
+        .where(
+          and(
+            eq(driverNotifications.requestId, requestId),
+            eq(driverNotifications.driverId, driverId)
+          )
+        )
+        .limit(1);
+
+      if (!notification) {
+        return res.status(404).json({
+          message: "Notificação não encontrada",
+        });
+      }
+
+      if (notification.status !== "notified") {
+        return res.status(409).json({
+          message: "Esta notificação já foi respondida",
+        });
+      }
+
+      // Verificar se expirou
+      if (notification.expiresAt && new Date(notification.expiresAt) < new Date()) {
+        return res.status(410).json({
+          message: "Esta solicitação expirou",
+        });
+      }
+
+      // Atualizar a solicitação com o motorista
+      await db
+        .update(requests)
+        .set({
+          driverId: driverId,
+          acceptedAt: new Date(),
+        })
+        .where(eq(requests.id, requestId));
+
+      // Atualizar a notificação do motorista como aceita
+      await db
+        .update(driverNotifications)
+        .set({
+          status: "accepted",
+          respondedAt: new Date(),
+        })
+        .where(eq(driverNotifications.id, notification.id));
+
+      console.log(`✅ Solicitação aceita pelo motorista`);
+
+      // Marcar todas as outras notificações como expiradas
+      await db
+        .update(driverNotifications)
+        .set({
+          status: "expired",
+        })
+        .where(
+          and(
+            eq(driverNotifications.requestId, requestId),
+            eq(driverNotifications.status, "notified")
+          )
+        );
+
+      console.log(`✅ Outras notificações marcadas como expiradas`);
+
+      // Buscar os outros motoristas que receberam notificação
+      const otherNotifications = await db
+        .select({
+          driverId: driverNotifications.driverId,
+          fcmToken: drivers.fcmToken,
+        })
+        .from(driverNotifications)
+        .innerJoin(drivers, eq(driverNotifications.driverId, drivers.id))
+        .where(
+          and(
+            eq(driverNotifications.requestId, requestId),
+            eq(driverNotifications.status, "expired")
+          )
+        );
+
+      // Enviar notificação para outros motoristas informando que foi aceita
+      const otherFcmTokens = otherNotifications
+        .map((n) => n.fcmToken)
+        .filter((token): token is string => token !== null);
+
+      if (otherFcmTokens.length > 0) {
+        await sendPushToMultipleDevices(
+          otherFcmTokens,
+          "Entrega Aceita",
+          "Esta entrega foi aceita por outro motorista",
+          {
+            type: "delivery_taken",
+            requestId: requestId,
+          }
+        );
+
+        console.log(`✅ Notificação enviada para ${otherFcmTokens.length} motorista(s)`);
+      }
+
+      // Buscar dados completos da entrega para retornar
+      const [place] = await db
+        .select()
+        .from(requestPlaces)
+        .where(eq(requestPlaces.requestId, requestId))
+        .limit(1);
+
+      const [bill] = await db
+        .select()
+        .from(requestBills)
+        .where(eq(requestBills.requestId, requestId))
+        .limit(1);
+
+      const distance = place
+        ? calculateDistance(
+            parseFloat(place.pickLat),
+            parseFloat(place.pickLng),
+            parseFloat(place.dropLat),
+            parseFloat(place.dropLng)
+          )
+        : 0;
+
+      const estimatedTime = Math.ceil((distance / 40) * 60);
+
+      const settings = await storage.getSettings();
+      const adminCommissionPercentage = settings?.adminCommissionPercentage || 20;
+      const totalAmount = bill ? parseFloat(bill.basePrice) + parseFloat(bill.distancePrice) : 0;
+      const adminCommission = totalAmount * (adminCommissionPercentage / 100);
+      const driverAmount = totalAmount - adminCommission;
+
+      return res.json({
+        success: true,
+        message: "Entrega aceita com sucesso!",
+        data: {
+          requestId: request.id,
+          requestNumber: request.requestNumber,
+          pickupAddress: place?.pickAddress,
+          pickupLat: place ? parseFloat(place.pickLat) : null,
+          pickupLng: place ? parseFloat(place.pickLng) : null,
+          deliveryAddress: place?.dropAddress,
+          deliveryLat: place ? parseFloat(place.dropLat) : null,
+          deliveryLng: place ? parseFloat(place.dropLng) : null,
+          distance: distance.toFixed(2),
+          estimatedTime: estimatedTime.toString(),
+          driverAmount: driverAmount.toFixed(2),
+        },
+      });
+    } catch (error) {
+      console.error("❌ Erro ao aceitar solicitação:", error);
+      return res.status(500).json({
+        message: "Erro ao aceitar solicitação",
+        error: error instanceof Error ? error.message : "Erro desconhecido",
+      });
+    }
+  });
+
+  // POST /api/v1/driver/requests/:id/reject - Rejeitar solicitação
+  app.post("/api/v1/driver/requests/:id/reject", async (req, res) => {
+    try {
+      if (!req.session.driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const requestId = req.params.id;
+      const driverId = req.session.driverId;
+
+      console.log(`❌ Motorista ${driverId} rejeitando solicitação ${requestId}`);
+
+      // Verificar se a notificação existe
+      const [notification] = await db
+        .select()
+        .from(driverNotifications)
+        .where(
+          and(
+            eq(driverNotifications.requestId, requestId),
+            eq(driverNotifications.driverId, driverId)
+          )
+        )
+        .limit(1);
+
+      if (!notification) {
+        return res.status(404).json({
+          message: "Notificação não encontrada",
+        });
+      }
+
+      if (notification.status !== "notified") {
+        return res.status(409).json({
+          message: "Esta notificação já foi respondida",
+        });
+      }
+
+      // Atualizar a notificação como rejeitada
+      await db
+        .update(driverNotifications)
+        .set({
+          status: "rejected",
+          respondedAt: new Date(),
+        })
+        .where(eq(driverNotifications.id, notification.id));
+
+      console.log(`✅ Solicitação rejeitada pelo motorista`);
+
+      return res.json({
+        success: true,
+        message: "Solicitação rejeitada",
+      });
+    } catch (error) {
+      console.error("❌ Erro ao rejeitar solicitação:", error);
+      return res.status(500).json({
+        message: "Erro ao rejeitar solicitação",
+        error: error instanceof Error ? error.message : "Erro desconhecido",
+      });
+    }
+  });
+
+  // POST /api/v1/driver/location - Atualizar localização do motorista
+  app.post("/api/v1/driver/location", async (req, res) => {
+    try {
+      console.log("📍 Requisição de localização recebida");
+      console.log("📍 Headers:", req.headers);
+      console.log("📍 Body:", req.body);
+
+      // Permitir autenticação via sessão OU Bearer token
+      let driverId = req.session.driverId;
+      console.log("📍 Session driverId:", driverId);
+
+      if (!driverId) {
+        const authHeader = req.headers.authorization;
+        console.log("📍 Authorization header:", authHeader);
+
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          const token = authHeader.substring(7);
+          console.log("📍 Token extraído:", token.substring(0, 50) + "...");
+
+          try {
+            const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf8'));
+            console.log("📍 Token decodificado:", decoded);
+
+            if (decoded.type === 'driver' && decoded.id) {
+              driverId = decoded.id;
+              console.log("📍 DriverId do token:", driverId);
+            } else {
+              console.log("📍 Token não contém type=driver ou id");
+            }
+          } catch (e) {
+            console.error("📍 Erro ao decodificar token:", e);
+          }
+        } else {
+          console.log("📍 Sem Bearer token no header");
+        }
+      }
+
+      if (!driverId) {
+        console.log("📍 ERRO: Não autenticado - retornando 401");
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      console.log("📍 Motorista autenticado:", driverId);
+
+      const { latitude, longitude } = req.body;
+
+      if (!latitude || !longitude) {
+        return res.status(400).json({
+          message: "Latitude e longitude são obrigatórias"
+        });
+      }
+
+      await storage.updateDriverLocation(
+        driverId,
+        latitude.toString(),
+        longitude.toString()
+      );
+
+      console.log(`📍 Localização atualizada para motorista ${driverId}: ${latitude}, ${longitude}`);
+
+      return res.json({
+        success: true,
+        message: "Localização atualizada com sucesso"
+      });
+    } catch (error) {
+      console.error("Erro ao atualizar localização:", error);
+      return res.status(500).json({ message: "Erro ao atualizar localização" });
+    }
+  });
+
+  // POST /api/v1/driver/online-offline - Toggle status online/offline
+  app.post("/api/v1/driver/online-offline", async (req, res) => {
+    try {
+      // Permitir autenticação via sessão OU Bearer token
+      let driverId = req.session.driverId;
+
+      if (!driverId) {
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          const token = authHeader.substring(7);
+          try {
+            const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf8'));
+            if (decoded.type === 'driver' && decoded.id) {
+              driverId = decoded.id;
+            }
+          } catch (e) {
+            console.error("Token inválido:", e);
+          }
+        }
+      }
+
+      if (!driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { availability } = req.body;
+
+      // Busca motorista
+      const driver = await storage.getDriver(driverId);
+      if (!driver) {
+        return res.status(404).json({ message: "Motorista não encontrado" });
+      }
+
+      // Verifica se está aprovado
+      if (!driver.approve) {
+        return res.status(403).json({
+          message: "Você precisa ser aprovado pelo administrador antes de ficar online"
+        });
+      }
+
+      // Verifica se tem documentos
+      if (!driver.uploadedDocuments) {
+        return res.status(403).json({
+          message: "Você precisa enviar os documentos necessários antes de ficar online"
+        });
+      }
+
+      // Atualiza disponibilidade
+      const newAvailability = availability === 1 || availability === true;
+      await storage.updateDriver(driverId, {
+        available: newAvailability
+      });
+
+      // 🔴 Emitir evento Socket.IO para o painel em tempo real
+      const { io } = await import('./index');
+      io.emit('driver-status-changed', {
+        driverId: driverId,
+        driverName: driver.name,
+        available: newAvailability,
+        timestamp: new Date().toISOString(),
+      });
+
+      console.log(`📡 Evento emitido: driver-status-changed - ${driver.name} → ${newAvailability ? 'ONLINE' : 'OFFLINE'}`);
+
+      return res.json({
+        success: true,
+        message: newAvailability ? "Você está online" : "Você está offline",
+        data: {
+          available: newAvailability
+        }
+      });
+    } catch (error) {
+      console.error("Erro ao atualizar status:", error);
+      return res.status(500).json({ message: "Erro ao atualizar status" });
+    }
+  });
+
+  // GET /api/v1/driver/status/:id - Consultar status de aprovação do motorista
+  app.get("/api/v1/driver/status/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      // Buscar motorista
+      const [driver] = await db
+        .select()
+        .from(drivers)
+        .where(eq(drivers.id, id))
+        .limit(1);
+
+      if (!driver) {
+        return res.status(404).json({
+          message: "Motorista não encontrado"
+        });
+      }
+
+      // Buscar documentos enviados
+      const uploadedDocs = await db
+        .select({
+          id: driverDocuments.id,
+          documentTypeId: driverDocuments.documentTypeId,
+          status: driverDocuments.status,
+          createdAt: driverDocuments.createdAt,
+        })
+        .from(driverDocuments)
+        .where(eq(driverDocuments.driverId, id));
+
+      // Buscar tipos de documentos obrigatórios
+      const requiredDocTypes = await db
+        .select()
+        .from(driverDocumentTypes)
+        .where(and(
+          eq(driverDocumentTypes.required, true),
+          eq(driverDocumentTypes.active, true)
+        ));
+
+      // Calcular status de cada etapa
+      const registrationDate = driver.createdAt ? new Date(driver.createdAt).toISOString() : new Date().toISOString();
+
+      // Step 1: Cadastro (sempre completed após registro)
+      const registrationStep = {
+        step: "registration",
+        title: "Cadastro Realizado",
+        description: "Seus dados foram enviados com sucesso",
+        status: "completed" as const,
+        date: registrationDate
+      };
+
+      // Step 2: Envio de documentos (completed quando todos documentos obrigatórios foram enviados)
+      const allRequiredDocsUploaded = requiredDocTypes.every(reqDocType =>
+        uploadedDocs.some(upDoc => upDoc.documentTypeId === reqDocType.id)
+      );
+
+      const documentsUploadDate = allRequiredDocsUploaded && uploadedDocs.length > 0
+        ? uploadedDocs[uploadedDocs.length - 1].createdAt
+        : null;
+
+      const dataReviewStep = {
+        step: "data_review",
+        title: "Envio de Documentos",
+        description: allRequiredDocsUploaded
+          ? "Todos os documentos foram enviados"
+          : `Aguardando envio de ${requiredDocTypes.length - uploadedDocs.length} documento(s)`,
+        status: allRequiredDocsUploaded ? "completed" as const : "in_progress" as const,
+        date: documentsUploadDate
+      };
+
+      // Step 3: Análise de documentos (completed quando TODOS documentos obrigatórios estão aprovados)
+      const allRequiredDocsApproved = requiredDocTypes.every(reqDocType => {
+        const doc = uploadedDocs.find(upDoc => upDoc.documentTypeId === reqDocType.id);
+        return doc && doc.status === "approved";
+      });
+
+      const hasRejectedDocs = uploadedDocs.some(doc => doc.status === "rejected");
+
+      let documentReviewStatus: "pending" | "in_progress" | "completed" | "rejected" = "pending";
+      let documentReviewDescription = "Aguardando envio dos documentos";
+
+      if (!allRequiredDocsUploaded) {
+        documentReviewStatus = "pending";
+      } else if (hasRejectedDocs) {
+        documentReviewStatus = "rejected";
+        documentReviewDescription = "Alguns documentos foram rejeitados. Envie novamente.";
+      } else if (allRequiredDocsApproved) {
+        documentReviewStatus = "completed";
+        documentReviewDescription = "Todos os documentos foram aprovados";
+      } else {
+        documentReviewStatus = "in_progress";
+        documentReviewDescription = "Documentos em análise pela equipe";
+      }
+
+      const documentReviewStep = {
+        step: "document_review",
+        title: "Análise de Documentos",
+        description: documentReviewDescription,
+        status: documentReviewStatus,
+        date: allRequiredDocsApproved ? new Date().toISOString() : null
+      };
+
+      // Step 4: Cadastro aprovado (completed quando approve = true)
+      const approvalStep = {
+        step: "approved",
+        title: "Cadastro Aprovado",
+        description: driver.approve
+          ? "Seu cadastro foi aprovado! Você já pode fazer login."
+          : "Aguardando aprovação final do administrador",
+        status: driver.approve ? "completed" as const : "pending" as const,
+        date: driver.approve ? new Date().toISOString() : null
+      };
+
+      // Determinar status geral
+      let overallStatus: "pending_approval" | "under_review" | "approved" | "rejected" = "pending_approval";
+
+      if (driver.approve) {
+        overallStatus = "approved";
+      } else if (hasRejectedDocs) {
+        overallStatus = "rejected";
+      } else if (allRequiredDocsUploaded) {
+        overallStatus = "under_review";
+      } else {
+        overallStatus = "pending_approval";
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          driverId: driver.id,
+          driverName: driver.name,
+          status: overallStatus,
+          canLogin: driver.approve,
+          timeline: [
+            registrationStep,
+            dataReviewStep,
+            documentReviewStep,
+            approvalStep
+          ],
+          statistics: {
+            totalDocuments: requiredDocTypes.length,
+            uploadedDocuments: uploadedDocs.length,
+            approvedDocuments: uploadedDocs.filter(d => d.status === "approved").length,
+            rejectedDocuments: uploadedDocs.filter(d => d.status === "rejected").length,
+            pendingDocuments: uploadedDocs.filter(d => d.status === "pending").length,
+          }
+        }
+      });
+    } catch (error) {
+      console.error("Erro ao consultar status do motorista:", error);
+      return res.status(500).json({
+        message: "Erro ao consultar status"
+      });
+    }
+  });
+
+  // POST /api/v1/driver/logout - Logout do motorista
+  app.post("/api/v1/driver/logout", async (req, res) => {
+    try {
+      if (!req.session.driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      // Marca motorista como offline antes de fazer logout
+      await storage.updateDriver(req.session.driverId, {
+        available: false
+      });
+
+      req.session.destroy((err) => {
+        if (err) {
+          console.error("Erro ao fazer logout:", err);
+          return res.status(500).json({ message: "Erro ao fazer logout" });
+        }
+        return res.json({
+          success: true,
+          message: "Logout realizado com sucesso"
+        });
+      });
+    } catch (error) {
+      console.error("Erro ao fazer logout:", error);
+      return res.status(500).json({ message: "Erro ao fazer logout" });
+    }
+  });
+
+  // ========================================
+  // DRIVER DELIVERY MANAGEMENT ROUTES
+  // ========================================
+
+  // GET /api/v1/driver/deliveries/available - Listar entregas disponíveis para o motorista
+  app.get("/api/v1/driver/deliveries/available", async (req, res) => {
+    try {
+      if (!req.session.driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      // Busca motorista para verificar aprovação
+      const driver = await storage.getDriver(req.session.driverId);
+      if (!driver || !driver.approve) {
+        return res.status(403).json({
+          message: "Você precisa estar aprovado para ver entregas"
+        });
+      }
+
+      // Busca entregas pendentes (sem motorista atribuído)
+      const deliveries = await pool.query(`
+        SELECT
+          r.id,
+          r.request_number,
+          r.customer_name,
+          r.total_distance,
+          r.total_time,
+          r.request_eta_amount,
+          r.created_at,
+          rp.pick_address,
+          rp.drop_address,
+          rp.pick_lat,
+          rp.pick_lng,
+          rp.drop_lat,
+          rp.drop_lng,
+          c.name as company_name,
+          vt.name as vehicle_type_name
+        FROM requests r
+        LEFT JOIN request_places rp ON r.id = rp.request_id
+        LEFT JOIN companies c ON r.company_id = c.id
+        LEFT JOIN vehicle_types vt ON r.zone_type_id = vt.id
+        WHERE r.driver_id IS NULL
+          AND r.is_cancelled = false
+          AND r.is_completed = false
+        ORDER BY r.created_at DESC
+        LIMIT 50
+      `);
+
+      return res.json({
+        success: true,
+        data: deliveries.rows
+      });
+    } catch (error) {
+      console.error("Erro ao listar entregas disponíveis:", error);
+      return res.status(500).json({ message: "Erro ao listar entregas" });
+    }
+  });
+
+  // POST /api/v1/driver/deliveries/:id/accept - Aceitar entrega
+  app.post("/api/v1/driver/deliveries/:id/accept", async (req, res) => {
+    try {
+      if (!req.session.driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const deliveryId = req.params.id;
+
+      // Busca entrega
+      const request = await storage.getRequest(deliveryId);
+      if (!request) {
+        return res.status(404).json({ message: "Entrega não encontrada" });
+      }
+
+      // Verifica se já tem motorista
+      if (request.driverId) {
+        return res.status(400).json({ message: "Esta entrega já foi aceita por outro motorista" });
+      }
+
+      // Atualiza entrega com motorista e status
+      await storage.updateRequest(deliveryId, {
+        driverId: req.session.driverId,
+        isDriverStarted: true,
+        acceptedAt: new Date(),
+      });
+
+      // Busca dados do motorista
+      const driver = await storage.getDriver(req.session.driverId);
+
+      // Emitir evento via Socket.IO para a empresa
+      const io = (app as any).io;
+      if (request.companyId) {
+        io.to(`company-${request.companyId}`).emit("delivery-accepted", {
+          deliveryId,
+          requestNumber: request.requestNumber,
+          driverId: req.session.driverId,
+          driverName: driver?.name,
+          driverMobile: driver?.mobile,
+          status: "Aceita pelo motorista",
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "Entrega aceita com sucesso",
+        data: {
+          deliveryId,
+          status: "accepted"
+        }
+      });
+    } catch (error) {
+      console.error("Erro ao aceitar entrega:", error);
+      return res.status(500).json({ message: "Erro ao aceitar entrega" });
+    }
+  });
+
+  // POST /api/v1/driver/deliveries/:id/reject - Rejeitar entrega
+  app.post("/api/v1/driver/deliveries/:id/reject", async (req, res) => {
+    try {
+      if (!req.session.driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const deliveryId = req.params.id;
+      const { reason } = req.body;
+
+      const request = await storage.getRequest(deliveryId);
+      if (!request) {
+        return res.status(404).json({ message: "Entrega não encontrada" });
+      }
+
+      // Aqui você pode registrar a rejeição em uma tabela de log se quiser
+      // Para não oferecer a mesma entrega novamente para este motorista
+
+      return res.json({
+        success: true,
+        message: "Entrega rejeitada"
+      });
+    } catch (error) {
+      console.error("Erro ao rejeitar entrega:", error);
+      return res.status(500).json({ message: "Erro ao rejeitar entrega" });
+    }
+  });
+
+  // POST /api/v1/driver/deliveries/:id/arrived-pickup - Motorista chegou para retirada
+  app.post("/api/v1/driver/deliveries/:id/arrived-pickup", async (req, res) => {
+    try {
+      if (!req.session.driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const deliveryId = req.params.id;
+
+      const request = await storage.getRequest(deliveryId);
+      if (!request) {
+        return res.status(404).json({ message: "Entrega não encontrada" });
+      }
+
+      if (request.driverId !== req.session.driverId) {
+        return res.status(403).json({ message: "Esta entrega não pertence a você" });
+      }
+
+      await storage.updateRequest(deliveryId, {
+        isDriverArrived: true,
+        arrivedAt: new Date(),
+      });
+
+      // Emitir evento via Socket.IO
+      const io = (app as any).io;
+      if (request.companyId) {
+        io.to(`company-${request.companyId}`).emit("delivery-status-updated", {
+          deliveryId,
+          requestNumber: request.requestNumber,
+          status: "Motorista chegou para retirada",
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "Status atualizado",
+        data: { status: "arrived-pickup" }
+      });
+    } catch (error) {
+      console.error("Erro ao atualizar status:", error);
+      return res.status(500).json({ message: "Erro ao atualizar status" });
+    }
+  });
+
+  // POST /api/v1/driver/deliveries/:id/picked-up - Motorista retirou o pedido
+  app.post("/api/v1/driver/deliveries/:id/picked-up", async (req, res) => {
+    try {
+      if (!req.session.driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const deliveryId = req.params.id;
+
+      const request = await storage.getRequest(deliveryId);
+      if (!request) {
+        return res.status(404).json({ message: "Entrega não encontrada" });
+      }
+
+      if (request.driverId !== req.session.driverId) {
+        return res.status(403).json({ message: "Esta entrega não pertence a você" });
+      }
+
+      await storage.updateRequest(deliveryId, {
+        isTripStart: true,
+        tripStartedAt: new Date(),
+      });
+
+      // Emitir evento via Socket.IO
+      const io = (app as any).io;
+      if (request.companyId) {
+        io.to(`company-${request.companyId}`).emit("delivery-status-updated", {
+          deliveryId,
+          requestNumber: request.requestNumber,
+          status: "Pedido retirado - Indo para entrega",
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "Status atualizado",
+        data: { status: "picked-up" }
+      });
+    } catch (error) {
+      console.error("Erro ao atualizar status:", error);
+      return res.status(500).json({ message: "Erro ao atualizar status" });
+    }
+  });
+
+  // POST /api/v1/driver/deliveries/:id/delivered - Pedido entregue
+  app.post("/api/v1/driver/deliveries/:id/delivered", async (req, res) => {
+    try {
+      if (!req.session.driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const deliveryId = req.params.id;
+
+      const request = await storage.getRequest(deliveryId);
+      if (!request) {
+        return res.status(404).json({ message: "Entrega não encontrada" });
+      }
+
+      if (request.driverId !== req.session.driverId) {
+        return res.status(403).json({ message: "Esta entrega não pertence a você" });
+      }
+
+      // Emitir evento via Socket.IO
+      const io = (app as any).io;
+      if (request.companyId) {
+        io.to(`company-${request.companyId}`).emit("delivery-status-updated", {
+          deliveryId,
+          requestNumber: request.requestNumber,
+          status: "Pedido entregue",
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "Status atualizado",
+        data: { status: "delivered" }
+      });
+    } catch (error) {
+      console.error("Erro ao atualizar status:", error);
+      return res.status(500).json({ message: "Erro ao atualizar status" });
+    }
+  });
+
+  // POST /api/v1/driver/deliveries/:id/complete - Finalizar entrega
+  app.post("/api/v1/driver/deliveries/:id/complete", async (req, res) => {
+    try {
+      if (!req.session.driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const deliveryId = req.params.id;
+
+      const request = await storage.getRequest(deliveryId);
+      if (!request) {
+        return res.status(404).json({ message: "Entrega não encontrada" });
+      }
+
+      if (request.driverId !== req.session.driverId) {
+        return res.status(403).json({ message: "Esta entrega não pertence a você" });
+      }
+
+      await storage.updateRequest(deliveryId, {
+        isCompleted: true,
+        completedAt: new Date(),
+      });
+
+      // Emitir evento via Socket.IO
+      const io = (app as any).io;
+      if (request.companyId) {
+        io.to(`company-${request.companyId}`).emit("delivery-status-updated", {
+          deliveryId,
+          requestNumber: request.requestNumber,
+          status: "Entrega concluída",
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "Entrega finalizada com sucesso",
+        data: { status: "completed" }
+      });
+    } catch (error) {
+      console.error("Erro ao finalizar entrega:", error);
+      return res.status(500).json({ message: "Erro ao finalizar entrega" });
+    }
+  });
+
+  // GET /api/v1/driver/deliveries/current - Obter entrega atual do motorista
+  app.get("/api/v1/driver/deliveries/current", async (req, res) => {
+    try {
+      if (!req.session.driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const result = await pool.query(`
+        SELECT
+          r.id,
+          r.request_number,
+          r.customer_name,
+          r.is_driver_started,
+          r.is_driver_arrived,
+          r.is_trip_start,
+          r.is_completed,
+          r.total_distance,
+          r.total_time,
+          r.request_eta_amount,
+          r.created_at,
+          r.accepted_at,
+          rp.pick_address,
+          rp.drop_address,
+          rp.pick_lat,
+          rp.pick_lng,
+          rp.drop_lat,
+          rp.drop_lng,
+          c.name as company_name,
+          c.phone as company_phone,
+          vt.name as vehicle_type_name
+        FROM requests r
+        LEFT JOIN request_places rp ON r.id = rp.request_id
+        LEFT JOIN companies c ON r.company_id = c.id
+        LEFT JOIN vehicle_types vt ON r.zone_type_id = vt.id
+        WHERE r.driver_id = $1
+          AND r.is_completed = false
+          AND r.is_cancelled = false
+        ORDER BY r.accepted_at DESC
+        LIMIT 1
+      `, [req.session.driverId]);
+
+      if (result.rows.length === 0) {
+        return res.json({
+          success: true,
+          data: null,
+          message: "Nenhuma entrega em andamento"
+        });
+      }
+
+      return res.json({
+        success: true,
+        data: result.rows[0]
+      });
+    } catch (error) {
+      console.error("Erro ao buscar entrega atual:", error);
+      return res.status(500).json({ message: "Erro ao buscar entrega atual" });
+    }
+  });
+
+  // ========================================
   // SETTINGS ROUTES
   // ========================================
 
@@ -1616,7 +4105,85 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Error handling middleware - deve vir após todas as rotas
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    // Erros do Multer
+    if (err instanceof multer.MulterError) {
+      console.error("❌ Erro do Multer:", err.message);
+
+      if (err.code === "LIMIT_FILE_SIZE") {
+        return res.status(400).json({
+          message: "Arquivo muito grande. O tamanho máximo é 10MB",
+          error: err.message
+        });
+      }
+
+      if (err.code === "LIMIT_UNEXPECTED_FILE") {
+        return res.status(400).json({
+          message: "Campo de arquivo inválido. Use o campo 'document' para enviar o arquivo",
+          error: err.message
+        });
+      }
+
+      return res.status(400).json({
+        message: "Erro ao processar arquivo",
+        error: err.message
+      });
+    }
+
+    // Outros erros do multer (fileFilter)
+    if (err.message && err.message.includes("Apenas imagens")) {
+      console.error("❌ Tipo de arquivo inválido:", err.message);
+      return res.status(400).json({
+        message: err.message,
+        error: "Tipo de arquivo não permitido"
+      });
+    }
+
+    // Outros erros
+    console.error("❌ Erro não tratado:", err);
+    return res.status(500).json({
+      message: "Erro interno do servidor",
+      error: process.env.NODE_ENV === "development" ? err.message : "Erro desconhecido"
+    });
+  });
+
   const httpServer = createServer(app);
+
+  // Configurar Socket.IO
+  const io = new SocketIOServer(httpServer, {
+    cors: {
+      origin: "*",
+      methods: ["GET", "POST"]
+    }
+  });
+
+  // Armazenar io globalmente para usar nas rotas
+  (app as any).io = io;
+
+  // Socket.IO connection handling
+  io.on("connection", (socket) => {
+    console.log("✓ Cliente conectado:", socket.id);
+
+    // Empresa entra em uma sala específica
+    socket.on("join-company", (companyId: string) => {
+      socket.join(`company-${companyId}`);
+      console.log(`Empresa ${companyId} entrou na sala`);
+    });
+
+    // Motorista entra em uma sala específica
+    socket.on("join-driver", (driverId: string) => {
+      socket.join(`driver-${driverId}`);
+      console.log(`Motorista ${driverId} entrou na sala`);
+    });
+
+    socket.on("disconnect", () => {
+      console.log("Cliente desconectado:", socket.id);
+    });
+  });
+
+  // Inicializar Firebase
+  initializeFirebase().catch(console.error);
 
   return httpServer;
 }

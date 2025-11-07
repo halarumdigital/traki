@@ -53,6 +53,9 @@ export const serviceLocations = pgTable("service_locations", {
   name: varchar("name", { length: 255 }).notNull(),
   state: varchar("state", { length: 2 }).notNull(), // UF - Estado
 
+  latitude: numeric("latitude", { precision: 10, scale: 7 }),
+  longitude: numeric("longitude", { precision: 10, scale: 7 }),
+
   active: boolean("active").notNull().default(true),
 
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -282,6 +285,7 @@ export const requests = pgTable("requests", {
   // Participants (userId OU companyId deve estar presente)
   userId: varchar("user_id").references(() => users.id),
   companyId: varchar("company_id").references(() => companies.id),
+  customerName: varchar("customer_name", { length: 255 }),
   driverId: varchar("driver_id").references(() => drivers.id),
 
   // Type
@@ -311,6 +315,7 @@ export const requests = pgTable("requests", {
   // Trip Details
   totalDistance: numeric("total_distance", { precision: 10, scale: 2 }),
   totalTime: numeric("total_time", { precision: 10, scale: 2 }),
+  notes: text("notes"), // Observações da entrega
 
   // Payment (simplificado - apenas cash por enquanto)
   paymentOpt: integer("payment_opt").notNull().default(0), // 0: cash
@@ -439,6 +444,26 @@ export const requestRatings = pgTable("request_ratings", {
   comment: text("comment"),
 
   createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ========================================
+// DRIVER NOTIFICATIONS (Notificações de Solicitações para Motoristas)
+// ========================================
+export const driverNotifications = pgTable("driver_notifications", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  requestId: varchar("request_id").notNull().references(() => requests.id, { onDelete: "cascade" }),
+  driverId: varchar("driver_id").notNull().references(() => drivers.id, { onDelete: "cascade" }),
+
+  // Status: notified, accepted, rejected, expired
+  status: varchar("status", { length: 20 }).notNull().default("notified"),
+
+  // Timestamps
+  notifiedAt: timestamp("notified_at").notNull().defaultNow(),
+  respondedAt: timestamp("responded_at"),
+  expiresAt: timestamp("expires_at").notNull(),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
 // ========================================

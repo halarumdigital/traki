@@ -83,6 +83,8 @@ const ESTADOS = [
 const cidadeSchema = z.object({
   name: z.string().min(1, "Nome é obrigatório"),
   state: z.string().min(2, "Estado é obrigatório").max(2),
+  latitude: z.string().optional().nullable(),
+  longitude: z.string().optional().nullable(),
 });
 
 type CidadeForm = z.infer<typeof cidadeSchema>;
@@ -91,6 +93,8 @@ type Cidade = {
   id: string;
   name: string;
   state: string;
+  latitude: string | null;
+  longitude: string | null;
   active: boolean;
   createdAt: string;
   updatedAt: string;
@@ -111,6 +115,8 @@ export default function Cidades() {
     defaultValues: {
       name: "",
       state: "",
+      latitude: "",
+      longitude: "",
     },
   });
 
@@ -174,6 +180,8 @@ export default function Cidades() {
     form.reset({
       name: cidade.name,
       state: cidade.state,
+      latitude: cidade.latitude || "",
+      longitude: cidade.longitude || "",
     });
     setIsDialogOpen(true);
   };
@@ -189,6 +197,8 @@ export default function Cidades() {
     form.reset({
       name: "",
       state: "",
+      latitude: "",
+      longitude: "",
     });
     setIsDialogOpen(true);
   };
@@ -274,6 +284,42 @@ export default function Cidades() {
                               ))}
                             </SelectContent>
                           </Select>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={form.control}
+                      name="latitude"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Latitude</FormLabel>
+                          <FormControl>
+                            <Input
+                              placeholder="Ex: -23.5505"
+                              {...field}
+                              value={field.value || ""}
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={form.control}
+                      name="longitude"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Longitude</FormLabel>
+                          <FormControl>
+                            <Input
+                              placeholder="Ex: -46.6333"
+                              {...field}
+                              value={field.value || ""}
+                            />
+                          </FormControl>
                           <FormMessage />
                         </FormItem>
                       )}

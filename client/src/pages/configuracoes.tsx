@@ -20,6 +20,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import {
   Select,
@@ -577,7 +578,11 @@ export default function Configuracoes() {
                       />
                     )}
 
-                    <h3 className="text-lg font-semibold mt-6">Firebase</h3>
+                    <h3 className="text-lg font-semibold mt-6">Firebase (Notificações Push)</h3>
+                    <p className="text-sm text-muted-foreground mb-4">
+                      Configure o Firebase Admin SDK usando os dados do arquivo JSON da conta de serviço.
+                      Baixe em: Firebase Console → Configurações do Projeto → Contas de Serviço → Gerar Nova Chave Privada
+                    </p>
 
                     <FormField
                       control={form.control}
@@ -587,10 +592,14 @@ export default function Configuracoes() {
                           <FormLabel>Project ID</FormLabel>
                           <FormControl>
                             <Input
+                              placeholder="seu-projeto-firebase"
                               value={field.value || ""}
                               onChange={(e) => field.onChange(e.target.value || null)}
                             />
                           </FormControl>
+                          <FormDescription>
+                            Campo "project_id" do arquivo JSON da conta de serviço
+                          </FormDescription>
                           <FormMessage />
                         </FormItem>
                       )}
@@ -604,10 +613,37 @@ export default function Configuracoes() {
                           <FormLabel>Client Email</FormLabel>
                           <FormControl>
                             <Input
+                              placeholder="firebase-adminsdk-xxxxx@seu-projeto.iam.gserviceaccount.com"
                               value={field.value || ""}
                               onChange={(e) => field.onChange(e.target.value || null)}
                             />
                           </FormControl>
+                          <FormDescription>
+                            Campo "client_email" do arquivo JSON da conta de serviço (e-mail da service account)
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={form.control}
+                      name="firebasePrivateKey"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Private Key (Chave Privada)</FormLabel>
+                          <FormControl>
+                            <Textarea
+                              placeholder="-----BEGIN PRIVATE KEY-----&#10;MIIEvQIBADANBgkqhkiG9w0BAQEF...&#10;-----END PRIVATE KEY-----"
+                              value={field.value || ""}
+                              onChange={(e) => field.onChange(e.target.value || null)}
+                              rows={8}
+                              className="font-mono text-xs"
+                            />
+                          </FormControl>
+                          <FormDescription>
+                            Campo "private_key" do arquivo JSON da conta de serviço. Cole a chave completa incluindo as linhas BEGIN e END.
+                          </FormDescription>
                           <FormMessage />
                         </FormItem>
                       )}
@@ -618,13 +654,17 @@ export default function Configuracoes() {
                       name="firebaseDatabaseUrl"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Database URL</FormLabel>
+                          <FormLabel>Database URL (Opcional)</FormLabel>
                           <FormControl>
                             <Input
+                              placeholder="https://seu-projeto.firebaseio.com"
                               value={field.value || ""}
                               onChange={(e) => field.onChange(e.target.value || null)}
                             />
                           </FormControl>
+                          <FormDescription>
+                            URL do Realtime Database (opcional, necessário apenas se usar Realtime Database)
+                          </FormDescription>
                           <FormMessage />
                         </FormItem>
                       )}

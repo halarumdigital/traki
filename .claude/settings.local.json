@@ -29,7 +29,14 @@
       "Bash(del \"f:\\fretus\\server\\check-company.ts\")",
       "Bash(del \"f:\\fretus\\server\\check-google-key.ts\" \"f:\\fretus\\server\\check-company.ts\")",
       "Bash(timeout:*)",
-      "Bash(del \"f:\\fretus\\server\\check-deliveries.ts\" \"f:\\fretus\\server\\check-request-details.ts\" \"f:\\fretus\\server\\check-tables.ts\")"
+      "Bash(del \"f:\\fretus\\server\\check-deliveries.ts\" \"f:\\fretus\\server\\check-request-details.ts\" \"f:\\fretus\\server\\check-tables.ts\")",
+      "Bash(del \"f:\\fretus\\add-customer-name.ts\")",
+      "Bash(ipconfig:*)",
+      "Bash(del \"f:\\fretus\\test-status-endpoint.ts\" \"f:\\fretus\\check-driver-documents.ts\" \"f:\\fretus\\fix-driver-brand-model.ts\")",
+      "Bash(del \"f:\\fretus\\check-firebase-settings.ts\" \"f:\\fretus\\test-firebase-key.ts\")",
+      "Bash(del \"f:\\fretus\\server\\create-driver-notifications-table.ts\")",
+      "Bash(dir:*)",
+      "Bash(del \"f:\\fretus\\check-cities.ts\" \"f:\\fretus\\add-columns.ts\")"
     ],
     "deny": [],
     "ask": []
