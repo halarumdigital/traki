@@ -56,9 +56,10 @@ interface Delivery {
   totalPrice: string | null;
   pickupAddress: string | null;
   dropoffAddress: string | null;
-  totalTime: string | null;
-  estimatedTime: string | null;
-  distance: string | null;
+  totalDistance: string | null;  // Distância em metros
+  totalTime: string | null;  // Tempo do Google Maps
+  estimatedTime: string | null;  // Tempo estimado (Google Maps + 5 min)
+  distance: string | null;  // Compatibilidade retroativa
   completedAt: string | null;
   cancelledAt: string | null;
   cancelReason: string | null;
@@ -67,6 +68,7 @@ interface Delivery {
 const statusMap: Record<string, { label: string; color: string }> = {
   pending: { label: "Pendente", color: "bg-yellow-100 text-yellow-700" },
   accepted: { label: "Aceita", color: "bg-blue-100 text-blue-700" },
+  arrived_pickup: { label: "Cheguei para retirada", color: "bg-purple-100 text-purple-700" },
   arrived: { label: "Motorista chegou", color: "bg-purple-100 text-purple-700" },
   in_progress: { label: "Em andamento", color: "bg-orange-100 text-orange-700" },
   completed: { label: "Completa", color: "bg-green-600 text-white" },
@@ -813,6 +815,16 @@ export default function EmpresaEntregas() {
       return;
     }
 
+    // Validar se o cálculo da rota foi concluído
+    if (!routeInfo || !routeInfo.price || routeInfo.price <= 0 || !routeInfo.distance || routeInfo.distance <= 0 || !routeInfo.duration || routeInfo.duration <= 0) {
+      toast({
+        variant: "destructive",
+        title: "Cálculo de rota pendente",
+        description: "Por favor, aguarde o cálculo da distância e valor da entrega antes de criar.",
+      });
+      return;
+    }
+
     // Build pickup address with city and state
     const pickupCity = companyData?.city || "";
     const pickupState = companyData?.state || "";
@@ -1095,11 +1107,19 @@ export default function EmpresaEntregas() {
                 </div>
                 <div>
                   <label className="text-sm text-muted-foreground">Distância</label>
-                  <p>{selectedDelivery.totalDistance ? `${selectedDelivery.totalDistance} km` : "-"}</p>
+                  <p>
+                    {selectedDelivery.totalDistance
+                      ? `${(parseFloat(selectedDelivery.totalDistance) / 1000).toFixed(2)} km`
+                      : "-"}
+                  </p>
                 </div>
                 <div>
                   <label className="text-sm text-muted-foreground">Tempo Estimado</label>
-                  <p>{selectedDelivery.totalTime ? `${selectedDelivery.totalTime} min` : "-"}</p>
+                  <p>
+                    {selectedDelivery.estimatedTime
+                      ? `${selectedDelivery.estimatedTime} min`
+                      : "-"}
+                  </p>
                 </div>
                 <div>
                   <label className="text-sm text-muted-foreground">Valor</label>

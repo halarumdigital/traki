@@ -12,12 +12,8 @@ export async function autoCancelPendingDeliveries() {
     const settingsData = await db.select().from(settings).limit(1);
     const autoCancelTimeout = parseInt(String(settingsData[0]?.autoCancelTimeout || 30)); // Default 30 minutos
 
-    console.log(`🔍 Configuração de auto-cancelamento: ${autoCancelTimeout} minutos`);
-
-    // Calcular timestamp baseado no timeout configurado
-    const timeoutAgo = new Date(Date.now() - autoCancelTimeout * 60 * 1000);
-
     // Buscar entregas pendentes criadas há mais de X minutos (configurável)
+    // Usar SQL com NOW() e INTERVAL para garantir que a comparação seja feita em UTC no PostgreSQL
     const pendingDeliveries = await db
       .select({
         id: requests.id,
@@ -33,8 +29,8 @@ export async function autoCancelPendingDeliveries() {
           eq(requests.isCancelled, false),
           // Não foi completada
           eq(requests.isCompleted, false),
-          // Criada há mais de X minutos (configurável)
-          lt(requests.createdAt, timeoutAgo)
+          // Criada há mais de X minutos - usar SQL direto para comparação em UTC
+          sql`${requests.createdAt} < NOW() - INTERVAL '${sql.raw(autoCancelTimeout.toString())} minutes'`
         )
       );
 
@@ -51,12 +47,8 @@ export async function autoCancelPendingDeliveries() {
           })
           .where(eq(requests.id, delivery.id));
 
-        const timeElapsed = Math.floor(
-          (Date.now() - delivery.createdAt.getTime()) / (60 * 1000)
-        );
-
         console.log(
-          `❌ Entrega #${delivery.requestNumber} cancelada automaticamente (${timeElapsed} minutos sem aceite)`
+          `✓ Entrega #${delivery.requestNumber} cancelada automaticamente após ${autoCancelTimeout} minutos`
         );
       }
 

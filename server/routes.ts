@@ -512,6 +512,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // 12. Enviar notificações push para todos os motoristas
       if (fcmTokens.length > 0) {
+        // Firebase requer que todos os valores sejam strings
         const notificationData = {
           type: "new_delivery_request",
           deliveryId: newRequest.id,
@@ -522,7 +523,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           dropoffAddress: deliveryAddress,
           totalDistance: distance.toFixed(1),
           totalTime: Math.ceil(estimatedTime).toString(),
-          estimatedAmount: driverAmount.toFixed(2),
+          estimatedAmount: driverAmount.toFixed(2), // VALOR DO MOTORISTA (o que ele receberá) - app lê este campo
+          totalAmount: totalAmount.toFixed(2), // Valor total da entrega (para referência)
+          driverAmount: driverAmount.toFixed(2), // Mantido por compatibilidade
           acceptanceTimeout: driverAcceptanceTimeout.toString(),
           searchTimeout: minTimeToFindDriver.toString(),
           expiresAt: expiresAt.toISOString(),
@@ -536,7 +539,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         await sendPushToMultipleDevices(
           fcmTokens,
           "🚚 Nova Solicitação de Entrega!",
-          `${company?.name || "Empresa"} - ${distance.toFixed(1)}km - R$ ${driverAmount.toFixed(2)}`,
+          `${company?.name || "Empresa"} - ${distance.toFixed(1)}km - R$ ${totalAmount.toFixed(2)}`,
           notificationData
         );
 
@@ -1979,6 +1982,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           r.is_cancelled AS "isCancelled",
           r.cancel_reason AS "cancelReason",
           r.cancelled_at AS "cancelledAt",
+          r.completed_at AS "completedAt",
+          r.total_distance AS "totalDistance",
+          r.total_time AS "totalTime",
           r.estimated_time AS "estimatedTime",
           rp.pick_address AS "pickupAddress",
           rp.drop_address AS "dropoffAddress",
@@ -2007,6 +2013,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ORDER BY r.created_at DESC
       `, [req.session.companyId]);
 
+      // Log da primeira entrega para debug
+      if (rows.length > 0) {
+        console.log(`📋 Primeira entrega retornada para empresa:
+  - requestNumber: ${rows[0].requestNumber}
+  - totalDistance: ${rows[0].totalDistance}
+  - totalTime: ${rows[0].totalTime}
+  - estimatedTime: ${rows[0].estimatedTime}`);
+      }
+
       return res.json(rows);
     } catch (error) {
       console.error("Erro ao listar entregas:", error);
@@ -2029,9 +2044,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Buscar dados da empresa para pegar cidade/estado
+      // Buscar dados da empresa para pegar cidade/estado e nome
       const [company] = await db
         .select({
+          name: companies.name,
           city: companies.city,
           state: companies.state,
         })
@@ -2176,9 +2192,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const random = Math.floor(Math.random() * 1000);
       const requestNumber = `REQ-${timestamp}-${random}`;
 
-      // Buscar dados da empresa para pegar cidade/estado
+      // Buscar dados da empresa para pegar cidade/estado e nome
       const [company] = await db
         .select({
+          name: companies.name,
           city: companies.city,
           state: companies.state,
         })
@@ -2249,6 +2266,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Create request
+      // IMPORTANTE: O frontend envia distance em KM, mas o banco espera em METROS
+      const totalDistanceInMeters = distance ? parseFloat(distance) * 1000 : null;
+
+      console.log(`💾 Salvando entrega no banco:
+  - distance enviado pelo frontend: ${distance} km
+  - totalDistanceInMeters (salvo no banco): ${totalDistanceInMeters} metros
+  - estimatedTime (salvo no banco): ${estimatedTime} min
+  - estimatedAmount (salvo no banco): R$ ${estimatedAmount}`);
+
       const request = await storage.createRequest({
         requestNumber,
         companyId: req.session.companyId,
@@ -2258,7 +2284,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         deliveryReference: deliveryReference || null,
         serviceLocationId: serviceLocationId || null,
         zoneTypeId: vehicleTypeId,
-        totalDistance: distance || null,
+        totalDistance: totalDistanceInMeters, // Convertido de km para metros
         totalTime: estimatedTime || null,
         requestEtaAmount: driverAmount, // Valor líquido para o motorista (após comissão)
         isLater: false,
@@ -2397,6 +2423,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const notificationTitle = "Nova Entrega Disponível!";
           const notificationBody = `${company?.name || 'Cliente'} solicitou uma entrega. ${pickupAddress.address} → ${dropoffAddress.address}`;
 
+          // Calcular tempo estimado com margem de 5 minutos
+          const timeFromGoogleMaps = estimatedTime ? parseInt(estimatedTime) : 0;
+          const estimatedTimeWithMargin = timeFromGoogleMaps + 5; // Adiciona 5 minutos de margem
+
+          // Firebase requer que todos os valores sejam strings
+          const totalAmountStr = estimatedAmount ? parseFloat(estimatedAmount).toFixed(2) : "0";
+          const driverAmountStr = driverAmount || "0";
+
           // Enviar notificação para motoristas dentro do raio
           await sendPushToMultipleDevices(
             fcmTokens,
@@ -2408,9 +2442,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
               requestNumber: requestNumber,
               pickupAddress: pickupAddress.address,
               dropoffAddress: dropoffAddress.address,
-              estimatedAmount: driverAmount || "0", // Valor LÍQUIDO para o motorista (após comissão)
+              estimatedAmount: driverAmountStr, // VALOR DO MOTORISTA (o que ele receberá) - app lê este campo
+              totalAmount: totalAmountStr, // Valor total da entrega (para referência)
+              driverAmount: driverAmountStr, // Mantido por compatibilidade
               distance: distance?.toString() || "0",
-              estimatedTime: estimatedTime?.toString() || "0",
+              estimatedTime: estimatedTimeWithMargin.toString(), // Google Maps + 5 min
               companyName: company?.name || "", // Nome da empresa que solicitou a entrega
               customerName: customerName || "", // Nome do cliente final (destinatário)
               acceptanceTimeout: driverAcceptanceTimeout.toString(), // Tempo para aceitar (segundos)
@@ -2569,10 +2605,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         companyId: req.session.companyId,
         userId: null,
         customerName: originalRequest.customerName,
+        customerWhatsapp: originalRequest.customerWhatsapp,
+        deliveryReference: originalRequest.deliveryReference,
         serviceLocationId: originalRequest.serviceLocationId,
         zoneTypeId: originalRequest.zoneTypeId,
         totalDistance: originalRequest.totalDistance,
         totalTime: originalRequest.totalTime,
+        estimatedTime: originalRequest.estimatedTime,
         requestEtaAmount: driverAmount,
         isLater: false,
         isDriverStarted: false,
@@ -2683,38 +2722,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Enviar notificações
       if (driversWithinRadius.length > 0) {
+        // Calcular estimatedTime (totalTime + 5 minutos)
+        const totalTimeMinutes = originalRequest.totalTime ? parseInt(originalRequest.totalTime) : 0;
+        const calculatedEstimatedTime = totalTimeMinutes + 5;
+
         const notificationData = {
           requestId: newRequest.id,
           requestNumber: newRequest.requestNumber,
           companyName: company?.name || 'Empresa',
           customerName: newRequest.customerName || 'Cliente',
+          customerWhatsapp: newRequest.customerWhatsapp || '',
+          deliveryReference: newRequest.deliveryReference || '',
           pickupAddress: place.pick_address,
           dropoffAddress: place.drop_address,
-          distance: originalRequest.totalDistance?.toString() || '0',
-          estimatedAmount: bills && bills.length > 0 ? bills[0].total_amount : '0',
+          distance: originalRequest.totalDistance ? (parseFloat(originalRequest.totalDistance) / 1000).toFixed(1) : '0',
+          estimatedTime: calculatedEstimatedTime.toString(),
+          estimatedAmount: driverAmount || '0', // Valor do motorista, não o total
+          totalAmount: bills && bills.length > 0 ? bills[0].total_amount : '0',
           driverAmount: driverAmount || '0',
           pickupLat: pickupLat.toString(),
           pickupLng: pickupLng.toString(),
           dropLat: place.drop_lat?.toString() || '0',
           dropLng: place.drop_lng?.toString() || '0',
+          acceptanceTimeout: driverAcceptanceTimeout.toString(),
+          searchTimeout: minTimeToFindDriver.toString(),
         };
 
+        console.log(`📤 Enviando notificações para ${driversWithinRadius.length} motoristas`);
+        console.log(`📦 Dados da notificação:`, notificationData);
+
         for (const driver of driversWithinRadius) {
-          await sendPushNotification({
-            token: driver.fcm_token,
-            title: '🚚 Nova Entrega Disponível!',
-            body: `De: ${place.pick_address.substring(0, 40)}...`,
-            data: notificationData,
-          });
+          if (driver.fcm_token) {
+            await sendPushNotification(
+              driver.fcm_token,
+              'Nova Entrega Disponível!',
+              `Cliente solicitou uma entrega. ${place.pick_address.substring(0, 40)}... → ${place.drop_address.substring(0, 40)}...`,
+              {
+                ...notificationData,
+                type: 'new_delivery',
+              }
+            );
+          }
 
           await pool.query(
-            `INSERT INTO driver_notifications (id, driver_id, request_id, sent_at, accepted, expires_at)
-             VALUES (gen_random_uuid(), $1, $2, NOW(), false, NOW() + INTERVAL '${driverAcceptanceTimeout} seconds')`,
+            `INSERT INTO driver_notifications (id, driver_id, request_id, status, notified_at, expires_at, created_at, updated_at)
+             VALUES (gen_random_uuid(), $1, $2, 'notified', NOW(), NOW() + INTERVAL '${driverAcceptanceTimeout} seconds', NOW(), NOW())`,
             [driver.id, newRequest.id]
           );
         }
 
-        console.log(`📤 Notificações enviadas para ${driversWithinRadius.length} motoristas`);
+        console.log(`✅ Notificações enviadas para ${driversWithinRadius.length} motoristas`);
       }
 
       return res.json({
@@ -2777,6 +2834,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           r.is_completed AS "isCompleted",
           r.is_cancelled AS "isCancelled",
           r.cancel_reason AS "cancelReason",
+          r.total_distance AS "totalDistance",
+          r.total_time AS "totalTime",
+          r.accepted_at AS "acceptedAt",
+          r.arrived_at AS "arrivedAt",
+          r.trip_started_at AS "tripStartedAt",
+          r.completed_at AS "completedAt",
           rp.pick_address AS "pickupAddress",
           rp.drop_address AS "dropoffAddress",
           rb.total_amount AS "totalPrice",
@@ -2823,6 +2886,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           r.cancelled_at AS "cancelledAt",
           r.is_cancelled AS "isCancelled",
           r.cancel_reason AS "cancelReason",
+          r.total_distance AS "totalDistance",
+          r.total_time AS "totalTime",
+          r.accepted_at AS "acceptedAt",
+          r.arrived_at AS "arrivedAt",
+          r.trip_started_at AS "tripStartedAt",
+          r.completed_at AS "completedAt",
           rp.pick_address AS "pickupAddress",
           rp.drop_address AS "dropoffAddress",
           rb.total_amount AS "totalPrice",
@@ -3071,10 +3140,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         companyId: originalRequest.companyId,
         userId: null,
         customerName: originalRequest.customerName,
+        customerWhatsapp: originalRequest.customerWhatsapp,
+        deliveryReference: originalRequest.deliveryReference,
         serviceLocationId: originalRequest.serviceLocationId,
         zoneTypeId: originalRequest.zoneTypeId,
         totalDistance: originalRequest.totalDistance,
         totalTime: originalRequest.totalTime,
+        estimatedTime: originalRequest.estimatedTime,
         requestEtaAmount: driverAmount,
         isLater: false,
         isDriverStarted: false,
@@ -3173,19 +3245,57 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Enviar notificações para motoristas próximos
       if (driversWithinRadius.length > 0) {
-        const notificationPromises = driversWithinRadius.map(driver =>
-          sendPushNotification(
-            driver.fcm_token,
-            "Nova corrida disponível!",
-            company
-              ? `${company.fantasyName} solicitou uma corrida`
-              : "Nova corrida solicitada",
-            { requestId: newRequest.id, type: "new_request" }
-          )
-        );
+        const minTimeToFindDriver = settingsResult.rows[0]?.min_time_to_find_driver || 120;
+        const driverAcceptanceTimeout = settingsResult.rows[0]?.driver_acceptance_timeout || 30;
 
-        await Promise.all(notificationPromises);
-        console.log(`📢 Notificações enviadas para ${driversWithinRadius.length} motoristas`);
+        // Calcular estimatedTime (totalTime + 5 minutos)
+        const totalTimeMinutes = originalRequest.totalTime ? parseInt(originalRequest.totalTime) : 0;
+        const calculatedEstimatedTime = totalTimeMinutes + 5;
+
+        const notificationData = {
+          requestId: newRequest.id,
+          requestNumber: newRequest.requestNumber,
+          companyName: company?.name || 'Empresa',
+          customerName: newRequest.customerName || 'Cliente',
+          customerWhatsapp: newRequest.customerWhatsapp || '',
+          deliveryReference: newRequest.deliveryReference || '',
+          pickupAddress: place.pick_address,
+          dropoffAddress: place.drop_address,
+          distance: originalRequest.totalDistance ? (parseFloat(originalRequest.totalDistance) / 1000).toFixed(1) : '0',
+          estimatedTime: calculatedEstimatedTime.toString(),
+          estimatedAmount: driverAmount || '0', // Valor do motorista, não o total
+          totalAmount: bills && bills.length > 0 ? bills[0].total_amount : '0',
+          driverAmount: driverAmount || '0',
+          pickupLat: pickupLat.toString(),
+          pickupLng: pickupLng.toString(),
+          dropLat: place.drop_lat?.toString() || '0',
+          dropLng: place.drop_lng?.toString() || '0',
+          acceptanceTimeout: driverAcceptanceTimeout.toString(),
+          searchTimeout: minTimeToFindDriver.toString(),
+          type: 'new_delivery',
+        };
+
+        console.log(`📤 Enviando notificações para ${driversWithinRadius.length} motoristas`);
+        console.log(`📦 Dados da notificação:`, notificationData);
+
+        for (const driver of driversWithinRadius) {
+          if (driver.fcm_token) {
+            await sendPushNotification(
+              driver.fcm_token,
+              'Nova Entrega Disponível!',
+              `Cliente solicitou uma entrega. ${place.pick_address.substring(0, 40)}... → ${place.drop_address.substring(0, 40)}...`,
+              notificationData
+            );
+          }
+
+          await pool.query(
+            `INSERT INTO driver_notifications (id, driver_id, request_id, status, notified_at, expires_at, created_at, updated_at)
+             VALUES (gen_random_uuid(), $1, $2, 'notified', NOW(), NOW() + INTERVAL '${driverAcceptanceTimeout} seconds', NOW(), NOW())`,
+            [driver.id, newRequest.id]
+          );
+        }
+
+        console.log(`✅ Notificações enviadas para ${driversWithinRadius.length} motoristas`);
       }
 
       return res.json({
@@ -4008,7 +4118,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const distanceInKm = request.totalDistance
             ? (parseFloat(request.totalDistance) / 1000).toFixed(2)
             : "0";
-          const timeInMinutes = request.totalTime || "0";
+
+          // Adicionar margem de 5 minutos ao tempo
+          const googleMapsTime = request.totalTime ? parseInt(request.totalTime) : 0;
+          const timeWithMargin = googleMapsTime + 5;
 
           // Obter valores da bill (já inclui comissão calculada)
           const totalAmount = bill ? parseFloat(bill.totalAmount) : 0;
@@ -4030,7 +4143,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             deliveryLat: parseFloat(place.dropLat),
             deliveryLng: parseFloat(place.dropLng),
             distance: distanceInKm,
-            estimatedTime: timeInMinutes,
+            estimatedTime: timeWithMargin.toString(), // Google Maps + 5 min
+            estimatedAmount: driverAmount.toFixed(2), // VALOR DO MOTORISTA - app lê este campo
             totalAmount: totalAmount.toFixed(2),
             driverAmount: driverAmount.toFixed(2),
             adminCommission: adminCommission.toFixed(2),
@@ -4138,6 +4252,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const googleMapsTime = request.totalTime ? parseFloat(request.totalTime) : 0;
       const estimatedTimeWithMargin = googleMapsTime + 5;
 
+      console.log(`📝 Atualizando entrega aceita:
+  - totalDistance no banco: ${request.totalDistance} metros (${request.totalDistance ? (parseFloat(request.totalDistance) / 1000).toFixed(2) : 0} km)
+  - totalTime no banco: ${request.totalTime} min
+  - estimatedTime (será salvo): ${estimatedTimeWithMargin} min (${googleMapsTime} + 5)`);
+
       // Atualizar a solicitação com o motorista
       await db
         .update(requests)
@@ -4228,16 +4347,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
         .where(eq(requestBills.requestId, requestId))
         .limit(1);
 
-      const distance = place
-        ? calculateDistance(
-            parseFloat(place.pickLat),
-            parseFloat(place.pickLng),
-            parseFloat(place.dropLat),
-            parseFloat(place.dropLng)
-          )
-        : 0;
+      // ✅ USAR VALORES DO BANCO em vez de recalcular
+      // Distância: converter de metros para km
+      const distanceInKm = request.totalDistance
+        ? (parseFloat(request.totalDistance) / 1000).toFixed(2)
+        : "0.00";
 
-      const estimatedTime = Math.ceil((distance / 40) * 60);
+      // Tempo estimado: usar o estimatedTime que já foi calculado com margem de 5 min
+      const estimatedTimeMin = request.estimatedTime
+        ? request.estimatedTime
+        : "0";
+
+      console.log(`📤 Resposta da aceitação sendo enviada ao app:
+  - Request Number: ${request.requestNumber}
+  - distance (app receberá): ${distanceInKm} km
+  - estimatedTime (app receberá): ${estimatedTimeMin} min
+  - totalDistance (banco): ${request.totalDistance} metros
+  - estimatedTime (banco): ${request.estimatedTime} min`);
 
       // Usar valor já calculado de requestEtaAmount (valor líquido para o motorista)
       const driverAmount = request.requestEtaAmount ? parseFloat(request.requestEtaAmount) : 0;
@@ -4260,8 +4386,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           deliveryAddress: place?.dropAddress,
           deliveryLat: place ? parseFloat(place.dropLat) : null,
           deliveryLng: place ? parseFloat(place.dropLng) : null,
-          distance: distance.toFixed(2),
-          estimatedTime: estimatedTime.toString(),
+          distance: distanceInKm, // ✅ Valor do banco (2.00 km)
+          estimatedTime: estimatedTimeMin, // ✅ Valor do banco (9 min)
           driverAmount: driverAmount.toFixed(2),
         },
       });
@@ -5306,13 +5432,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const delivery = result.rows[0];
 
+      console.log(`📱 Dados da entrega em andamento do banco:
+  - Request Number: ${delivery.request_number}
+  - total_distance (banco): ${delivery.total_distance} metros
+  - total_time (banco): ${delivery.total_time} min
+  - estimated_time (banco): ${delivery.estimated_time} min`);
+
       // Formatar dados para o app
       const formattedDelivery = {
         ...delivery,
         // Converter distância de metros para km e arredondar
         total_distance: delivery.total_distance ? (parseFloat(delivery.total_distance) / 1000).toFixed(2) : "0",
-        // Tempo estimado com margem (já calculado no accept)
-        estimated_time: delivery.estimated_time || delivery.total_time || "0",
+        // Tempo estimado: usar estimated_time se existir, senão calcular total_time + 5
+        estimated_time: delivery.estimated_time
+          ? delivery.estimated_time
+          : (delivery.total_time ? (parseInt(delivery.total_time) + 5).toString() : "5"),
         // Tempo original do Google Maps
         total_time: delivery.total_time || "0",
         // Valores financeiros
@@ -5320,8 +5454,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         admin_commision: delivery.admin_commision ? parseFloat(delivery.admin_commision).toFixed(2) : "0",
         driver_amount: delivery.total_amount && delivery.admin_commision
           ? (parseFloat(delivery.total_amount) - parseFloat(delivery.admin_commision)).toFixed(2)
-          : "0"
+          : "0",
+        estimated_amount: delivery.total_amount && delivery.admin_commision
+          ? (parseFloat(delivery.total_amount) - parseFloat(delivery.admin_commision)).toFixed(2)
+          : "0" // VALOR DO MOTORISTA - app lê este campo
       };
+
+      console.log(`📱 Dados formatados enviados ao app:
+  - total_distance (app): ${formattedDelivery.total_distance} km
+  - estimated_time (app): ${formattedDelivery.estimated_time} min`);
 
       return res.json({
         success: true,

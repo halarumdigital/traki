@@ -50,7 +50,11 @@
       "Bash(node -e:*)",
       "Bash(del \"f:\\fretus\\add-on-delivery-column.ts\")",
       "Bash(del \"f:\\fretus\\apply-migration.ts\")",
-      "Bash(del \"f:\\fretus\\remove-unused-fields.ts\" \"f:\\fretus\\remove-commission-fields.ts\")"
+      "Bash(del \"f:\\fretus\\remove-unused-fields.ts\" \"f:\\fretus\\remove-commission-fields.ts\")",
+      "Bash(cmd /c \"taskkill /F /PID 16380 && timeout /t 2 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"taskkill /F /PID 54152 && timeout /t 2 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"taskkill /F /PID 44088 && timeout /t 2 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"powershell -Command \"\"Stop-Process -Id 59052 -Force\"\" && timeout /t 2 /nobreak && npm run dev\")"
     ],
     "deny": [],
     "ask": []

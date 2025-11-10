@@ -41,6 +41,12 @@ interface Delivery {
   vehicleTypeName: string;
   companyName: string;
   cancelReason: string | null;
+  totalDistance: string | null;
+  totalTime: string | null;
+  acceptedAt: string | null;
+  arrivedAt: string | null;
+  tripStartedAt: string | null;
+  completedAt: string | null;
 }
 
 // Função helper para formatar datas no horário de Brasília
@@ -411,6 +417,22 @@ export default function EntregasCanceladas() {
                   <p className="font-semibold">{selectedDelivery.vehicleTypeName}</p>
                 </div>
                 <div>
+                  <p className="text-sm text-muted-foreground">Distância</p>
+                  <p className="font-semibold">
+                    {selectedDelivery.totalDistance
+                      ? `${(parseFloat(selectedDelivery.totalDistance) / 1000).toFixed(1)} km`
+                      : "-"}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Tempo Estimado</p>
+                  <p className="font-semibold">
+                    {selectedDelivery.totalTime
+                      ? `${selectedDelivery.totalTime} min`
+                      : "-"}
+                  </p>
+                </div>
+                <div>
                   <p className="text-sm text-muted-foreground">Data Cancelamento</p>
                   <p className="font-semibold">
                     {selectedDelivery.cancelledAt ? formatBrazilianDateTime(selectedDelivery.cancelledAt) : "-"}
@@ -434,6 +456,39 @@ export default function EntregasCanceladas() {
                   </div>
                 </div>
               </div>
+
+              {/* Histórico de Status */}
+              {(selectedDelivery.acceptedAt || selectedDelivery.arrivedAt || selectedDelivery.tripStartedAt || selectedDelivery.completedAt) && (
+                <div className="pt-4 border-t">
+                  <p className="text-sm font-semibold mb-3">Histórico de Status</p>
+                  <div className="space-y-2">
+                    {selectedDelivery.acceptedAt && (
+                      <div className="flex justify-between items-center text-sm">
+                        <span className="text-muted-foreground">Aceito pelo motorista:</span>
+                        <span className="font-medium">{formatBrazilianDateTime(selectedDelivery.acceptedAt)}</span>
+                      </div>
+                    )}
+                    {selectedDelivery.arrivedAt && (
+                      <div className="flex justify-between items-center text-sm">
+                        <span className="text-muted-foreground">Chegou no local de retirada:</span>
+                        <span className="font-medium">{formatBrazilianDateTime(selectedDelivery.arrivedAt)}</span>
+                      </div>
+                    )}
+                    {selectedDelivery.tripStartedAt && (
+                      <div className="flex justify-between items-center text-sm">
+                        <span className="text-muted-foreground">Iniciou a viagem:</span>
+                        <span className="font-medium">{formatBrazilianDateTime(selectedDelivery.tripStartedAt)}</span>
+                      </div>
+                    )}
+                    {selectedDelivery.completedAt && (
+                      <div className="flex justify-between items-center text-sm">
+                        <span className="text-muted-foreground">Entrega concluída:</span>
+                        <span className="font-medium">{formatBrazilianDateTime(selectedDelivery.completedAt)}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {selectedDelivery.totalPrice && (
                 <div className="pt-4 border-t">
