@@ -1983,6 +1983,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           r.cancel_reason AS "cancelReason",
           r.cancelled_at AS "cancelledAt",
           r.completed_at AS "completedAt",
+          r.accepted_at AS "acceptedAt",
+          r.arrived_at AS "arrivedAt",
+          r.trip_started_at AS "tripStartedAt",
           r.total_distance AS "totalDistance",
           r.total_time AS "totalTime",
           r.estimated_time AS "estimatedTime",
@@ -2764,10 +2767,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
             );
           }
 
+          console.log(`⏰ Criando notificação com timeout de ${driverAcceptanceTimeout} segundos`);
+
           await pool.query(
             `INSERT INTO driver_notifications (id, driver_id, request_id, status, notified_at, expires_at, created_at, updated_at)
-             VALUES (gen_random_uuid(), $1, $2, 'notified', NOW(), NOW() + INTERVAL '${driverAcceptanceTimeout} seconds', NOW(), NOW())`,
-            [driver.id, newRequest.id]
+             VALUES (gen_random_uuid(), $1, $2, 'notified',
+                     CURRENT_TIMESTAMP AT TIME ZONE 'UTC',
+                     (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + ($3 || ' seconds')::INTERVAL,
+                     CURRENT_TIMESTAMP AT TIME ZONE 'UTC',
+                     CURRENT_TIMESTAMP AT TIME ZONE 'UTC')`,
+            [driver.id, newRequest.id, driverAcceptanceTimeout.toString()]
           );
         }
 
@@ -2826,7 +2835,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           r.id,
           r.request_number AS "requestNumber",
           r.customer_name AS "customerName",
-          r.created_at AS "createdAt",
+          (r.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') AS "createdAt",
           r.driver_id AS "driverId",
           r.is_driver_started AS "isDriverStarted",
           r.is_driver_arrived AS "isDriverArrived",
@@ -2836,10 +2845,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           r.cancel_reason AS "cancelReason",
           r.total_distance AS "totalDistance",
           r.total_time AS "totalTime",
-          r.accepted_at AS "acceptedAt",
-          r.arrived_at AS "arrivedAt",
-          r.trip_started_at AS "tripStartedAt",
-          r.completed_at AS "completedAt",
+          (r.accepted_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') AS "acceptedAt",
+          (r.arrived_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') AS "arrivedAt",
+          (r.trip_started_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') AS "tripStartedAt",
+          (r.completed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') AS "completedAt",
           rp.pick_address AS "pickupAddress",
           rp.drop_address AS "dropoffAddress",
           rb.total_amount AS "totalPrice",
@@ -2870,6 +2879,55 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // GET /api/admin/deliveries/completed - Listar entregas concluídas
+  app.get("/api/admin/deliveries/completed", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { rows } = await pool.query(`
+        SELECT
+          r.id,
+          r.request_number AS "requestNumber",
+          r.customer_name AS "customerName",
+          (r.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') AS "createdAt",
+          r.total_distance AS "totalDistance",
+          r.total_time AS "totalTime",
+          (r.accepted_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') AS "acceptedAt",
+          (r.arrived_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') AS "arrivedAt",
+          (r.trip_started_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') AS "tripStartedAt",
+          (r.completed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') AS "completedAt",
+          rp.pick_address AS "pickupAddress",
+          rp.drop_address AS "dropoffAddress",
+          rb.total_amount AS "totalPrice",
+          vt.name AS "vehicleTypeName",
+          c.name AS "companyName",
+          r.driver_id AS "driverId",
+          d.name AS "driverName",
+          'completed' AS status
+        FROM requests r
+        LEFT JOIN request_places rp ON r.id = rp.request_id
+        LEFT JOIN request_bills rb ON r.id = rb.request_id
+        LEFT JOIN vehicle_types vt ON r.zone_type_id = vt.id
+        LEFT JOIN companies c ON r.company_id = c.id
+        LEFT JOIN drivers d ON r.driver_id = d.id
+        WHERE r.is_completed = true
+          AND r.is_cancelled = false
+        ORDER BY r.completed_at DESC NULLS LAST, r.created_at DESC
+      `);
+
+      console.log(`📋 Entregas concluídas retornadas: ${rows.length}`);
+      if (rows.length > 0) {
+        console.log(`📋 Primeiras 3 entregas: ${JSON.stringify(rows.slice(0, 3).map(r => ({ id: r.id, requestNumber: r.requestNumber, completedAt: r.completedAt })))}`);
+      }
+      return res.json(rows);
+    } catch (error) {
+      console.error("Erro ao listar entregas concluídas:", error);
+      return res.status(500).json({ message: "Erro ao buscar entregas" });
+    }
+  });
+
   // GET /api/admin/deliveries/cancelled - Listar entregas canceladas
   app.get("/api/admin/deliveries/cancelled", async (req, res) => {
     try {
@@ -2882,16 +2940,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
           r.id,
           r.request_number AS "requestNumber",
           r.customer_name AS "customerName",
-          r.created_at AS "createdAt",
-          r.cancelled_at AS "cancelledAt",
+          (r.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') AS "createdAt",
+          (r.cancelled_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') AS "cancelledAt",
           r.is_cancelled AS "isCancelled",
           r.cancel_reason AS "cancelReason",
           r.total_distance AS "totalDistance",
           r.total_time AS "totalTime",
-          r.accepted_at AS "acceptedAt",
-          r.arrived_at AS "arrivedAt",
-          r.trip_started_at AS "tripStartedAt",
-          r.completed_at AS "completedAt",
+          (r.accepted_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') AS "acceptedAt",
+          (r.arrived_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') AS "arrivedAt",
+          (r.trip_started_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') AS "tripStartedAt",
+          (r.completed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') AS "completedAt",
           rp.pick_address AS "pickupAddress",
           rp.drop_address AS "dropoffAddress",
           rb.total_amount AS "totalPrice",
@@ -3290,8 +3348,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
           await pool.query(
             `INSERT INTO driver_notifications (id, driver_id, request_id, status, notified_at, expires_at, created_at, updated_at)
-             VALUES (gen_random_uuid(), $1, $2, 'notified', NOW(), NOW() + INTERVAL '${driverAcceptanceTimeout} seconds', NOW(), NOW())`,
-            [driver.id, newRequest.id]
+             VALUES (gen_random_uuid(), $1, $2, 'notified',
+                     CURRENT_TIMESTAMP AT TIME ZONE 'UTC',
+                     (CURRENT_TIMESTAMP AT TIME ZONE 'UTC') + ($3 || ' seconds')::INTERVAL,
+                     CURRENT_TIMESTAMP AT TIME ZONE 'UTC',
+                     CURRENT_TIMESTAMP AT TIME ZONE 'UTC')`,
+            [driver.id, newRequest.id, driverAcceptanceTimeout.toString()]
           );
         }
 
@@ -4242,7 +4304,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Verificar se expirou
-      if (notification.expiresAt && new Date(notification.expiresAt) < new Date()) {
+      const now = new Date();
+      const expiresAt = notification.expiresAt ? new Date(notification.expiresAt) : null;
+      console.log(`🕐 Verificando expiração:
+  - Agora: ${now.toISOString()}
+  - Expira em: ${expiresAt ? expiresAt.toISOString() : 'null'}
+  - notification.expiresAt (raw): ${notification.expiresAt}
+  - Expirou? ${expiresAt && expiresAt < now}`);
+
+      if (expiresAt && expiresAt < now) {
         return res.status(410).json({
           message: "Esta solicitação expirou",
         });

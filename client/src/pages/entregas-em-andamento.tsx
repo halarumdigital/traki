@@ -70,6 +70,7 @@ const formatBrazilianDateTime = (date: string | Date) => {
 const statusMap: Record<string, { label: string; color: string }> = {
   pending: { label: "Pendente", color: "bg-yellow-100 text-yellow-700" },
   accepted: { label: "Aceito", color: "bg-blue-100 text-blue-700" },
+  arrived_pickup: { label: "Cheguei para retirada", color: "bg-cyan-100 text-cyan-700" },
   in_progress: { label: "Em Andamento", color: "bg-purple-100 text-purple-700" },
   completed: { label: "Concluído", color: "bg-green-100 text-green-700" },
   cancelled: { label: "Cancelado", color: "bg-red-100 text-red-700" },
@@ -499,38 +500,36 @@ export default function EntregasEmAndamento() {
                 </div>
               </div>
 
-              {/* Histórico de Status */}
-              {(selectedDelivery.acceptedAt || selectedDelivery.arrivedAt || selectedDelivery.tripStartedAt || selectedDelivery.completedAt) && (
-                <div className="pt-4 border-t">
-                  <p className="text-sm font-semibold mb-3">Histórico de Status</p>
-                  <div className="space-y-2">
-                    {selectedDelivery.acceptedAt && (
-                      <div className="flex justify-between items-center text-sm">
-                        <span className="text-muted-foreground">Aceito pelo motorista:</span>
-                        <span className="font-medium">{formatBrazilianDateTime(selectedDelivery.acceptedAt)}</span>
-                      </div>
-                    )}
-                    {selectedDelivery.arrivedAt && (
-                      <div className="flex justify-between items-center text-sm">
-                        <span className="text-muted-foreground">Chegou no local de retirada:</span>
-                        <span className="font-medium">{formatBrazilianDateTime(selectedDelivery.arrivedAt)}</span>
-                      </div>
-                    )}
-                    {selectedDelivery.tripStartedAt && (
-                      <div className="flex justify-between items-center text-sm">
-                        <span className="text-muted-foreground">Iniciou a viagem:</span>
-                        <span className="font-medium">{formatBrazilianDateTime(selectedDelivery.tripStartedAt)}</span>
-                      </div>
-                    )}
-                    {selectedDelivery.completedAt && (
-                      <div className="flex justify-between items-center text-sm">
-                        <span className="text-muted-foreground">Entrega concluída:</span>
-                        <span className="font-medium">{formatBrazilianDateTime(selectedDelivery.completedAt)}</span>
-                      </div>
-                    )}
+              {/* Histórico de Status do Entregador */}
+              <div className="pt-4 border-t">
+                <p className="text-sm font-semibold mb-3">Status do Entregador</p>
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-muted-foreground">Aceito pelo motorista:</span>
+                    <span className="font-medium">
+                      {selectedDelivery.acceptedAt ? formatBrazilianDateTime(selectedDelivery.acceptedAt) : <span className="text-amber-600">Aguardando</span>}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-muted-foreground">Chegou no local de retirada:</span>
+                    <span className="font-medium">
+                      {selectedDelivery.arrivedAt ? formatBrazilianDateTime(selectedDelivery.arrivedAt) : <span className="text-amber-600">Aguardando</span>}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-muted-foreground">Retirou o pedido (iniciou viagem):</span>
+                    <span className="font-medium">
+                      {selectedDelivery.tripStartedAt ? formatBrazilianDateTime(selectedDelivery.tripStartedAt) : <span className="text-amber-600">Aguardando</span>}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-muted-foreground">Entrega concluída:</span>
+                    <span className="font-medium">
+                      {selectedDelivery.completedAt ? formatBrazilianDateTime(selectedDelivery.completedAt) : <span className="text-amber-600">Aguardando</span>}
+                    </span>
                   </div>
                 </div>
-              )}
+              </div>
 
               {selectedDelivery.totalPrice && (
                 <div className="pt-4 border-t">

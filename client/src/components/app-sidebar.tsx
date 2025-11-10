@@ -1,4 +1,4 @@
-import { Home, Users, MapPin, Car, DollarSign, UserCog, Settings, LogOut, ChevronDown, FolderTree, FileText, CarFront, Building2, Map, Package, XCircle, Truck } from "lucide-react";
+import { Home, Users, MapPin, Car, DollarSign, UserCog, Settings, LogOut, ChevronDown, FolderTree, FileText, CarFront, Building2, Map, Package, XCircle, Truck, CheckCircle2 } from "lucide-react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -113,6 +113,11 @@ const menuItems = [
         title: "Em andamento",
         url: "/entregas/em-andamento",
         icon: Truck,
+      },
+      {
+        title: "Concluídas",
+        url: "/entregas/concluidas",
+        icon: CheckCircle2,
       },
       {
         title: "Canceladas",

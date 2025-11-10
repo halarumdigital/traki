@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Eye, MapPin, XCircle, Loader2, CalendarIcon, Search, X, ChevronLeft, ChevronRight, Bell } from "lucide-react";
+import { Eye, MapPin, CheckCircle2, Loader2, CalendarIcon, Search, X, ChevronLeft, ChevronRight } from "lucide-react";
 import { useState, useMemo, useEffect } from "react";
 import {
   Dialog,
@@ -33,20 +33,20 @@ interface Delivery {
   requestNumber: string;
   customerName: string | null;
   createdAt: string;
-  cancelledAt: string | null;
   status: string;
   pickupAddress: string;
   dropoffAddress: string;
   totalPrice: string | null;
   vehicleTypeName: string;
   companyName: string;
-  cancelReason: string | null;
   totalDistance: string | null;
   totalTime: string | null;
   acceptedAt: string | null;
   arrivedAt: string | null;
   tripStartedAt: string | null;
   completedAt: string | null;
+  driverId: string | null;
+  driverName: string | null;
 }
 
 // Função helper para formatar datas no horário de Brasília
@@ -58,10 +58,9 @@ const formatBrazilianDateTime = (date: string | Date) => {
 
 const ITEMS_PER_PAGE = 50;
 
-export default function EntregasCanceladas() {
+export default function EntregasConcluidas() {
   const [selectedDelivery, setSelectedDelivery] = useState<Delivery | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const { toast } = useToast();
 
   // Filtros
   const [searchCompany, setSearchCompany] = useState("");
@@ -73,30 +72,8 @@ export default function EntregasCanceladas() {
   const [currentPage, setCurrentPage] = useState(1);
 
   const { data: deliveries = [], isLoading } = useQuery<Delivery[]>({
-    queryKey: ["/api/admin/deliveries/cancelled"],
+    queryKey: ["/api/admin/deliveries/completed"],
     refetchInterval: 10000, // Atualiza a cada 10 segundos
-  });
-
-  // Mutation para reenviar notificação de cancelamento
-  const resendNotificationMutation = useMutation({
-    mutationFn: async (deliveryId: string) => {
-      return await apiRequest("POST", `/api/admin/deliveries/${deliveryId}/force-cancel-notification`, {});
-    },
-    onSuccess: (data: any) => {
-      toast({
-        title: "Notificação enviada",
-        description: data.firebaseNotificationSent
-          ? `Notificação de cancelamento enviada com sucesso para o motorista ${data.driverName} via Firebase e Socket.IO`
-          : `Notificação enviada via Socket.IO (motorista ${data.driverName} sem FCM token)`,
-      });
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Erro ao enviar notificação",
-        description: error.message || "Não foi possível enviar a notificação de cancelamento.",
-        variant: "destructive",
-      });
-    },
   });
 
   // Filtrar entregas
@@ -172,8 +149,8 @@ export default function EntregasCanceladas() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <XCircle className="h-6 w-6" />
-            Entregas Canceladas
+            <CheckCircle2 className="h-6 w-6" />
+            Entregas Concluídas
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -296,7 +273,7 @@ export default function EntregasCanceladas() {
             </div>
           ) : filteredDeliveries.length === 0 ? (
             <div className="text-center py-8 text-muted-foreground">
-              {deliveries.length === 0 ? "Nenhuma entrega cancelada" : "Nenhum resultado encontrado com os filtros aplicados"}
+              {deliveries.length === 0 ? "Nenhuma entrega concluída" : "Nenhum resultado encontrado com os filtros aplicados"}
             </div>
           ) : (
             <div>
@@ -306,8 +283,8 @@ export default function EntregasCanceladas() {
                     <TableHead>Nº Pedido</TableHead>
                     <TableHead>Cliente</TableHead>
                     <TableHead>Empresa</TableHead>
-                    <TableHead>Data Criação</TableHead>
-                    <TableHead>Data Cancelamento</TableHead>
+                    <TableHead>Motorista</TableHead>
+                    <TableHead>Data Conclusão</TableHead>
                     <TableHead>Valor</TableHead>
                     <TableHead className="text-right">Ações</TableHead>
                   </TableRow>
@@ -323,10 +300,10 @@ export default function EntregasCanceladas() {
                     </TableCell>
                     <TableCell>{delivery.companyName}</TableCell>
                     <TableCell>
-                      {formatBrazilianDateTime(delivery.createdAt)}
+                      {delivery.driverName || <span className="text-muted-foreground italic">-</span>}
                     </TableCell>
                     <TableCell>
-                      {delivery.cancelledAt ? formatBrazilianDateTime(delivery.cancelledAt) : "-"}
+                      {delivery.completedAt ? formatBrazilianDateTime(delivery.completedAt) : "-"}
                     </TableCell>
                     <TableCell>
                       {delivery.totalPrice ? (
@@ -391,7 +368,7 @@ export default function EntregasCanceladas() {
       <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Detalhes da Entrega Cancelada</DialogTitle>
+            <DialogTitle>Detalhes da Entrega Concluída</DialogTitle>
           </DialogHeader>
           {selectedDelivery && (
             <div className="space-y-4">
@@ -402,7 +379,7 @@ export default function EntregasCanceladas() {
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Status</p>
-                  <Badge className="bg-red-100 text-red-700">Cancelado</Badge>
+                  <Badge className="bg-green-100 text-green-700">Concluída</Badge>
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Cliente</p>
@@ -411,6 +388,10 @@ export default function EntregasCanceladas() {
                 <div>
                   <p className="text-sm text-muted-foreground">Empresa</p>
                   <p className="font-semibold">{selectedDelivery.companyName}</p>
+                </div>
+                <div>
+                  <p className="text-sm text-muted-foreground">Motorista</p>
+                  <p className="font-semibold">{selectedDelivery.driverName || "-"}</p>
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Categoria</p>
@@ -433,9 +414,9 @@ export default function EntregasCanceladas() {
                   </p>
                 </div>
                 <div>
-                  <p className="text-sm text-muted-foreground">Data Cancelamento</p>
+                  <p className="text-sm text-muted-foreground">Data Conclusão</p>
                   <p className="font-semibold">
-                    {selectedDelivery.cancelledAt ? formatBrazilianDateTime(selectedDelivery.cancelledAt) : "-"}
+                    {selectedDelivery.completedAt ? formatBrazilianDateTime(selectedDelivery.completedAt) : "-"}
                   </p>
                 </div>
               </div>
@@ -499,36 +480,6 @@ export default function EntregasCanceladas() {
                   </p>
                 </div>
               )}
-
-              {/* Observações de cancelamento */}
-              {selectedDelivery.cancelReason && (
-                <div className="pt-4 border-t">
-                  <p className="text-sm text-muted-foreground mb-2">Observações do Cancelamento</p>
-                  <div className="p-3 bg-muted rounded-md">
-                    <p className="text-sm whitespace-pre-wrap">{selectedDelivery.cancelReason}</p>
-                  </div>
-                </div>
-              )}
-
-              {/* Botão para reenviar notificação de cancelamento */}
-              <div className="pt-4 border-t">
-                <Button
-                  variant="outline"
-                  onClick={() => resendNotificationMutation.mutate(selectedDelivery.id)}
-                  className="w-full gap-2"
-                  disabled={resendNotificationMutation.isPending}
-                >
-                  {resendNotificationMutation.isPending ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Bell className="h-4 w-4" />
-                  )}
-                  Reenviar Notificação de Cancelamento
-                </Button>
-                <p className="text-xs text-muted-foreground mt-2 text-center">
-                  Enviar notificação push ao motorista para remover esta entrega do app
-                </p>
-              </div>
             </div>
           )}
         </DialogContent>

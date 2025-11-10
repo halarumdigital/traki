@@ -395,7 +395,7 @@ export default function Precos() {
                           name="cancellationFee"
                           render={({ field }) => (
                             <FormItem>
-                              <FormLabel>Taxa de Cancelamento (R$)</FormLabel>
+                              <FormLabel>Taxa de Cancelamento (%)</FormLabel>
                               <FormControl>
                                 <Input type="number" step="0.01" {...field} />
                               </FormControl>
