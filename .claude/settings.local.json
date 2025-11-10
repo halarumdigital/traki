@@ -61,7 +61,19 @@
       "Bash(cmd /c \"taskkill /F /PID 64676 && timeout /t 2 /nobreak && npm run dev\")",
       "Bash(copy \"F:\\fretus\\client\\src\\pages\\entregas-canceladas.tsx\" \"F:\\fretus\\client\\src\\pages\\entregas-concluidas.tsx\")",
       "Bash(cmd /c \"taskkill /F /PID 66824 && timeout /t 2 /nobreak && npm run dev\")",
-      "Bash(cmd /c \"taskkill /F /PID 61152 && timeout /t 2 /nobreak && npm run dev\")"
+      "Bash(cmd /c \"taskkill /F /PID 61152 && timeout /t 2 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"taskkill /F /PID 57452 && taskkill /F /PID 3908 && timeout /t 2 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"taskkill /F /PID 65252 && timeout /t 3 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"taskkill /F /PID 49248 && timeout /t 3 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"powershell -Command \"\"Stop-Process -Id 49248,15856 -Force\"\" && timeout /t 3 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"powershell -Command \"\"Stop-Process -Id 76232,65736 -Force\"\" && timeout /t 3 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"taskkill /F /PID 62816 && timeout /t 3 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"taskkill /F /PID 62816 && timeout /t 5 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"taskkill /F /PID 76624 && timeout /t 3 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"powershell -Command \"\"Stop-Process -Id 29588,79728 -Force\"\" && timeout /t 3 /nobreak && npm run dev\")",
+      "Bash(psql:*)",
+      "Bash(del check-timestamps.ts)",
+      "Bash(cmd /c \"del check-timestamps.ts\")"
     ],
     "deny": [],
     "ask": []

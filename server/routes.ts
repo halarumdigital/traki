@@ -1967,13 +1967,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ message: "Não autenticado" });
       }
 
-      // Usar SQL direto para evitar conversão de timezone do Drizzle
+      // Usar SQL direto com conversão de UTC para horário de Brasília
+      // Os timestamps estão armazenados em UTC no banco (timestamp without timezone)
+      // Primeiro indicamos que são UTC, depois convertemos para America/Sao_Paulo
       const { rows } = await pool.query(`
         SELECT
           r.id,
           r.request_number AS "requestNumber",
           r.customer_name AS "customerName",
-          r.created_at AS "createdAt",
+          to_char(r.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "createdAt",
           r.driver_id AS "driverId",
           r.is_driver_started AS "isDriverStarted",
           r.is_driver_arrived AS "isDriverArrived",
@@ -1981,11 +1983,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
           r.is_completed AS "isCompleted",
           r.is_cancelled AS "isCancelled",
           r.cancel_reason AS "cancelReason",
-          r.cancelled_at AS "cancelledAt",
-          r.completed_at AS "completedAt",
-          r.accepted_at AS "acceptedAt",
-          r.arrived_at AS "arrivedAt",
-          r.trip_started_at AS "tripStartedAt",
+          to_char(r.cancelled_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "cancelledAt",
+          to_char(r.completed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "completedAt",
+          to_char(r.accepted_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "acceptedAt",
+          to_char(r.arrived_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "arrivedAt",
+          to_char(r.trip_started_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "tripStartedAt",
           r.total_distance AS "totalDistance",
           r.total_time AS "totalTime",
           r.estimated_time AS "estimatedTime",
@@ -2790,6 +2792,149 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("❌ Erro ao relançar entrega:", error);
       return res.status(500).json({ message: "Erro ao relançar entrega" });
+    }
+  });
+
+  // POST /api/empresa/deliveries/:id/cancel - Cancelar entrega (Company)
+  app.post("/api/empresa/deliveries/:id/cancel", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+      const { cancelReason } = req.body;
+
+      // Buscar entrega
+      const request = await storage.getRequest(id);
+
+      if (!request) {
+        return res.status(404).json({ message: "Entrega não encontrada" });
+      }
+
+      // Verificar se pertence à empresa
+      if (request.companyId !== req.session.companyId) {
+        return res.status(403).json({ message: "Acesso negado" });
+      }
+
+      // Verificar se já está cancelada
+      if (request.isCancelled) {
+        return res.status(400).json({ message: "Esta entrega já está cancelada" });
+      }
+
+      // Verificar se já foi completada
+      if (request.isCompleted) {
+        return res.status(400).json({ message: "Não é possível cancelar uma entrega já completada" });
+      }
+
+      let cancellationFeeAmount = 0;
+      let cancellationFeePercentage = 0;
+
+      // Se um motorista aceitou, cobrar taxa de cancelamento
+      if (request.driverId) {
+        // Buscar taxa de cancelamento do city_prices
+        const { rows: priceRows } = await pool.query(
+          `SELECT cancellation_fee
+           FROM city_prices
+           WHERE service_location_id = $1 AND vehicle_type_id = $2
+           LIMIT 1`,
+          [request.serviceLocationId, request.zoneTypeId]
+        );
+
+        if (priceRows && priceRows.length > 0 && priceRows[0].cancellation_fee) {
+          cancellationFeePercentage = parseFloat(priceRows[0].cancellation_fee);
+
+          // Buscar valor total da entrega
+          const { rows: billRows } = await pool.query(
+            `SELECT total_amount FROM request_bills WHERE request_id = $1 LIMIT 1`,
+            [id]
+          );
+
+          if (billRows && billRows.length > 0 && billRows[0].total_amount) {
+            const totalAmount = parseFloat(billRows[0].total_amount);
+            cancellationFeeAmount = (totalAmount * (cancellationFeePercentage / 100));
+            console.log(`💰 Taxa de cancelamento: ${cancellationFeePercentage}% de R$ ${totalAmount.toFixed(2)} = R$ ${cancellationFeeAmount.toFixed(2)}`);
+          }
+        }
+      }
+
+      // Cancelar a entrega
+      await pool.query(
+        `UPDATE requests
+         SET is_cancelled = true,
+             cancelled_at = NOW(),
+             cancel_reason = $2,
+             cancel_method = 'company'
+         WHERE id = $1`,
+        [id, cancelReason || null]
+      );
+
+      console.log(`🚫 Entrega ${request.requestNumber} cancelada pela empresa ${req.session.companyId}`);
+
+      // Buscar todos os motoristas que foram notificados sobre esta entrega
+      const { rows: notifiedDrivers } = await pool.query(
+        `SELECT DISTINCT dn.driver_id, d.fcm_token, d.name
+         FROM driver_notifications dn
+         JOIN drivers d ON d.id = dn.driver_id
+         WHERE dn.request_id = $1 AND d.fcm_token IS NOT NULL`,
+        [id]
+      );
+
+      // Enviar notificação de cancelamento para TODOS os motoristas que foram notificados
+      if (notifiedDrivers.length > 0) {
+        console.log(`📤 Enviando notificação de cancelamento para ${notifiedDrivers.length} motoristas`);
+
+        // Obter instância do Socket.IO
+        const io = (app as any).io;
+
+        for (const driver of notifiedDrivers) {
+          try {
+            // Enviar notificação Firebase
+            await sendPushNotification(
+              driver.fcm_token,
+              "Entrega Cancelada",
+              "A entrega foi cancelada pela empresa.",
+              {
+                type: "DELIVERY_CANCELLED",
+                requestId: id,
+                message: cancelReason || "Esta entrega foi cancelada pela empresa"
+              }
+            );
+            console.log(`🔔 Notificação de cancelamento enviada para ${driver.name}`);
+
+            // Enviar notificação Socket.IO em tempo real
+            if (io) {
+              io.to(`driver-${driver.driver_id}`).emit('delivery-cancelled', {
+                requestId: id,
+                requestNumber: request.requestNumber,
+                message: cancelReason || "Esta entrega foi cancelada pela empresa"
+              });
+              console.log(`🔌 Socket.IO: Notificação enviada para driver-${driver.driver_id}`);
+            }
+          } catch (error) {
+            console.error(`❌ Erro ao enviar notificação para ${driver.name}:`, error);
+          }
+        }
+
+        // Atualizar status das notificações para 'cancelled'
+        await pool.query(
+          `UPDATE driver_notifications
+           SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+           WHERE request_id = $1`,
+          [id]
+        );
+      } else {
+        console.log(`ℹ️ Nenhum motorista foi notificado sobre esta entrega ainda`);
+      }
+
+      return res.json({
+        message: "Entrega cancelada com sucesso",
+        cancellationFee: cancellationFeeAmount > 0 ? cancellationFeeAmount.toFixed(2) : null,
+        cancellationFeePercentage: cancellationFeePercentage > 0 ? cancellationFeePercentage : null,
+      });
+    } catch (error) {
+      console.error("❌ Erro ao cancelar entrega:", error);
+      return res.status(500).json({ message: "Erro ao cancelar entrega" });
     }
   });
 

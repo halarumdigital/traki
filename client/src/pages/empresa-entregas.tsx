@@ -35,13 +35,17 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Eye, Clock, User, DollarSign, Package, MapPin, Loader2, X, RefreshCw } from "lucide-react";
+import { Plus, Eye, Clock, User, DollarSign, Package, MapPin, Loader2, X, RefreshCw, Ban } from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
-// Função para formatar datas no horário de Brasília (sem conversão de timezone)
+// Função para formatar datas no horário de Brasília
+// O backend já retorna as datas convertidas para America/Sao_Paulo
 const formatBrazilianDateTime = (date: string | Date) => {
+  if (!date) return '-';
   const d = new Date(date);
+  // Se a data for inválida, retornar traço
+  if (isNaN(d.getTime())) return '-';
   return format(d, 'dd/MM/yyyy, HH:mm', { locale: ptBR });
 };
 import "@/styles/google-maps-fix.css";
@@ -98,6 +102,8 @@ export default function EmpresaEntregas() {
   const [viewDialogOpen, setViewDialogOpen] = useState(false);
   const [selectedDelivery, setSelectedDelivery] = useState<Delivery | null>(null);
   const [newDeliveryOpen, setNewDeliveryOpen] = useState(false);
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [deliveryToCancel, setDeliveryToCancel] = useState<Delivery | null>(null);
 
   // Form state
   const [deliveryForm, setDeliveryForm] = useState({
@@ -433,6 +439,19 @@ export default function EmpresaEntregas() {
     setViewDialogOpen(true);
   };
 
+  const handleCancelDelivery = (delivery: Delivery) => {
+    setDeliveryToCancel(delivery);
+    setCancelDialogOpen(true);
+  };
+
+  const confirmCancelDelivery = () => {
+    if (!deliveryToCancel) return;
+    cancelDeliveryMutation.mutate({
+      deliveryId: deliveryToCancel.id,
+      cancelReason: "Cancelado pela empresa",
+    });
+  };
+
   const handleCepLookup = async (pointId: number, cep: string) => {
     // Remove non-numeric characters
     const cleanCep = cep.replace(/\D/g, "");
@@ -517,6 +536,36 @@ export default function EmpresaEntregas() {
         variant: "destructive",
         title: "Erro ao relançar entrega",
         description: error.message || "Ocorreu um erro ao relançar a entrega.",
+      });
+    },
+  });
+
+  const cancelDeliveryMutation = useMutation({
+    mutationFn: async (data: { deliveryId: string; cancelReason?: string }) => {
+      return await apiRequest("POST", `/api/empresa/deliveries/${data.deliveryId}/cancel`, {
+        cancelReason: data.cancelReason,
+      });
+    },
+    onSuccess: (response: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/empresa/deliveries"] });
+
+      let description = "A entrega foi cancelada.";
+      if (response.cancellationFee && parseFloat(response.cancellationFee) > 0) {
+        description = `Taxa de cancelamento: R$ ${parseFloat(response.cancellationFee).toFixed(2)} (${response.cancellationFeePercentage}%)`;
+      }
+
+      toast({
+        title: "Entrega cancelada",
+        description,
+      });
+      setCancelDialogOpen(false);
+      setDeliveryToCancel(null);
+    },
+    onError: (error: any) => {
+      toast({
+        variant: "destructive",
+        title: "Erro ao cancelar entrega",
+        description: error.message || "Ocorreu um erro ao cancelar a entrega.",
       });
     },
   });
@@ -1025,6 +1074,21 @@ export default function EmpresaEntregas() {
                             <span className="ml-1">Relançar</span>
                           </Button>
                         )}
+                        {delivery.status !== 'cancelled' && delivery.status !== 'completed' && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleCancelDelivery(delivery)}
+                            disabled={cancelDeliveryMutation.isPending}
+                          >
+                            {cancelDeliveryMutation.isPending ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Ban className="h-4 w-4" />
+                            )}
+                            <span className="ml-1">Cancelar</span>
+                          </Button>
+                        )}
                         <Button
                           variant="ghost"
                           size="sm"
@@ -1143,6 +1207,66 @@ export default function EmpresaEntregas() {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de Confirmação de Cancelamento */}
+      <Dialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Confirmar Cancelamento</DialogTitle>
+          </DialogHeader>
+          {deliveryToCancel && (
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Você está prestes a cancelar a entrega <span className="font-semibold">#{deliveryToCancel.requestNumber}</span>
+              </p>
+
+              {deliveryToCancel.driverName ? (
+                <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-md">
+                  <p className="text-sm font-semibold text-yellow-800">
+                    Tem certeza que deseja cancelar? O Entregador {deliveryToCancel.driverName} ja esta se deslocando até você.
+                  </p>
+                  {deliveryToCancel.totalPrice && (
+                    <p className="text-sm text-yellow-700 mt-2">
+                      Uma taxa de cancelamento será cobrada sobre o valor da entrega.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-sm">
+                  Nenhum motorista aceitou esta entrega ainda. O cancelamento não terá custos adicionais.
+                </p>
+              )}
+
+              <div className="flex gap-2 justify-end pt-4">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setCancelDialogOpen(false);
+                    setDeliveryToCancel(null);
+                  }}
+                  disabled={cancelDeliveryMutation.isPending}
+                >
+                  Voltar
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={confirmCancelDelivery}
+                  disabled={cancelDeliveryMutation.isPending}
+                >
+                  {cancelDeliveryMutation.isPending ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Cancelando...
+                    </>
+                  ) : (
+                    "Confirmar Cancelamento"
+                  )}
+                </Button>
+              </div>
             </div>
           )}
         </DialogContent>
