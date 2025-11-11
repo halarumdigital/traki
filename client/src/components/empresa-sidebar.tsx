@@ -1,4 +1,4 @@
-import { Home, Package, LogOut, Building2, Menu } from "lucide-react";
+import { Home, Package, LogOut, Building2, Menu, ChevronDown, Truck, CheckCircle2, XCircle } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { useMutation } from "@tanstack/react-query";
@@ -6,6 +6,11 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 
 export function EmpresaSidebar() {
   const [location, setLocation] = useLocation();
@@ -42,7 +47,23 @@ export function EmpresaSidebar() {
     {
       label: "Entregas",
       icon: Package,
-      path: "/empresa/entregas",
+      items: [
+        {
+          label: "Em andamento",
+          icon: Truck,
+          path: "/empresa/entregas/em-andamento",
+        },
+        {
+          label: "Concluídas",
+          icon: CheckCircle2,
+          path: "/empresa/entregas/concluidas",
+        },
+        {
+          label: "Canceladas",
+          icon: XCircle,
+          path: "/empresa/entregas/canceladas",
+        },
+      ],
     },
   ];
 
@@ -80,10 +101,55 @@ export function EmpresaSidebar() {
         <nav className="flex-1 px-4 py-6 space-y-2">
           {navItems.map((item) => {
             const Icon = item.icon;
+
+            // If item has subitems, render as collapsible
+            if ('items' in item && item.items) {
+              return (
+                <Collapsible key={item.label} className="group/collapsible">
+                  <CollapsibleTrigger asChild>
+                    <button
+                      className={cn(
+                        "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors",
+                        "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                      )}
+                    >
+                      <Icon className="h-5 w-5" />
+                      <span>{item.label}</span>
+                      <ChevronDown className="ml-auto h-4 w-4 transition-transform group-data-[state=open]/collapsible:rotate-180" />
+                    </button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="mt-2 space-y-1 pl-6">
+                    {item.items.map((subItem) => {
+                      const SubIcon = subItem.icon;
+                      const isActive = location === subItem.path;
+
+                      return (
+                        <Link key={subItem.path} href={subItem.path}>
+                          <button
+                            onClick={() => setIsMobileOpen(false)}
+                            className={cn(
+                              "w-full flex items-center gap-3 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+                              isActive
+                                ? "bg-primary text-primary-foreground"
+                                : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                            )}
+                          >
+                            <SubIcon className="h-4 w-4" />
+                            <span>{subItem.label}</span>
+                          </button>
+                        </Link>
+                      );
+                    })}
+                  </CollapsibleContent>
+                </Collapsible>
+              );
+            }
+
+            // Regular menu item
             const isActive = location === item.path;
 
             return (
-              <Link key={item.path} href={item.path}>
+              <Link key={item.path!} href={item.path!}>
                 <button
                   onClick={() => setIsMobileOpen(false)}
                   className={cn(

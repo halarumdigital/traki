@@ -2,7 +2,7 @@ import express, { type Express } from "express";
 import { createServer, type Server } from "http";
 import { Server as SocketIOServer } from "socket.io";
 import { storage } from "./storage";
-import { loginSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications, cityPrices, settings } from "@shared/schema";
+import { loginSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications, cityPrices, settings, companyCancellationTypes, insertCompanyCancellationTypeSchema } from "@shared/schema";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import { pool, db } from "./db";
@@ -1095,6 +1095,101 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ========================================
+  // COMPANY CANCELLATION TYPES (TIPOS DE CANCELAMENTO EMPRESA) ROUTES
+  // ========================================
+
+  // GET /api/company-cancellation-types - Listar tipos de cancelamento
+  app.get("/api/company-cancellation-types", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const types = await db.select().from(companyCancellationTypes);
+      return res.json(types);
+    } catch (error) {
+      console.error("Erro ao listar tipos de cancelamento:", error);
+      return res.status(500).json({ message: "Erro ao buscar tipos de cancelamento" });
+    }
+  });
+
+  // POST /api/company-cancellation-types - Criar tipo de cancelamento
+  app.post("/api/company-cancellation-types", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const validatedData = insertCompanyCancellationTypeSchema.parse(req.body);
+
+      const [newType] = await db.insert(companyCancellationTypes).values(validatedData).returning();
+
+      return res.json(newType);
+    } catch (error: any) {
+      console.error("Erro ao criar tipo de cancelamento:", error);
+      if (error.name === "ZodError") {
+        return res.status(400).json({ message: "Dados inválidos", errors: error.errors });
+      }
+      return res.status(500).json({ message: "Erro ao criar tipo de cancelamento" });
+    }
+  });
+
+  // PUT /api/company-cancellation-types/:id - Atualizar tipo de cancelamento
+  app.put("/api/company-cancellation-types/:id", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+      const validatedData = insertCompanyCancellationTypeSchema.partial().parse(req.body);
+
+      const [updated] = await db
+        .update(companyCancellationTypes)
+        .set({ ...validatedData, updatedAt: new Date() })
+        .where(eq(companyCancellationTypes.id, id))
+        .returning();
+
+      if (!updated) {
+        return res.status(404).json({ message: "Tipo de cancelamento não encontrado" });
+      }
+
+      return res.json(updated);
+    } catch (error: any) {
+      console.error("Erro ao atualizar tipo de cancelamento:", error);
+      if (error.name === "ZodError") {
+        return res.status(400).json({ message: "Dados inválidos", errors: error.errors });
+      }
+      return res.status(500).json({ message: "Erro ao atualizar tipo de cancelamento" });
+    }
+  });
+
+  // DELETE /api/company-cancellation-types/:id - Excluir tipo de cancelamento
+  app.delete("/api/company-cancellation-types/:id", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+
+      const [deleted] = await db
+        .delete(companyCancellationTypes)
+        .where(eq(companyCancellationTypes.id, id))
+        .returning();
+
+      if (!deleted) {
+        return res.status(404).json({ message: "Tipo de cancelamento não encontrado" });
+      }
+
+      return res.json({ message: "Tipo de cancelamento excluído com sucesso" });
+    } catch (error) {
+      console.error("Erro ao excluir tipo de cancelamento:", error);
+      return res.status(500).json({ message: "Erro ao excluir tipo de cancelamento" });
+    }
+  });
+
+  // ========================================
   // COMPANIES (EMPRESAS) ROUTES
   // ========================================
 
@@ -2031,6 +2126,194 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Erro ao listar entregas:", error);
       return res.status(500).json({ message: "Erro ao buscar entregas" });
+    }
+  });
+
+  // GET /api/empresa/deliveries/in-progress - Listar entregas em andamento da empresa
+  app.get("/api/empresa/deliveries/in-progress", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { rows } = await pool.query(`
+        SELECT
+          r.id,
+          r.request_number AS "requestNumber",
+          r.customer_name AS "customerName",
+          to_char(r.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "createdAt",
+          r.driver_id AS "driverId",
+          r.is_driver_started AS "isDriverStarted",
+          r.is_driver_arrived AS "isDriverArrived",
+          r.is_trip_start AS "isTripStart",
+          r.is_completed AS "isCompleted",
+          r.is_cancelled AS "isCancelled",
+          r.cancel_reason AS "cancelReason",
+          to_char(r.cancelled_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "cancelledAt",
+          to_char(r.completed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "completedAt",
+          to_char(r.accepted_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "acceptedAt",
+          to_char(r.arrived_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "arrivedAt",
+          to_char(r.trip_started_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "tripStartedAt",
+          r.total_distance AS "totalDistance",
+          r.total_time AS "totalTime",
+          r.estimated_time AS "estimatedTime",
+          rp.pick_address AS "pickupAddress",
+          rp.drop_address AS "dropoffAddress",
+          rp.pick_lat AS "pickupLat",
+          rp.pick_lng AS "pickupLng",
+          rp.drop_lat AS "dropoffLat",
+          rp.drop_lng AS "dropoffLng",
+          rb.total_amount AS "totalPrice",
+          vt.name AS "vehicleTypeName",
+          d.name AS "driverName",
+          d.mobile AS "driverPhone",
+          CASE
+            WHEN r.is_cancelled = true THEN 'cancelled'
+            WHEN r.is_completed = true THEN 'completed'
+            WHEN r.is_driver_arrived = true AND r.is_trip_start = false THEN 'arrived_pickup'
+            WHEN r.is_trip_start = true AND r.is_completed = false THEN 'in_progress'
+            WHEN r.driver_id IS NOT NULL THEN 'accepted'
+            ELSE 'pending'
+          END AS status
+        FROM requests r
+        LEFT JOIN request_places rp ON r.id = rp.request_id
+        LEFT JOIN request_bills rb ON r.id = rb.request_id
+        LEFT JOIN vehicle_types vt ON r.zone_type_id = vt.id
+        LEFT JOIN drivers d ON r.driver_id = d.id
+        WHERE r.company_id = $1
+          AND r.is_completed = false
+          AND r.is_cancelled = false
+        ORDER BY r.created_at DESC
+      `, [req.session.companyId]);
+
+      return res.json(rows);
+    } catch (error) {
+      console.error("Erro ao listar entregas em andamento:", error);
+      return res.status(500).json({ message: "Erro ao buscar entregas em andamento" });
+    }
+  });
+
+  // GET /api/empresa/deliveries/completed - Listar entregas concluídas da empresa
+  app.get("/api/empresa/deliveries/completed", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { rows } = await pool.query(`
+        SELECT
+          r.id,
+          r.request_number AS "requestNumber",
+          r.customer_name AS "customerName",
+          to_char(r.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "createdAt",
+          r.driver_id AS "driverId",
+          r.is_driver_started AS "isDriverStarted",
+          r.is_driver_arrived AS "isDriverArrived",
+          r.is_trip_start AS "isTripStart",
+          r.is_completed AS "isCompleted",
+          r.is_cancelled AS "isCancelled",
+          r.cancel_reason AS "cancelReason",
+          to_char(r.cancelled_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "cancelledAt",
+          to_char(r.completed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "completedAt",
+          to_char(r.accepted_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "acceptedAt",
+          to_char(r.arrived_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "arrivedAt",
+          to_char(r.trip_started_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "tripStartedAt",
+          r.total_distance AS "totalDistance",
+          r.total_time AS "totalTime",
+          r.estimated_time AS "estimatedTime",
+          rp.pick_address AS "pickupAddress",
+          rp.drop_address AS "dropoffAddress",
+          rp.pick_lat AS "pickupLat",
+          rp.pick_lng AS "pickupLng",
+          rp.drop_lat AS "dropoffLat",
+          rp.drop_lng AS "dropoffLng",
+          rb.total_amount AS "totalPrice",
+          vt.name AS "vehicleTypeName",
+          d.name AS "driverName",
+          d.mobile AS "driverPhone",
+          CASE
+            WHEN r.is_cancelled = true THEN 'cancelled'
+            WHEN r.is_completed = true THEN 'completed'
+            WHEN r.is_driver_arrived = true AND r.is_trip_start = false THEN 'arrived_pickup'
+            WHEN r.is_trip_start = true AND r.is_completed = false THEN 'in_progress'
+            WHEN r.driver_id IS NOT NULL THEN 'accepted'
+            ELSE 'pending'
+          END AS status
+        FROM requests r
+        LEFT JOIN request_places rp ON r.id = rp.request_id
+        LEFT JOIN request_bills rb ON r.id = rb.request_id
+        LEFT JOIN vehicle_types vt ON r.zone_type_id = vt.id
+        LEFT JOIN drivers d ON r.driver_id = d.id
+        WHERE r.company_id = $1 AND r.is_completed = true
+        ORDER BY r.completed_at DESC
+      `, [req.session.companyId]);
+
+      return res.json(rows);
+    } catch (error) {
+      console.error("Erro ao listar entregas concluídas:", error);
+      return res.status(500).json({ message: "Erro ao buscar entregas concluídas" });
+    }
+  });
+
+  // GET /api/empresa/deliveries/cancelled - Listar entregas canceladas da empresa
+  app.get("/api/empresa/deliveries/cancelled", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { rows } = await pool.query(`
+        SELECT
+          r.id,
+          r.request_number AS "requestNumber",
+          r.customer_name AS "customerName",
+          to_char(r.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "createdAt",
+          r.driver_id AS "driverId",
+          r.is_driver_started AS "isDriverStarted",
+          r.is_driver_arrived AS "isDriverArrived",
+          r.is_trip_start AS "isTripStart",
+          r.is_completed AS "isCompleted",
+          r.is_cancelled AS "isCancelled",
+          r.cancel_reason AS "cancelReason",
+          to_char(r.cancelled_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "cancelledAt",
+          to_char(r.completed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "completedAt",
+          to_char(r.accepted_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "acceptedAt",
+          to_char(r.arrived_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "arrivedAt",
+          to_char(r.trip_started_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD"T"HH24:MI:SS"-03:00"') AS "tripStartedAt",
+          r.total_distance AS "totalDistance",
+          r.total_time AS "totalTime",
+          r.estimated_time AS "estimatedTime",
+          rp.pick_address AS "pickupAddress",
+          rp.drop_address AS "dropoffAddress",
+          rp.pick_lat AS "pickupLat",
+          rp.pick_lng AS "pickupLng",
+          rp.drop_lat AS "dropoffLat",
+          rp.drop_lng AS "dropoffLng",
+          rb.total_amount AS "totalPrice",
+          vt.name AS "vehicleTypeName",
+          d.name AS "driverName",
+          d.mobile AS "driverPhone",
+          CASE
+            WHEN r.is_cancelled = true THEN 'cancelled'
+            WHEN r.is_completed = true THEN 'completed'
+            WHEN r.is_driver_arrived = true AND r.is_trip_start = false THEN 'arrived_pickup'
+            WHEN r.is_trip_start = true AND r.is_completed = false THEN 'in_progress'
+            WHEN r.driver_id IS NOT NULL THEN 'accepted'
+            ELSE 'pending'
+          END AS status
+        FROM requests r
+        LEFT JOIN request_places rp ON r.id = rp.request_id
+        LEFT JOIN request_bills rb ON r.id = rb.request_id
+        LEFT JOIN vehicle_types vt ON r.zone_type_id = vt.id
+        LEFT JOIN drivers d ON r.driver_id = d.id
+        WHERE r.company_id = $1 AND r.is_cancelled = true
+        ORDER BY r.cancelled_at DESC
+      `, [req.session.companyId]);
+
+      return res.json(rows);
+    } catch (error) {
+      console.error("Erro ao listar entregas canceladas:", error);
+      return res.status(500).json({ message: "Erro ao buscar entregas canceladas" });
     }
   });
 

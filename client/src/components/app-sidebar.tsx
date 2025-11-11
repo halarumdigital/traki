@@ -77,6 +77,11 @@ const menuItems = [
         url: "/documentos-motorista",
         icon: FileText,
       },
+      {
+        title: "Tipos de cancelamento empresa",
+        url: "/tipos-cancelamento-empresa",
+        icon: XCircle,
+      },
     ],
   },
   {

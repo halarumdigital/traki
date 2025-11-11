@@ -14,6 +14,7 @@ import Cidades from "@/pages/cidades";
 import Categorias from "@/pages/categorias";
 import MarcasModelos from "@/pages/marcas-modelos";
 import DocumentosMotorista from "@/pages/documentos-motorista";
+import TiposCancelamentoEmpresa from "@/pages/tipos-cancelamento-empresa";
 import Empresas from "@/pages/empresas";
 import Precos from "@/pages/precos";
 import MotoristasAtivos from "@/pages/motoristas-ativos";
@@ -24,6 +25,9 @@ import Register from "@/pages/register";
 import EmpresaLogin from "@/pages/empresa-login";
 import EmpresaDashboard from "@/pages/empresa-dashboard";
 import EmpresaEntregas from "@/pages/empresa-entregas";
+import EmpresaEntregasEmAndamento from "@/pages/empresa-entregas-em-andamento";
+import EmpresaEntregasConcluidas from "@/pages/empresa-entregas-concluidas";
+import EmpresaEntregasCanceladas from "@/pages/empresa-entregas-canceladas";
 import EntregasEmAndamento from "@/pages/entregas-em-andamento";
 import EntregasConcluidas from "@/pages/entregas-concluidas";
 import EntregasCanceladas from "@/pages/entregas-canceladas";
@@ -70,6 +74,9 @@ function Router() {
           <main className="h-full overflow-auto p-6">
             <Switch>
               <Route path="/empresa/dashboard" component={EmpresaDashboard} />
+              <Route path="/empresa/entregas/em-andamento" component={EmpresaEntregasEmAndamento} />
+              <Route path="/empresa/entregas/concluidas" component={EmpresaEntregasConcluidas} />
+              <Route path="/empresa/entregas/canceladas" component={EmpresaEntregasCanceladas} />
               <Route path="/empresa/entregas" component={EmpresaEntregas} />
               <Route component={NotFound} />
             </Switch>
@@ -97,6 +104,7 @@ function Router() {
               <Route path="/categorias" component={Categorias} />
               <Route path="/marcas-modelos" component={MarcasModelos} />
               <Route path="/documentos-motorista" component={DocumentosMotorista} />
+              <Route path="/tipos-cancelamento-empresa" component={TiposCancelamentoEmpresa} />
               <Route path="/empresas" component={Empresas} />
               <Route path="/precos" component={Precos} />
               <Route path="/motoristas/ativos" component={MotoristasAtivos} />

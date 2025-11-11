@@ -73,7 +73,19 @@
       "Bash(cmd /c \"powershell -Command \"\"Stop-Process -Id 29588,79728 -Force\"\" && timeout /t 3 /nobreak && npm run dev\")",
       "Bash(psql:*)",
       "Bash(del check-timestamps.ts)",
-      "Bash(cmd /c \"del check-timestamps.ts\")"
+      "Bash(cmd /c \"del check-timestamps.ts\")",
+      "Bash(cmd /c \"powershell -Command \"\"Stop-Process -Id 73356 -Force\"\" && timeout /t 3 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"taskkill /F /PID 57452 && taskkill /F /PID 3908 && timeout /t 3 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"powershell -Command \"\"Stop-Process -Id 43016,79728 -Force\"\" && timeout /t 3 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"taskkill /F /PID 43016 && taskkill /F /PID 79728 && timeout /t 3 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"powershell -Command \"\"Stop-Process -Id 53596,38048 -Force\"\" && timeout /t 3 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"del check-cancellation-types.ts\")",
+      "Bash(del create-company-cancellation-types.ts)",
+      "Bash(cmd /c \"del create-company-cancellation-types.ts\")",
+      "Bash(cmd /c \"powershell -Command \"\"Stop-Process -Id 57452,3908 -Force\"\" && timeout /t 3 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"powershell -Command \"\"Stop-Process -Id 57452,3908,53596,38048 -Force\"\" && timeout /t 3 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"taskkill /F /PID 57452 && taskkill /F /PID 3908\")",
+      "Bash(cmd /c \"taskkill /F /PID 73732 && taskkill /F /PID 71908\")"
     ],
     "deny": [],
     "ask": []

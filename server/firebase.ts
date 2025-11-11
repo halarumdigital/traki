@@ -66,9 +66,14 @@ export async function sendPushNotification(
       }
     }
 
-    // DATA-ONLY MESSAGE: Remove o campo "notification" para que o app
-    // tenha controle total e o listener onMessage seja chamado em foreground
+    // MENSAGEM COM NOTIFICATION E DATA: Permite notificações na tela bloqueada
+    // O campo "notification" faz o Firebase mostrar a notificação automaticamente
+    // O campo "data" permite enviar informações customizadas para o app
     const message: admin.messaging.Message = {
+      notification: {
+        title,
+        body,
+      },
       data: {
         title,
         body,
@@ -82,6 +87,7 @@ export async function sendPushNotification(
         payload: {
           aps: {
             contentAvailable: true,
+            sound: "default",
           },
         },
         headers: {
@@ -91,7 +97,7 @@ export async function sendPushNotification(
     };
 
     const response = await admin.messaging().send(message);
-    console.log("✓ Notificação push DATA-ONLY enviada:", response);
+    console.log("✓ Notificação push enviada com notification + data:", response);
     return response;
   } catch (error) {
     console.error("Erro ao enviar notificação push:", error);
@@ -114,9 +120,14 @@ export async function sendPushToMultipleDevices(
       }
     }
 
-    // DATA-ONLY MESSAGE: Remove o campo "notification" para que o app
-    // tenha controle total e o listener onMessage seja chamado em foreground
+    // MENSAGEM COM NOTIFICATION E DATA: Permite notificações na tela bloqueada
+    // O campo "notification" faz o Firebase mostrar a notificação automaticamente
+    // O campo "data" permite enviar informações customizadas para o app
     const message: admin.messaging.MulticastMessage = {
+      notification: {
+        title,
+        body,
+      },
       data: {
         title,
         body,
@@ -130,6 +141,7 @@ export async function sendPushToMultipleDevices(
         payload: {
           aps: {
             contentAvailable: true,
+            sound: "default",
           },
         },
         headers: {

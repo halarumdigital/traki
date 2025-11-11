@@ -643,6 +643,25 @@ export const insertSettingsSchema = z.object({
 });
 
 // ========================================
+// COMPANY CANCELLATION TYPES (Tipos de Cancelamento Empresa)
+// ========================================
+export const companyCancellationTypes = pgTable("company_cancellation_types", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: varchar("name", { length: 255 }).notNull(),
+  description: text("description"),
+  active: boolean("active").notNull().default(true),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertCompanyCancellationTypeSchema = createInsertSchema(companyCancellationTypes, {
+  name: z.string().min(1, "Nome é obrigatório"),
+  description: z.string().optional(),
+  active: z.boolean().default(true),
+});
+
+// ========================================
 // TYPES
 // ========================================
 
@@ -691,3 +710,6 @@ export type RequestRating = typeof requestRatings.$inferSelect;
 
 export type Settings = typeof settings.$inferSelect;
 export type InsertSettings = z.infer<typeof insertSettingsSchema>;
+
+export type CompanyCancellationType = typeof companyCancellationTypes.$inferSelect;
+export type InsertCompanyCancellationType = z.infer<typeof insertCompanyCancellationTypeSchema>;
