@@ -169,7 +169,12 @@ export const companies = pgTable("companies", {
   reference: text("reference"),
 
   active: boolean("active").notNull().default(true),
-  rating: numeric("rating", { precision: 2, scale: 1 }).default("0"),
+
+  // Ratings (avaliações dos motoristas)
+  rating: varchar("rating", { length: 10 }).default("0"), // Média das avaliações
+  ratingTotal: varchar("rating_total", { length: 10 }).default("0"), // Soma total dos pontos
+  noOfRatings: integer("no_of_ratings").default(0), // Número de avaliações
+
   password: varchar("password", { length: 255 }),
 
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -453,6 +458,19 @@ export const companyDriverRatings = pgTable("company_driver_ratings", {
   driverId: varchar("driver_id").notNull().references(() => drivers.id),
   rating: integer("rating").notNull(), // 1-5 estrelas
   comment: text("comment"),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ========================================
+// DRIVER COMPANY RATINGS (Avaliações de Motoristas sobre Empresas)
+// ========================================
+export const driverCompanyRatings = pgTable("driver_company_ratings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  requestId: varchar("request_id").notNull().references(() => requests.id),
+  driverId: varchar("driver_id").notNull().references(() => drivers.id),
+  companyId: varchar("company_id").notNull().references(() => companies.id),
+  rating: integer("rating").notNull(), // 1-5 estrelas
 
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
@@ -812,3 +830,14 @@ export const insertCompanyDriverRatingSchema = createInsertSchema(companyDriverR
 
 export type CompanyDriverRating = typeof companyDriverRatings.$inferSelect;
 export type InsertCompanyDriverRating = z.infer<typeof insertCompanyDriverRatingSchema>;
+
+// Driver Company Ratings
+export const insertDriverCompanyRatingSchema = createInsertSchema(driverCompanyRatings, {
+  rating: z.number().int().min(1, "Avaliação deve ser entre 1 e 5").max(5, "Avaliação deve ser entre 1 e 5"),
+}).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type DriverCompanyRating = typeof driverCompanyRatings.$inferSelect;
+export type InsertDriverCompanyRating = z.infer<typeof insertDriverCompanyRatingSchema>;

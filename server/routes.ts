@@ -2,7 +2,7 @@ import express, { type Express } from "express";
 import { createServer, type Server } from "http";
 import { Server as SocketIOServer } from "socket.io";
 import { storage } from "./storage";
-import { loginSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications, cityPrices, settings, companyCancellationTypes, insertCompanyCancellationTypeSchema, promotions, insertPromotionSchema, companyDriverRatings } from "@shared/schema";
+import { loginSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications, cityPrices, settings, companyCancellationTypes, insertCompanyCancellationTypeSchema, promotions, insertPromotionSchema, companyDriverRatings, driverCompanyRatings } from "@shared/schema";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import { pool, db } from "./db";
@@ -6835,6 +6835,137 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Erro ao finalizar entrega:", error);
       return res.status(500).json({ message: "Erro ao finalizar entrega" });
+    }
+  });
+
+  // POST /api/v1/driver/deliveries/:id/rate - Motorista avaliar empresa
+  app.post("/api/v1/driver/deliveries/:id/rate", async (req, res) => {
+    try {
+      let driverId = req.session.driverId;
+
+      // Se não tiver sessão, tenta obter do token Bearer
+      if (!driverId) {
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          const token = authHeader.substring(7);
+          try {
+            const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf8'));
+            if (decoded.type === 'driver' && decoded.id) {
+              driverId = decoded.id;
+            }
+          } catch (e) {
+            console.error("Token inválido:", e);
+          }
+        }
+      }
+
+      if (!driverId) {
+        return res.status(401).json({
+          success: false,
+          message: "Não autenticado"
+        });
+      }
+
+      const deliveryId = req.params.id;
+      const { rating } = req.body;
+
+      // Validar dados
+      if (!rating || rating < 1 || rating > 5) {
+        return res.status(400).json({
+          success: false,
+          message: "Avaliação deve ser entre 1 e 5 estrelas"
+        });
+      }
+
+      // Verificar se a entrega existe e pertence ao motorista
+      const [request] = await db
+        .select()
+        .from(requests)
+        .where(
+          and(
+            eq(requests.id, deliveryId),
+            eq(requests.driverId, driverId)
+          )
+        )
+        .limit(1);
+
+      if (!request) {
+        return res.status(404).json({
+          success: false,
+          message: "Entrega não encontrada"
+        });
+      }
+
+      if (!request.isCompleted) {
+        return res.status(400).json({
+          success: false,
+          message: "Apenas entregas concluídas podem ser avaliadas"
+        });
+      }
+
+      if (!request.companyId) {
+        return res.status(400).json({
+          success: false,
+          message: "Esta entrega não possui empresa"
+        });
+      }
+
+      if (request.driverRated) {
+        return res.status(400).json({
+          success: false,
+          message: "Você já avaliou esta entrega"
+        });
+      }
+
+      // Criar avaliação
+      const [newRating] = await db
+        .insert(driverCompanyRatings)
+        .values({
+          requestId: deliveryId,
+          driverId: driverId,
+          companyId: request.companyId,
+          rating,
+        })
+        .returning();
+
+      // Marcar entrega como avaliada pelo motorista
+      await db
+        .update(requests)
+        .set({ driverRated: true })
+        .where(eq(requests.id, deliveryId));
+
+      // Atualizar avaliação média da empresa
+      const ratingsResult = await db
+        .select({
+          avgRating: sql<number>`AVG(${driverCompanyRatings.rating})`,
+          totalRatings: sql<number>`COUNT(*)`,
+          sumRating: sql<number>`SUM(${driverCompanyRatings.rating})`,
+        })
+        .from(driverCompanyRatings)
+        .where(eq(driverCompanyRatings.companyId, request.companyId));
+
+      const { avgRating, totalRatings, sumRating } = ratingsResult[0];
+
+      await db
+        .update(companies)
+        .set({
+          rating: avgRating ? Number(avgRating).toFixed(2) : "0",
+          ratingTotal: sumRating ? Number(sumRating).toString() : "0",
+          noOfRatings: totalRatings || 0,
+        })
+        .where(eq(companies.id, request.companyId));
+
+      return res.json({
+        success: true,
+        message: "Avaliação registrada com sucesso",
+        data: { rating: newRating },
+      });
+    } catch (error) {
+      console.error("Erro ao avaliar empresa:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Erro ao registrar avaliação"
+      });
     }
   });
 

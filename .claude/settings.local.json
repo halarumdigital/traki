@@ -121,7 +121,8 @@
       "Bash(del apply-rating-migration.ts)",
       "Bash(cmd /c \"del apply-rating-migration.ts\")",
       "Bash(cmd /c \"taskkill /F /PID 23056 && timeout /t 3 /nobreak && npm run dev\")",
-      "Bash(cmd /c \"del fix-driver-ratings.ts\")"
+      "Bash(cmd /c \"del fix-driver-ratings.ts\")",
+      "Bash(cmd /c \"del apply-driver-company-rating-migration.ts\")"
     ],
     "deny": [],
     "ask": []
