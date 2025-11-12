@@ -7161,6 +7161,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ message: "Não autenticado" });
       }
 
+      // ✅ CORRIGIDO: Remover LIMIT 1 para retornar TODAS as entregas ativas
       const result = await pool.query(`
         SELECT
           r.id,
@@ -7200,55 +7201,53 @@ export async function registerRoutes(app: Express): Promise<Server> {
         WHERE r.driver_id = $1
           AND r.is_completed = false
           AND r.is_cancelled = false
-        ORDER BY r.accepted_at DESC
-        LIMIT 1
+        ORDER BY r.accepted_at ASC
       `, [driverId]);
 
       if (result.rows.length === 0) {
         return res.json({
           success: true,
-          data: null,
+          data: [],
           message: "Nenhuma entrega em andamento"
         });
       }
 
-      const delivery = result.rows[0];
+      console.log(`📱 ${result.rows.length} entrega(s) ativa(s) encontrada(s) para o motorista ${driverId}`);
 
-      console.log(`📱 Dados da entrega em andamento do banco:
-  - Request Number: ${delivery.request_number}
+      // Formatar cada entrega
+      const formattedDeliveries = result.rows.map(delivery => {
+        console.log(`📦 Entrega ${delivery.request_number}:
   - total_distance (banco): ${delivery.total_distance} metros
   - total_time (banco): ${delivery.total_time} min
-  - estimated_time (banco): ${delivery.estimated_time} min`);
+  - estimated_time (banco): ${delivery.estimated_time} min
+  - is_trip_start: ${delivery.is_trip_start}`);
 
-      // Formatar dados para o app
-      const formattedDelivery = {
-        ...delivery,
-        // Converter distância de metros para km e arredondar
-        total_distance: delivery.total_distance ? (parseFloat(delivery.total_distance) / 1000).toFixed(2) : "0",
-        // Tempo estimado: usar estimated_time se existir, senão calcular total_time + 5
-        estimated_time: delivery.estimated_time
-          ? delivery.estimated_time
-          : (delivery.total_time ? (parseInt(delivery.total_time) + 5).toString() : "5"),
-        // Tempo original do Google Maps
-        total_time: delivery.total_time || "0",
-        // Valores financeiros
-        total_amount: delivery.total_amount ? parseFloat(delivery.total_amount).toFixed(2) : "0",
-        admin_commision: delivery.admin_commision ? parseFloat(delivery.admin_commision).toFixed(2) : "0",
-        driver_amount: delivery.total_amount && delivery.admin_commision
-          ? (parseFloat(delivery.total_amount) - parseFloat(delivery.admin_commision)).toFixed(2)
-          : "0",
-        estimated_amount: delivery.total_amount && delivery.admin_commision
-          ? (parseFloat(delivery.total_amount) - parseFloat(delivery.admin_commision)).toFixed(2)
-          : "0" // VALOR DO MOTORISTA - app lê este campo
-      };
-
-      console.log(`📱 Dados formatados enviados ao app:
-  - total_distance (app): ${formattedDelivery.total_distance} km
-  - estimated_time (app): ${formattedDelivery.estimated_time} min`);
+        return {
+          ...delivery,
+          // Converter distância de metros para km e arredondar
+          total_distance: delivery.total_distance ? (parseFloat(delivery.total_distance) / 1000).toFixed(2) : "0",
+          // Tempo estimado: usar estimated_time se existir, senão calcular total_time + 5
+          estimated_time: delivery.estimated_time
+            ? delivery.estimated_time
+            : (delivery.total_time ? (parseInt(delivery.total_time) + 5).toString() : "5"),
+          // Tempo original do Google Maps
+          total_time: delivery.total_time || "0",
+          // Valores financeiros
+          total_amount: delivery.total_amount ? parseFloat(delivery.total_amount).toFixed(2) : "0",
+          admin_commision: delivery.admin_commision ? parseFloat(delivery.admin_commision).toFixed(2) : "0",
+          driver_amount: delivery.total_amount && delivery.admin_commision
+            ? (parseFloat(delivery.total_amount) - parseFloat(delivery.admin_commision)).toFixed(2)
+            : "0",
+          estimated_amount: delivery.total_amount && delivery.admin_commision
+            ? (parseFloat(delivery.total_amount) - parseFloat(delivery.admin_commision)).toFixed(2)
+            : "0" // VALOR DO MOTORISTA - app lê este campo
+        };
+      });
 
       return res.json({
         success: true,
-        data: formattedDelivery
+        data: formattedDeliveries,
+        count: formattedDeliveries.length
       });
     } catch (error) {
       console.error("Erro ao buscar entrega atual:", error);
