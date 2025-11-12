@@ -6168,6 +6168,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
+      // Emitir evento para TODOS os motoristas removerem a entrega da lista deles
+      io.emit("delivery-taken", {
+        deliveryId,
+        takenBy: req.session.driverId,
+        timestamp: new Date().toISOString()
+      });
+
       return res.json({
         success: true,
         message: "Entrega aceita com sucesso",
@@ -6702,6 +6709,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
+      // Verificar se já foi completada (previne dupla contagem)
+      const wasAlreadyCompleted = request.isCompleted;
+
       // Marcar como retornado e completado
       await storage.updateRequest(deliveryId, {
         returnedAt: new Date(),
@@ -6709,8 +6719,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         completedAt: new Date(),
       });
 
-      // Incrementar contador mensal de entregas do motorista
-      await storage.incrementDriverMonthlyDeliveries(driverId);
+      // Incrementar contador APENAS se não estava completada antes
+      if (!wasAlreadyCompleted) {
+        await storage.incrementDriverMonthlyDeliveries(driverId);
+        console.log(`✅ Contador mensal incrementado para motorista ${driverId}`);
+      } else {
+        console.log(`⚠️ Entrega já estava completa, contador não incrementado`);
+      }
 
       // Marcar motorista como disponível (não mais em entrega)
       await db
@@ -6805,16 +6820,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
+      // Verificar se já foi completada (previne dupla contagem)
+      const wasAlreadyCompleted = request.isCompleted;
+
       await storage.updateRequest(deliveryId, {
         isCompleted: true,
         completedAt: new Date(),
       });
 
+      // Incrementar contador APENAS se não estava completada antes
+      if (!wasAlreadyCompleted) {
+        await storage.incrementDriverMonthlyDeliveries(driverId);
+        console.log(`✅ Contador mensal incrementado para motorista ${driverId}`);
+      } else {
+        console.log(`⚠️ Entrega já estava completa, contador não incrementado`);
+      }
+
       // Atualizar status do motorista para disponível novamente (marcador verde no mapa)
       await db
         .update(drivers)
         .set({ onDelivery: false })
-        .where(eq(drivers.id, req.session.driverId));
+        .where(eq(drivers.id, driverId));
 
       // Emitir evento via Socket.IO
       const io = (app as any).io;

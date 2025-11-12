@@ -122,7 +122,11 @@
       "Bash(cmd /c \"del apply-rating-migration.ts\")",
       "Bash(cmd /c \"taskkill /F /PID 23056 && timeout /t 3 /nobreak && npm run dev\")",
       "Bash(cmd /c \"del fix-driver-ratings.ts\")",
-      "Bash(cmd /c \"del apply-driver-company-rating-migration.ts\")"
+      "Bash(cmd /c \"del apply-driver-company-rating-migration.ts\")",
+      "Bash(cmd /c \"powershell -Command \"\"Stop-Process -Id 46772 -Force\"\" && timeout /t 3 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"taskkill /F /PID 46772\")",
+      "Bash(cmd /c \"powershell -Command \"\"Stop-Process -Id 33116,44012 -Force\"\" && timeout /t 3 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"del check-driver-ze1.ts fix-ze1-counter.ts\")"
     ],
     "deny": [],
     "ask": []
