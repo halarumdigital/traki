@@ -469,11 +469,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const settings = await storage.getSettings();
       const driverSearchRadius = settings?.driverSearchRadius || 10; // km
       const driverAcceptanceTimeout = settings?.driverAcceptanceTimeout || 30; // segundos
+      const minTimeToFindDriver = settings?.minTimeToFindDriver || 120; // segundos
       const adminCommissionPercentage = settings?.adminCommissionPercentage || 20; // %
 
       console.log("⚙️ Configurações:");
       console.log(`   - Raio de busca: ${driverSearchRadius} km`);
       console.log(`   - Tempo de aceitação: ${driverAcceptanceTimeout}s`);
+      console.log(`   - Tempo mínimo para encontrar motorista: ${minTimeToFindDriver}s`);
       console.log(`   - Comissão admin: ${adminCommissionPercentage}%`);
 
       // 2. Calcular distância e tempo estimado
@@ -497,33 +499,67 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log(`   - Motorista recebe: R$ ${driverAmount.toFixed(2)}`);
 
       // 4. Buscar motoristas dentro do raio usando Haversine
+      // Excluir motoristas que têm entregas NÃO retiradas
+      // Motoristas com entregas retiradas PODEM receber novas notificações
       const driversQuery = await db.execute(sql`
         SELECT
-          id,
-          name,
-          email,
-          fcm_token,
-          latitude,
-          longitude,
+          d.id,
+          d.name,
+          d.email,
+          d.fcm_token,
+          d.latitude,
+          d.longitude,
           (6371 * acos(
             cos(radians(${pickupLat})) *
-            cos(radians(latitude)) *
-            cos(radians(longitude) - radians(${pickupLng})) +
+            cos(radians(d.latitude)) *
+            cos(radians(d.longitude) - radians(${pickupLng})) +
             sin(radians(${pickupLat})) *
-            sin(radians(latitude))
+            sin(radians(d.latitude))
           )) AS distance
-        FROM drivers
-        WHERE active = true
-          AND approve = true
-          AND available = true
-          AND fcm_token IS NOT NULL
-          AND latitude IS NOT NULL
-          AND longitude IS NOT NULL
+        FROM drivers d
+        WHERE d.active = true
+          AND d.approve = true
+          AND d.available = true
+          AND d.fcm_token IS NOT NULL
+          AND d.latitude IS NOT NULL
+          AND d.longitude IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM requests r
+            WHERE r.driver_id = d.id
+              AND r.is_completed = false
+              AND r.is_cancelled = false
+              AND r.is_trip_start = false
+          )
         HAVING distance <= ${driverSearchRadius}
         ORDER BY distance ASC
       `);
 
       const availableDrivers = driversQuery.rows as any[];
+
+      // Log de motoristas excluídos por terem entregas não retiradas
+      const allDriversInRadius = await db.execute(sql`
+        SELECT COUNT(*) as total
+        FROM drivers d
+        WHERE d.active = true
+          AND d.approve = true
+          AND d.available = true
+          AND d.fcm_token IS NOT NULL
+          AND d.latitude IS NOT NULL
+          AND d.longitude IS NOT NULL
+          AND (6371 * acos(
+            cos(radians(${pickupLat})) *
+            cos(radians(d.latitude)) *
+            cos(radians(d.longitude) - radians(${pickupLng})) +
+            sin(radians(${pickupLat})) *
+            sin(radians(d.latitude))
+          )) <= ${driverSearchRadius}
+      `);
+      const totalInRadius = parseInt(allDriversInRadius.rows[0]?.total || "0");
+      const excludedByDelivery = totalInRadius - availableDrivers.length;
+      if (excludedByDelivery > 0) {
+        console.log(`🚫 ${excludedByDelivery} motorista(s) no raio excluído(s) por ter entrega não retirada`);
+      }
 
       if (availableDrivers.length === 0) {
         console.log("❌ Nenhum motorista disponível no raio de busca");
@@ -3195,6 +3231,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const driverAcceptanceTimeout = settingsResult.rows[0]?.driver_acceptance_timeout || 30; // Default 30s
 
       // Buscar motoristas disponíveis e online com localização
+      // Excluir motoristas que têm entregas não retiradas
       const availableDrivers = await pool.query(`
         SELECT id, name, fcm_token, latitude, longitude
         FROM drivers
@@ -3204,7 +3241,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
           AND fcm_token IS NOT NULL
           AND latitude IS NOT NULL
           AND longitude IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM requests
+            WHERE requests.driver_id = drivers.id
+              AND requests.is_completed = false
+              AND requests.is_cancelled = false
+              AND requests.is_trip_start = false
+          )
       `);
+
+      // Log de motoristas excluídos por terem entregas não retiradas
+      const allDriversCount = await pool.query(`
+        SELECT COUNT(*) as total
+        FROM drivers
+        WHERE available = true
+          AND approve = true
+          AND active = true
+          AND fcm_token IS NOT NULL
+          AND latitude IS NOT NULL
+          AND longitude IS NOT NULL
+      `);
+      const excludedByDelivery = parseInt(allDriversCount.rows[0].total) - availableDrivers.rows.length;
+      if (excludedByDelivery > 0) {
+        console.log(`🚫 ${excludedByDelivery} motorista(s) excluído(s) por ter entrega não retirada`);
+      }
 
       // Filtrar motoristas dentro do raio de pesquisa
       console.log('📦 pickupAddress recebido:', JSON.stringify(pickupAddress, null, 2));
@@ -3517,6 +3578,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const driverAcceptanceTimeout = settingsResult.rows[0]?.driver_acceptance_timeout || 30;
 
       // Buscar motoristas disponíveis
+      // Excluir motoristas que têm entregas NÃO retiradas
+      // Motoristas com entregas retiradas PODEM receber novas notificações
       const availableDrivers = await pool.query(`
         SELECT id, name, fcm_token, latitude, longitude
         FROM drivers
@@ -3526,6 +3589,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
           AND fcm_token IS NOT NULL
           AND latitude IS NOT NULL
           AND longitude IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM requests
+            WHERE requests.driver_id = drivers.id
+              AND requests.is_completed = false
+              AND requests.is_cancelled = false
+              AND requests.is_trip_start = false
+          )
       `);
 
       // Buscar dados da empresa
@@ -3680,16 +3751,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log(`🚫 Entrega ${request.requestNumber} cancelada pela empresa ${req.session.companyId}`);
 
-      // Buscar todos os motoristas que foram notificados sobre esta entrega
-      const { rows: notifiedDrivers } = await pool.query(
-        `SELECT DISTINCT dn.driver_id, d.fcm_token, d.name
-         FROM driver_notifications dn
-         JOIN drivers d ON d.id = dn.driver_id
-         WHERE dn.request_id = $1 AND d.fcm_token IS NOT NULL`,
-        [id]
-      );
+      // Se a entrega foi aceita, notificar APENAS o motorista responsável
+      // Se ainda não foi aceita, notificar todos que foram notificados
+      let notifiedDrivers = [];
 
-      // Enviar notificação de cancelamento para TODOS os motoristas que foram notificados
+      if (request.driverId) {
+        // Entrega em andamento - notificar APENAS o motorista responsável
+        const { rows } = await pool.query(
+          `SELECT id as driver_id, fcm_token, name
+           FROM drivers
+           WHERE id = $1 AND fcm_token IS NOT NULL`,
+          [request.driverId]
+        );
+        notifiedDrivers = rows;
+        console.log(`📍 Entrega aceita - notificando apenas motorista responsável: ${rows[0]?.name || request.driverId}`);
+      } else {
+        // Entrega ainda não aceita - notificar todos os motoristas que foram notificados
+        const { rows } = await pool.query(
+          `SELECT DISTINCT dn.driver_id, d.fcm_token, d.name
+           FROM driver_notifications dn
+           JOIN drivers d ON d.id = dn.driver_id
+           WHERE dn.request_id = $1 AND d.fcm_token IS NOT NULL`,
+          [id]
+        );
+        notifiedDrivers = rows;
+        console.log(`📍 Entrega não aceita - notificando todos os motoristas que receberam notificação`);
+      }
+
+      // Enviar notificação de cancelamento
       if (notifiedDrivers.length > 0) {
         console.log(`📤 Enviando notificação de cancelamento para ${notifiedDrivers.length} motoristas`);
 
@@ -4223,6 +4312,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         : 10;
 
       // Buscar motoristas disponíveis
+      // Excluir motoristas que têm entregas NÃO retiradas
+      // Motoristas com entregas retiradas PODEM receber novas notificações
       const availableDrivers = await pool.query(`
         SELECT id, name, fcm_token, latitude, longitude
         FROM drivers
@@ -4232,6 +4323,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
           AND fcm_token IS NOT NULL
           AND latitude IS NOT NULL
           AND longitude IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM requests
+            WHERE requests.driver_id = drivers.id
+              AND requests.is_completed = false
+              AND requests.is_cancelled = false
+              AND requests.is_trip_start = false
+          )
       `);
 
       // Buscar dados da empresa se houver
@@ -5394,6 +5493,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const requestId = req.params.id;
       console.log(`✅ Motorista ${driverId} aceitando solicitação ${requestId}`);
 
+      // 🔒 NOVA VALIDAÇÃO: Verificar se o motorista já tem uma entrega em andamento
+      const [activeDelivery] = await db
+        .select()
+        .from(requests)
+        .where(
+          and(
+            eq(requests.driverId, driverId),
+            eq(requests.isCompleted, false),
+            eq(requests.isCancelled, false)
+          )
+        )
+        .limit(1);
+
+      if (activeDelivery) {
+        // Se tiver uma entrega ativa, verificar se já foi retirada
+        if (!activeDelivery.isTripStart) {
+          console.log(`❌ Motorista ${driverId} tentou aceitar nova entrega sem ter retirado a anterior (${activeDelivery.requestNumber})`);
+          return res.status(409).json({
+            message: "Você já possui uma entrega em andamento. Retire o pedido antes de aceitar uma nova entrega.",
+            code: "DELIVERY_IN_PROGRESS_NOT_PICKED_UP",
+            activeDeliveryId: activeDelivery.id,
+            activeDeliveryNumber: activeDelivery.requestNumber
+          });
+        }
+
+        // Se já retirou, pode aceitar nova entrega (mas ainda não pode abrir a nova até finalizar a atual)
+        console.log(`⚠️ Motorista ${driverId} já tem entrega retirada (${activeDelivery.requestNumber}), mas pode aceitar nova`);
+      }
+
       // Verificar se a solicitação ainda está disponível
       const [request] = await db
         .select()
@@ -5528,14 +5656,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
         await sendPushToMultipleDevices(
           otherFcmTokens,
           "Entrega Aceita",
-          "Esta entrega foi aceita por outro motorista",
+          "A entrega foi aceita por outro entregador",
           {
             type: "delivery_taken",
             requestId: requestId,
+            requestNumber: request.requestNumber,
           }
         );
 
-        console.log(`✅ Notificação enviada para ${otherFcmTokens.length} motorista(s)`);
+        console.log(`✅ Notificação FCM enviada para ${otherFcmTokens.length} motorista(s)`);
+      }
+
+      // Emitir evento Socket.IO para TODOS os motoristas removerem a entrega da lista
+      const io = (app as any).io;
+      if (io) {
+        io.emit("delivery-taken", {
+          requestId: requestId,
+          requestNumber: request.requestNumber,
+          takenBy: driverId,
+          timestamp: new Date().toISOString()
+        });
+        console.log(`✅ Evento Socket.IO "delivery-taken" emitido para todos os motoristas`);
       }
 
       // Buscar dados completos da entrega para retornar
