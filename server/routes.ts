@@ -12,6 +12,7 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 import { initializeFirebase, sendPushNotification, sendPushToMultipleDevices } from "./firebase";
+import { sentryUserContext } from "./sentry-middleware";
 
 const PgSession = connectPgSimple(session);
 
@@ -157,6 +158,9 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       },
     })
   );
+
+  // Add Sentry user context middleware
+  app.use(sentryUserContext);
 
   app.post("/api/auth/login", async (req, res) => {
     try {
@@ -8052,6 +8056,46 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       res.status(500).json({ message: "Erro ao buscar motoristas" });
     }
   });
+
+  // ========================
+  // Sentry Test Endpoints (Development Only)
+  // ========================
+  if (process.env.NODE_ENV !== "production") {
+    // Test endpoint for Sentry error capture
+    app.get("/api/test/sentry-error", (req, res) => {
+      throw new Error("Teste de erro do Sentry - Backend API");
+    });
+
+    // Test endpoint for Sentry message
+    app.get("/api/test/sentry-message", async (req, res) => {
+      const Sentry = await import("@sentry/node");
+      Sentry.captureMessage("Teste de mensagem do Sentry - Backend API", "info");
+      res.json({ message: "Mensagem de teste enviada ao Sentry" });
+    });
+
+    // Test endpoint for async error
+    app.get("/api/test/sentry-async-error", async (req, res) => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      throw new Error("Teste de erro assíncrono do Sentry - Backend API");
+    });
+
+    // Test endpoint with custom context
+    app.get("/api/test/sentry-context", async (req, res) => {
+      const Sentry = await import("@sentry/node");
+      Sentry.withScope((scope) => {
+        scope.setContext("test_context", {
+          testId: Date.now(),
+          testType: "manual",
+          environment: process.env.NODE_ENV
+        });
+        scope.setLevel("warning");
+        Sentry.captureException(new Error("Teste de erro com contexto customizado"));
+      });
+      res.json({ message: "Erro com contexto enviado ao Sentry" });
+    });
+
+    console.log("🐛 Sentry test endpoints enabled (development mode)");
+  }
 
   // Configurar Socket.IO
   const io = new SocketIOServer(httpServer, {

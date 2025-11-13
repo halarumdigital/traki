@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
+import { useSentry } from "@/hooks/use-sentry";
 import { Eye, EyeOff, Lock, Mail, Loader2 } from "lucide-react";
 import { useLocation, Link } from "wouter";
 
@@ -25,6 +26,7 @@ export default function Login() {
   const [rememberMe, setRememberMe] = useState(false);
   const { toast } = useToast();
   const [, setLocation] = useLocation();
+  const { setUser, addBreadcrumb } = useSentry();
 
   const savedEmail = typeof window !== "undefined" ? localStorage.getItem("savedEmail") : null;
   const shouldRemember = typeof window !== "undefined" ? localStorage.getItem("rememberMe") === "true" : false;
@@ -47,6 +49,24 @@ export default function Login() {
       return await res.json();
     },
     onSuccess: async (data) => {
+      // Set user in Sentry for error tracking
+      setUser({
+        id: data.id,
+        email: data.email,
+        username: data.nome,
+      });
+
+      // Add breadcrumb for successful login
+      addBreadcrumb({
+        message: "User logged in successfully",
+        category: "auth",
+        level: "info",
+        data: {
+          userId: data.id,
+          email: data.email,
+        },
+      });
+
       if (rememberMe) {
         localStorage.setItem("rememberMe", "true");
         localStorage.setItem("savedEmail", data.email);
@@ -54,7 +74,7 @@ export default function Login() {
         localStorage.removeItem("rememberMe");
         localStorage.removeItem("savedEmail");
       }
-      
+
       await queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
       toast({
         title: "Login bem-sucedido!",

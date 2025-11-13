@@ -5,6 +5,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Shield, User as UserIcon, Mail, Calendar, Key } from "lucide-react";
 import { useEffect } from "react";
+import { TestSentry } from "@/components/TestSentry";
 
 interface UserData {
   id: string;
@@ -59,6 +60,9 @@ export default function Dashboard() {
         <h1 className="text-3xl font-bold text-foreground">Dashboard</h1>
         <p className="text-muted-foreground mt-2">Visão geral da sua conta</p>
       </div>
+
+      {/* Test Sentry component (only in development) */}
+      <TestSentry />
 
       <div className="grid gap-6 md:grid-cols-2">
         <Card>

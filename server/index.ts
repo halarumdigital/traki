@@ -1,4 +1,7 @@
+// IMPORTANT: Sentry must be imported first
+import "./instrument.js";
 import "dotenv/config";
+import * as Sentry from "@sentry/node";
 import express, { type Request, Response, NextFunction } from "express";
 import { createServer } from "http";
 import { Server as SocketIOServer } from "socket.io";
@@ -72,12 +75,29 @@ app.use((req, res, next) => {
 (async () => {
   await registerRoutes(app, httpServer);
 
-  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  // Setup Sentry error handler - must be before any other error middleware and after all controllers
+  Sentry.setupExpressErrorHandler(app);
+
+  // Custom error handler
+  app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
 
-    res.status(status).json({ message });
-    throw err;
+    // Add Sentry error ID to response
+    const sentryId = (res as any).sentry;
+
+    // Log error details
+    console.error(`Error ${status}: ${message}`, {
+      method: req.method,
+      path: req.path,
+      sentryId,
+      error: err
+    });
+
+    res.status(status).json({
+      message,
+      ...(sentryId && { sentryId }) // Include Sentry ID for support
+    });
   });
 
   // importantly only setup vite in development and after
