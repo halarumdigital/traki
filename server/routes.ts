@@ -2415,6 +2415,53 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     }
   });
 
+  // POST /api/drivers/:id/device - Salvar device_id (IMEI) do motorista
+  app.post("/api/drivers/:id/device", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { deviceId } = req.body;
+
+      if (!deviceId) {
+        return res.status(400).json({ message: "Device ID é obrigatório" });
+      }
+
+      // Verificar se o motorista existe
+      const [driver] = await db
+        .select()
+        .from(drivers)
+        .where(eq(drivers.id, id))
+        .limit(1);
+
+      if (!driver) {
+        return res.status(404).json({ message: "Motorista não encontrado" });
+      }
+
+      // Atualizar o device_id do motorista
+      const [updatedDriver] = await db
+        .update(drivers)
+        .set({
+          deviceId: deviceId,
+          updatedAt: new Date(),
+        })
+        .where(eq(drivers.id, id))
+        .returning();
+
+      console.log(`✅ Device ID atualizado para motorista ${id}: ${deviceId}`);
+
+      return res.json({
+        success: true,
+        message: "Device ID salvo com sucesso",
+        data: {
+          driverId: updatedDriver.id,
+          deviceId: updatedDriver.deviceId,
+        }
+      });
+    } catch (error) {
+      console.error("Erro ao salvar device ID:", error);
+      return res.status(500).json({ message: "Erro ao salvar device ID" });
+    }
+  });
+
   // ========================================
   // EMPRESA DELIVERIES ROUTES
   // ========================================

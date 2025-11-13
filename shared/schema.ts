@@ -265,6 +265,9 @@ export const drivers = pgTable("drivers", {
   apnToken: text("apn_token"),
   timezone: varchar("timezone", { length: 100 }).default("America/Sao_Paulo"),
 
+  // Device Info
+  deviceId: varchar("device_id", { length: 255 }), // IMEI ou ID único do dispositivo
+
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });

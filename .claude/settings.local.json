@@ -157,7 +157,9 @@
       "Bash(cmd /c \"del check-single-stop.mjs check-multi-stops.mjs check-specific-delivery.mjs check-latest.mjs\")",
       "Bash(cmd /c \"taskkill /F /PID 26648 && taskkill /F /PID 16308 && timeout /t 3 /nobreak && npm run dev\")",
       "Bash(cmd /c \"taskkill /F /PID 32080 && timeout /t 3 /nobreak && npm run dev\")",
-      "Bash(cmd /c \"powershell -Command \"\"Stop-Process -Id 32080 -Force\"\" && timeout /t 3 /nobreak && npm run dev\")"
+      "Bash(cmd /c \"powershell -Command \"\"Stop-Process -Id 32080 -Force\"\" && timeout /t 3 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"taskkill /F /PID 29872 && timeout /t 3 /nobreak && npm run dev\")",
+      "Bash(cmd /c \"del apply-db-push.mjs test-device-endpoint.mjs get-driver-id.mjs apply-device-id-migration.mjs add-device-id-column.sql verify-device-id.mjs\")"
     ],
     "deny": [],
     "ask": []
