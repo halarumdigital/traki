@@ -2,11 +2,11 @@ import express, { type Express } from "express";
 import { createServer, type Server } from "http";
 import { Server as SocketIOServer } from "socket.io";
 import { storage } from "./storage";
-import { loginSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications, cityPrices, settings, companyCancellationTypes, insertCompanyCancellationTypeSchema, promotions, insertPromotionSchema, companyDriverRatings, driverCompanyRatings, deliveryStops, faqs, insertFaqSchema } from "@shared/schema";
+import { loginSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications, cityPrices, settings, companyCancellationTypes, insertCompanyCancellationTypeSchema, promotions, insertPromotionSchema, companyDriverRatings, driverCompanyRatings, deliveryStops, faqs, insertFaqSchema, pushNotifications } from "@shared/schema";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import { pool, db } from "./db";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, or, sql } from "drizzle-orm";
 import bcrypt from "bcrypt";
 import multer from "multer";
 import path from "path";
@@ -7729,6 +7729,114 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     }
   });
 
+  // ===========================================
+  // GET /api/v1/driver/notifications - Listar notificações do motorista
+  // ===========================================
+  app.get("/api/v1/driver/notifications", async (req, res) => {
+    console.log("📬 Buscando notificações do motorista...");
+    try {
+      let driverId = req.session?.driverId;
+
+      // Se não tiver sessão, tenta obter do token Bearer
+      if (!driverId) {
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          const token = authHeader.substring(7);
+          try {
+            const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf8'));
+            if (decoded.type === 'driver' && decoded.id) {
+              driverId = decoded.id;
+            }
+          } catch (e) {
+            console.error("Token inválido:", e);
+            return res.status(401).json({
+              success: false,
+              message: "Token inválido"
+            });
+          }
+        }
+      }
+
+      if (!driverId) {
+        return res.status(401).json({
+          success: false,
+          message: "Token não fornecido"
+        });
+      }
+
+      // Buscar o driver pelo ID
+      const [driver] = await db
+        .select()
+        .from(drivers)
+        .where(eq(drivers.id, driverId))
+        .limit(1);
+
+      if (!driver) {
+        return res.status(401).json({
+          success: false,
+          message: "Motorista não encontrado"
+        });
+      }
+
+      // Buscar notificações enviadas para este motorista ou para a cidade dele
+      const notifications = await db
+        .select({
+          id: pushNotifications.id,
+          title: pushNotifications.title,
+          body: pushNotifications.body,
+          data: pushNotifications.data,
+          targetType: pushNotifications.targetType,
+          status: pushNotifications.status,
+          createdAt: pushNotifications.createdAt,
+          sentAt: pushNotifications.sentAt
+        })
+        .from(pushNotifications)
+        .where(
+          and(
+            eq(pushNotifications.status, 'sent'),
+            or(
+              // Notificações específicas para este motorista
+              and(
+                eq(pushNotifications.targetType, 'driver'),
+                eq(pushNotifications.targetId, driver.id)
+              ),
+              // Notificações para a cidade do motorista
+              and(
+                eq(pushNotifications.targetType, 'city'),
+                eq(pushNotifications.targetCityId, driver.serviceLocationId)
+              )
+            )
+          )
+        )
+        .orderBy(sql`${pushNotifications.createdAt} DESC`)
+        .limit(50); // Limitar a 50 notificações mais recentes
+
+      // Formatar as notificações para o app
+      const formattedNotifications = notifications.map(notification => ({
+        id: notification.id,
+        title: notification.title,
+        body: notification.body,
+        data: notification.data ? JSON.parse(notification.data) : null,
+        type: notification.targetType,
+        date: notification.sentAt || notification.createdAt,
+        createdAt: notification.createdAt
+      }));
+
+      return res.json({
+        success: true,
+        data: formattedNotifications,
+        count: formattedNotifications.length
+      });
+
+    } catch (error) {
+      console.error("Erro ao buscar notificações do motorista:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Erro ao buscar notificações"
+      });
+    }
+  });
+
   // ========================================
   // SETTINGS ROUTES
   // ========================================
@@ -7942,8 +8050,12 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
           timestamp: new Date().toISOString()
         });
 
-        const successCount = results.filter(r => r.success).length;
-        const failureCount = results.filter(r => !r.success).length;
+        if (!results) {
+          throw new Error("Falha ao enviar notificações - Firebase não retornou resposta");
+        }
+
+        const successCount = results.responses.filter(r => r.success).length;
+        const failureCount = results.responses.filter(r => !r.success).length;
 
         // Atualizar status da notificação
         await db.update(pushNotifications)
