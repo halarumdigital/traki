@@ -268,6 +268,12 @@ export const drivers = pgTable("drivers", {
   // Device Info
   deviceId: varchar("device_id", { length: 255 }), // IMEI ou ID único do dispositivo
 
+  // Referral System (Sistema de Indicação)
+  referralCode: varchar("referral_code", { length: 50 }).unique(), // Código único do entregador
+  referredByCode: varchar("referred_by_code", { length: 50 }), // Código de quem indicou
+  referredById: varchar("referred_by_id").references(() => drivers.id), // ID de quem indicou
+  totalDeliveries: integer("total_deliveries").notNull().default(0), // Total de entregas completas
+
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -1004,3 +1010,118 @@ export const insertFaqSchema = createInsertSchema(faqs, {
 
 export type Faq = typeof faqs.$inferSelect;
 export type InsertFaq = z.infer<typeof insertFaqSchema>;
+
+// ========================================
+// REFERRAL SETTINGS (Configurações de Indicação)
+// ========================================
+export const referralSettings = pgTable("referral_settings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Configurações
+  minimumDeliveries: integer("minimum_deliveries").notNull().default(10), // Mínimo de corridas para ganhar comissão
+  commissionAmount: numeric("commission_amount", { precision: 10, scale: 2 }).notNull().default("50.00"), // Valor da comissão
+  enabled: boolean("enabled").notNull().default(true), // Sistema habilitado ou não
+
+  // Rastreamento
+  updatedBy: varchar("updated_by").references(() => users.id),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertReferralSettingsSchema = createInsertSchema(referralSettings, {
+  minimumDeliveries: z.number().int().min(1, "Mínimo de entregas deve ser maior que 0"),
+  commissionAmount: z.union([z.string(), z.number()]).transform(val => String(val)),
+  enabled: z.boolean().default(true),
+}).omit({
+  id: true,
+  updatedBy: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type ReferralSettings = typeof referralSettings.$inferSelect;
+export type InsertReferralSettings = z.infer<typeof insertReferralSettingsSchema>;
+
+// ========================================
+// REFERRAL COMMISSIONS (Comissões de Indicação)
+// ========================================
+export const referralCommissions = pgTable("referral_commissions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Relacionamentos
+  referrerDriverId: varchar("referrer_driver_id").notNull().references(() => drivers.id), // Quem indicou
+  referredDriverId: varchar("referred_driver_id").notNull().references(() => drivers.id), // Quem foi indicado
+
+  // Detalhes da Comissão
+  requiredDeliveries: integer("required_deliveries").notNull(), // Meta de entregas na hora da indicação
+  completedDeliveries: integer("completed_deliveries").notNull().default(0), // Entregas completadas
+  commissionAmount: numeric("commission_amount", { precision: 10, scale: 2 }).notNull(), // Valor da comissão
+
+  // Status
+  status: varchar("status", { length: 20 }).notNull().default("pending"), // pending, qualified, paid
+  qualifiedAt: timestamp("qualified_at"), // Quando atingiu a meta
+  paidAt: timestamp("paid_at"), // Quando foi paga
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertReferralCommissionSchema = createInsertSchema(referralCommissions, {
+  requiredDeliveries: z.number().int().min(1),
+  completedDeliveries: z.number().int().min(0),
+  commissionAmount: z.union([z.string(), z.number()]).transform(val => String(val)),
+  status: z.enum(["pending", "qualified", "paid"]).default("pending"),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type ReferralCommission = typeof referralCommissions.$inferSelect;
+export type InsertReferralCommission = z.infer<typeof insertReferralCommissionSchema>;
+
+// ========================================
+// DRIVER REFERRALS (Indicações do Motorista)
+// ========================================
+export const driverReferrals = pgTable("driver_referrals", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Relacionamentos
+  referrerDriverId: varchar("referrer_driver_id").notNull().references(() => drivers.id), // Quem indicou
+  referredDriverId: varchar("referred_driver_id").references(() => drivers.id), // Quem foi indicado (null até cadastro)
+
+  // Informações do Indicado
+  referredName: varchar("referred_name", { length: 255 }), // Nome do indicado (antes do cadastro)
+  referredPhone: varchar("referred_phone", { length: 20 }), // Telefone do indicado
+  referralCode: varchar("referral_code", { length: 50 }), // Código usado na indicação
+
+  // Status
+  status: varchar("status", { length: 20 }).notNull().default("pending"), // pending, registered, active, cancelled
+  registeredAt: timestamp("registered_at"), // Quando o indicado se cadastrou
+
+  // Entregas e Comissão
+  deliveriesCompleted: integer("deliveries_completed").notNull().default(0),
+  commissionEarned: numeric("commission_earned", { precision: 10, scale: 2 }).default("0"),
+  commissionPaid: boolean("commission_paid").notNull().default(false),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertDriverReferralSchema = createInsertSchema(driverReferrals, {
+  referredName: z.string().optional(),
+  referredPhone: z.string().optional(),
+  referralCode: z.string().optional(),
+  status: z.enum(["pending", "registered", "active", "cancelled"]).default("pending"),
+  deliveriesCompleted: z.number().int().min(0).default(0),
+  commissionEarned: z.union([z.string(), z.number()]).transform(val => String(val)),
+  commissionPaid: z.boolean().default(false),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type DriverReferral = typeof driverReferrals.$inferSelect;
+export type InsertDriverReferral = z.infer<typeof insertDriverReferralSchema>;

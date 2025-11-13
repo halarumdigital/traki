@@ -2,11 +2,11 @@ import express, { type Express } from "express";
 import { createServer, type Server } from "http";
 import { Server as SocketIOServer } from "socket.io";
 import { storage } from "./storage";
-import { loginSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications, cityPrices, settings, companyCancellationTypes, insertCompanyCancellationTypeSchema, promotions, insertPromotionSchema, companyDriverRatings, driverCompanyRatings, deliveryStops, faqs, insertFaqSchema, pushNotifications } from "@shared/schema";
+import { loginSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications, cityPrices, settings, companyCancellationTypes, insertCompanyCancellationTypeSchema, promotions, insertPromotionSchema, companyDriverRatings, driverCompanyRatings, deliveryStops, faqs, insertFaqSchema, pushNotifications, referralSettings, driverReferrals } from "@shared/schema";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import { pool, db } from "./db";
-import { eq, and, or, sql } from "drizzle-orm";
+import { eq, and, or, sql, desc } from "drizzle-orm";
 import bcrypt from "bcrypt";
 import multer from "multer";
 import path from "path";
@@ -1354,6 +1354,275 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
   });
 
   // ========================================
+  // REFERRAL SYSTEM (SISTEMA DE INDICAÇÃO) ROUTES
+  // ========================================
+
+  // GET /api/referral-settings - Buscar configurações de indicação
+  app.get("/api/referral-settings", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { referralSettings } = await import("@shared/schema");
+
+      // Buscar configurações atuais
+      const [settings] = await db
+        .select()
+        .from(referralSettings)
+        .limit(1);
+
+      // Se não existir, criar configuração padrão
+      if (!settings) {
+        const [newSettings] = await db
+          .insert(referralSettings)
+          .values({
+            minimumDeliveries: 10,
+            commissionAmount: "50.00",
+            enabled: true,
+          })
+          .returning();
+
+        return res.json(newSettings);
+      }
+
+      return res.json(settings);
+    } catch (error) {
+      console.error("Erro ao buscar configurações de indicação:", error);
+      return res.status(500).json({ message: "Erro ao buscar configurações" });
+    }
+  });
+
+  // PUT /api/referral-settings - Atualizar configurações de indicação
+  app.put("/api/referral-settings", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { referralSettings, insertReferralSettingsSchema } = await import("@shared/schema");
+
+      // Validar dados
+      const result = insertReferralSettingsSchema.safeParse(req.body);
+      if (!result.success) {
+        return res.status(400).json({
+          message: "Dados inválidos",
+          errors: result.error.errors
+        });
+      }
+
+      // Buscar configuração existente
+      const [existingSettings] = await db
+        .select()
+        .from(referralSettings)
+        .limit(1);
+
+      let updatedSettings;
+
+      if (existingSettings) {
+        // Atualizar configuração existente
+        [updatedSettings] = await db
+          .update(referralSettings)
+          .set({
+            ...result.data,
+            updatedBy: req.session.userId,
+            updatedAt: new Date(),
+          })
+          .where(eq(referralSettings.id, existingSettings.id))
+          .returning();
+      } else {
+        // Criar nova configuração
+        [updatedSettings] = await db
+          .insert(referralSettings)
+          .values({
+            ...result.data,
+            updatedBy: req.session.userId,
+          })
+          .returning();
+      }
+
+      return res.json(updatedSettings);
+    } catch (error) {
+      console.error("Erro ao atualizar configurações de indicação:", error);
+      return res.status(500).json({ message: "Erro ao atualizar configurações" });
+    }
+  });
+
+  // POST /api/referrals/validate - Validar código de indicação
+  app.post("/api/referrals/validate", async (req, res) => {
+    try {
+      const { code } = req.body;
+
+      if (!code) {
+        return res.status(400).json({ message: "Código é obrigatório" });
+      }
+
+      const { validateReferralCode } = await import("./utils/referralUtils");
+
+      const driver = await validateReferralCode(code);
+
+      if (!driver) {
+        return res.status(404).json({
+          valid: false,
+          message: "Código de indicação inválido"
+        });
+      }
+
+      return res.json({
+        valid: true,
+        driver: {
+          id: driver.id,
+          name: driver.name,
+          referralCode: driver.referralCode,
+        }
+      });
+    } catch (error) {
+      console.error("Erro ao validar código de indicação:", error);
+      return res.status(500).json({ message: "Erro ao validar código" });
+    }
+  });
+
+  // GET /api/drivers/:id/referrals - Buscar indicações de um motorista
+  app.get("/api/drivers/:id/referrals", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+      const { driverReferrals } = await import("@shared/schema");
+
+      // Buscar todas as indicações feitas por este motorista
+      const referrals = await db
+        .select({
+          id: driverReferrals.id,
+          referredDriverId: driverReferrals.referredDriverId,
+          referredName: driverReferrals.referredName,
+          referredPhone: driverReferrals.referredPhone,
+          status: driverReferrals.status,
+          registeredAt: driverReferrals.registeredAt,
+          deliveriesCompleted: driverReferrals.deliveriesCompleted,
+          commissionEarned: driverReferrals.commissionEarned,
+          commissionPaid: driverReferrals.commissionPaid,
+          createdAt: driverReferrals.createdAt,
+        })
+        .from(driverReferrals)
+        .where(eq(driverReferrals.referrerDriverId, id))
+        .orderBy(desc(driverReferrals.createdAt));
+
+      return res.json(referrals);
+    } catch (error) {
+      console.error("Erro ao buscar indicações:", error);
+      return res.status(500).json({ message: "Erro ao buscar indicações" });
+    }
+  });
+
+  // GET /api/drivers/:id/commissions - Buscar comissões de um motorista
+  app.get("/api/drivers/:id/commissions", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+      const { referralCommissions } = await import("@shared/schema");
+
+      // Buscar todas as comissões do motorista
+      const commissions = await db
+        .select({
+          id: referralCommissions.id,
+          referredDriverId: referralCommissions.referredDriverId,
+          requiredDeliveries: referralCommissions.requiredDeliveries,
+          completedDeliveries: referralCommissions.completedDeliveries,
+          commissionAmount: referralCommissions.commissionAmount,
+          status: referralCommissions.status,
+          qualifiedAt: referralCommissions.qualifiedAt,
+          paidAt: referralCommissions.paidAt,
+          createdAt: referralCommissions.createdAt,
+          // Dados do motorista indicado
+          driverName: drivers.name,
+        })
+        .from(referralCommissions)
+        .leftJoin(drivers, eq(referralCommissions.referredDriverId, drivers.id))
+        .where(eq(referralCommissions.referrerDriverId, id))
+        .orderBy(desc(referralCommissions.createdAt));
+
+      // Calcular totais
+      const totals = {
+        pending: commissions.filter(c => c.status === 'pending').length,
+        qualified: commissions.filter(c => c.status === 'qualified').length,
+        paid: commissions.filter(c => c.status === 'paid').length,
+        totalEarned: commissions
+          .filter(c => c.status === 'qualified' || c.status === 'paid')
+          .reduce((sum, c) => sum + parseFloat(c.commissionAmount || '0'), 0),
+        totalPaid: commissions
+          .filter(c => c.status === 'paid')
+          .reduce((sum, c) => sum + parseFloat(c.commissionAmount || '0'), 0),
+      };
+
+      return res.json({
+        commissions,
+        totals,
+      });
+    } catch (error) {
+      console.error("Erro ao buscar comissões:", error);
+      return res.status(500).json({ message: "Erro ao buscar comissões" });
+    }
+  });
+
+  // PUT /api/commissions/:id/pay - Marcar comissão como paga
+  app.put("/api/commissions/:id/pay", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+      const { referralCommissions, driverReferrals } = await import("@shared/schema");
+
+      // Buscar a comissão
+      const [commission] = await db
+        .select()
+        .from(referralCommissions)
+        .where(eq(referralCommissions.id, id))
+        .limit(1);
+
+      if (!commission) {
+        return res.status(404).json({ message: "Comissão não encontrada" });
+      }
+
+      if (commission.status !== 'qualified') {
+        return res.status(400).json({ message: "Comissão não está qualificada para pagamento" });
+      }
+
+      // Atualizar status para pago
+      const [updatedCommission] = await db
+        .update(referralCommissions)
+        .set({
+          status: 'paid',
+          paidAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(referralCommissions.id, id))
+        .returning();
+
+      // Atualizar também o registro de indicação
+      await db
+        .update(driverReferrals)
+        .set({
+          commissionPaid: true,
+          updatedAt: new Date(),
+        })
+        .where(eq(driverReferrals.referredDriverId, commission.referredDriverId));
+
+      return res.json(updatedCommission);
+    } catch (error) {
+      console.error("Erro ao marcar comissão como paga:", error);
+      return res.status(500).json({ message: "Erro ao processar pagamento" });
+    }
+  });
+
+  // ========================================
   // COMPANIES (EMPRESAS) ROUTES
   // ========================================
 
@@ -1981,6 +2250,32 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     }
   });
 
+  // GET /api/drivers/:id - Buscar motorista específico
+  app.get("/api/drivers/:id", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+      const driver = await storage.getDriver(id);
+
+      if (!driver) {
+        return res.status(404).json({ message: "Motorista não encontrado" });
+      }
+
+      return res.json({
+        ...driver,
+        referralCode: driver.referralCode, // Garantir que o código está incluído
+        totalDeliveries: driver.totalDeliveries,
+        referredByCode: driver.referredByCode,
+      });
+    } catch (error) {
+      console.error("Erro ao buscar motorista:", error);
+      return res.status(500).json({ message: "Erro ao buscar motorista" });
+    }
+  });
+
   // POST /api/drivers - Criar novo motorista
   app.post("/api/drivers", async (req, res) => {
     try {
@@ -1988,7 +2283,7 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         return res.status(401).json({ message: "Não autenticado" });
       }
 
-      const { name, email, password, cpf, mobile } = req.body;
+      const { name, email, password, cpf, mobile, referralCode } = req.body;
 
       if (!name || !mobile) {
         return res.status(400).json({
@@ -1996,20 +2291,83 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         });
       }
 
+      // Importar utilitários de indicação
+      const { generateReferralCode, validateReferralCode } = await import("./utils/referralUtils");
+      const { referralCommissions, referralSettings, driverReferrals } = await import("@shared/schema");
+
+      // Gerar código único de indicação para o novo motorista
+      const uniqueReferralCode = await generateReferralCode(name);
+
       // Hash da senha se foi fornecida
       let hashedPassword = null;
       if (password) {
         hashedPassword = await bcrypt.hash(password, 10);
       }
 
-      // Criar motorista diretamente (sem criar usuário)
+      // Validar código de indicação se fornecido
+      let referredById = null;
+      let referredByCode = null;
+
+      if (referralCode) {
+        const referrer = await validateReferralCode(referralCode);
+        if (referrer) {
+          referredById = referrer.id;
+          referredByCode = referralCode.toUpperCase();
+        } else {
+          return res.status(400).json({
+            message: "Código de indicação inválido"
+          });
+        }
+      }
+
+      // Criar motorista com código de indicação
       const newDriver = await storage.createDriver({
         ...req.body,
         password: hashedPassword,
         active: true,
         approve: false,
         available: false,
+        referralCode: uniqueReferralCode,
+        referredByCode,
+        referredById,
+        totalDeliveries: 0,
       });
+
+      // Se foi indicado, criar registros de indicação e comissão
+      if (referredById) {
+        // Buscar configurações de indicação
+        const [settings] = await db
+          .select()
+          .from(referralSettings)
+          .where(eq(referralSettings.enabled, true))
+          .limit(1);
+
+        if (settings) {
+          // Criar registro de comissão pendente
+          await db.insert(referralCommissions).values({
+            referrerDriverId: referredById,
+            referredDriverId: newDriver.id,
+            requiredDeliveries: settings.minimumDeliveries,
+            completedDeliveries: 0,
+            commissionAmount: settings.commissionAmount,
+            status: "pending",
+          });
+
+          // Criar registro de indicação para visualização
+          await db.insert(driverReferrals).values({
+            referrerDriverId: referredById,
+            referredDriverId: newDriver.id,
+            referredName: name,
+            referredPhone: mobile,
+            referralCode: referredByCode,
+            status: "registered",
+            registeredAt: new Date(),
+            deliveriesCompleted: 0,
+            commissionEarned: "0",
+            commissionPaid: false,
+          });
+        }
+      }
 
       return res.status(201).json(newDriver);
     } catch (error) {
@@ -4749,6 +5107,9 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
   // POST /api/v1/driver/register - Registro de motorista
   app.post("/api/v1/driver/register", async (req, res) => {
     try {
+      // Import das funções de indicação
+      const { generateReferralCode, validateReferralCode } = await import("./utils/referralUtils");
+
       const {
         name,
         cpf,
@@ -4763,14 +5124,48 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         carColor,
         carYear,
         deviceToken,
-        loginBy
+        loginBy,
+        referralCode // Código de indicação (opcional)
       } = req.body;
+
+      // Log dos dados recebidos
+      console.log("📝 Cadastro de motorista recebido:");
+      console.log("   Nome:", name || "FALTANDO");
+      console.log("   CPF:", cpf || "FALTANDO");
+      console.log("   Mobile:", mobile || "FALTANDO");
+      console.log("   Email:", email || "FALTANDO");
+      console.log("   Cidade:", serviceLocationId || "FALTANDO");
+      console.log("   Tipo Veículo:", vehicleTypeId || "FALTANDO");
+      console.log("   Marca:", carMake || "FALTANDO");
+      console.log("   Modelo:", carModel || "FALTANDO");
+      console.log("   Placa:", carNumber || "FALTANDO");
+      console.log("   Cor:", carColor || "FALTANDO");
+      console.log("   Ano:", carYear || "FALTANDO");
+      console.log("   Código Indicação:", referralCode || "NÃO FORNECIDO");
 
       // Validação completa - todos os campos são obrigatórios
       if (!name || !mobile || !password || !cpf || !email || !serviceLocationId ||
           !vehicleTypeId || !carMake || !carModel || !carNumber || !carColor || !carYear) {
+        const missingFields = [];
+        if (!name) missingFields.push("nome");
+        if (!cpf) missingFields.push("CPF");
+        if (!mobile) missingFields.push("telefone");
+        if (!email) missingFields.push("email");
+        if (!password) missingFields.push("senha");
+        if (!serviceLocationId) missingFields.push("cidade");
+        if (!vehicleTypeId) missingFields.push("tipo de veículo");
+        if (!carMake) missingFields.push("marca");
+        if (!carModel) missingFields.push("modelo");
+        if (!carNumber) missingFields.push("placa");
+        if (!carColor) missingFields.push("cor");
+        if (!carYear) missingFields.push("ano");
+
+        console.log("❌ Campos faltando:", missingFields.join(", "));
+
         return res.status(400).json({
-          message: "Todos os campos são obrigatórios: nome, CPF, telefone, email, senha, cidade, tipo de veículo, marca, modelo, placa, cor e ano"
+          success: false,
+          message: `Campos obrigatórios faltando: ${missingFields.join(", ")}`,
+          missingFields: missingFields
         });
       }
 
@@ -4778,13 +5173,17 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
       if (!uuidPattern.test(carMake)) {
+        console.log(`❌ carMake inválido: '${carMake}' - deve ser UUID`);
         return res.status(400).json({
+          success: false,
           message: `O campo 'carMake' deve conter o ID (UUID) da marca, não o nome. Valor inválido recebido: '${carMake}'. Use o endpoint GET /api/v1/driver/brands para obter a lista de marcas com seus IDs.`
         });
       }
 
       if (!uuidPattern.test(carModel)) {
+        console.log(`❌ carModel inválido: '${carModel}' - deve ser UUID`);
         return res.status(400).json({
+          success: false,
           message: `O campo 'carModel' deve conter o ID (UUID) do modelo, não o nome. Valor inválido recebido: '${carModel}'. Use o endpoint GET /api/v1/driver/models/:brandId para obter a lista de modelos com seus IDs.`
         });
       }
@@ -4792,13 +5191,36 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       // Verifica se já existe motorista com esse telefone
       const existingDriver = await storage.getDriverByMobile(mobile);
       if (existingDriver) {
+        console.log(`❌ Telefone já cadastrado: ${mobile}`);
         return res.status(400).json({
-          message: "Já existe um motorista cadastrado com este telefone"
+          success: false,
+          message: "Esse telefone já esta cadastrado."
         });
+      }
+
+      // Processar código de indicação (se fornecido)
+      let referrerDriver = null;
+      if (referralCode) {
+        console.log(`🔍 Validando código de indicação: ${referralCode}`);
+        // Validar e buscar motorista que indicou
+        const referralValidation = await validateReferralCode(referralCode);
+        console.log(`📋 Resultado da validação:`, referralValidation);
+        if (!referralValidation.valid) {
+          console.log(`❌ Código de indicação inválido: ${referralValidation.message}`);
+          return res.status(400).json({
+            success: false,
+            message: referralValidation.message
+          });
+        }
+        referrerDriver = referralValidation.driver;
+        console.log(`✅ Código de indicação válido: ${referralCode} (${referrerDriver.name})`);
       }
 
       // Hash da senha
       const hashedPassword = await bcrypt.hash(password, 10);
+
+      // Gerar código único para o novo motorista
+      const newDriverReferralCode = await generateReferralCode(name);
 
       // Cria motorista (todos campos obrigatórios)
       // carMake e carModel vêm do app como IDs, então devem ir para brandId e modelId
@@ -4820,7 +5242,37 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         approve: false, // Precisa ser aprovado pelo admin
         available: false,
         uploadedDocuments: false,
+        referralCode: newDriverReferralCode, // Código único do novo motorista
+        referredByCode: referrerDriver ? referralCode : null, // Código de quem indicou
+        referredById: referrerDriver ? referrerDriver.id : null, // ID de quem indicou
       });
+
+      // Se foi indicado por alguém, criar registro na tabela de indicações
+      if (referrerDriver) {
+        try {
+          // Buscar configurações de indicação
+          const [settings] = await db.select().from(referralSettings).limit(1);
+          const minimumDeliveries = settings?.minimumDeliveries || 10;
+          const commissionAmount = settings?.commissionAmount || "50.00";
+
+          // Criar registro na tabela driver_referrals
+          await db.insert(driverReferrals).values({
+            referrerDriverId: referrerDriver.id,
+            referredDriverId: driver.id,
+            referralCode: referralCode,
+            status: "registered",
+            registeredAt: new Date(),
+            deliveriesCompleted: 0,
+            commissionEarned: "0",
+            commissionPaid: false,
+          });
+
+          console.log(`✅ Indicação registrada: ${referrerDriver.name} → ${driver.name}`);
+        } catch (error) {
+          console.error("❌ Erro ao registrar indicação:", error);
+          // Não bloqueia o cadastro, apenas loga o erro
+        }
+      }
 
       return res.status(201).json({
         success: true,
@@ -4831,6 +5283,7 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
           mobile: driver.mobile,
           email: driver.email,
           approve: driver.approve,
+          referralCode: driver.referralCode, // Retorna o código do novo motorista
           statusEndpoint: `/api/v1/driver/status/${driver.id}`
         }
       });
@@ -4975,6 +5428,8 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
           carNumber: driver.carNumber,
           carColor: driver.carColor,
           uploadedDocuments: driver.uploadedDocuments,
+          referralCode: driver.referralCode, // Código de indicação do motorista
+          totalDeliveries: driver.totalDeliveries, // Total de entregas completadas
         }
       });
     } catch (error) {
@@ -5275,6 +5730,168 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     } catch (error) {
       console.error("Erro ao buscar promoções:", error);
       return res.status(500).json({ message: "Erro ao buscar promoções" });
+    }
+  });
+
+  // GET /api/v1/driver/my-referrals - Buscar minhas indicações (para o app)
+  app.get("/api/v1/driver/my-referrals", async (req, res) => {
+    try {
+      let driverId = req.session.driverId;
+
+      // Se não tiver sessão, tenta obter do token Bearer
+      if (!driverId) {
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          const token = authHeader.substring(7);
+          try {
+            const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf8'));
+            if (decoded.type === 'driver' && decoded.id) {
+              driverId = decoded.id;
+            }
+          } catch (e) {
+            console.error("Token inválido:", e);
+          }
+        }
+      }
+
+      if (!driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { driverReferrals, referralCommissions, referralSettings } = await import("@shared/schema");
+
+      // Buscar configurações de indicação
+      const [settings] = await db
+        .select()
+        .from(referralSettings)
+        .where(eq(referralSettings.enabled, true))
+        .limit(1);
+
+      // Buscar todas as indicações feitas por este motorista
+      const referrals = await db
+        .select({
+          id: driverReferrals.id,
+          referredDriverId: driverReferrals.referredDriverId,
+          referredName: driverReferrals.referredName,
+          referredPhone: driverReferrals.referredPhone,
+          status: driverReferrals.status,
+          registeredAt: driverReferrals.registeredAt,
+          deliveriesCompleted: driverReferrals.deliveriesCompleted,
+          commissionEarned: driverReferrals.commissionEarned,
+          commissionPaid: driverReferrals.commissionPaid,
+          createdAt: driverReferrals.createdAt,
+        })
+        .from(driverReferrals)
+        .where(eq(driverReferrals.referrerDriverId, driverId))
+        .orderBy(desc(driverReferrals.createdAt));
+
+      // Buscar comissões
+      const commissions = await db
+        .select()
+        .from(referralCommissions)
+        .where(eq(referralCommissions.referrerDriverId, driverId));
+
+      // Calcular totais
+      const totals = {
+        totalReferrals: referrals.length,
+        activeReferrals: referrals.filter(r => r.status === 'active').length,
+        pendingCommissions: commissions.filter(c => c.status === 'pending').length,
+        qualifiedCommissions: commissions.filter(c => c.status === 'qualified').length,
+        paidCommissions: commissions.filter(c => c.status === 'paid').length,
+        totalEarned: commissions
+          .filter(c => c.status === 'qualified' || c.status === 'paid')
+          .reduce((sum, c) => sum + parseFloat(c.commissionAmount || '0'), 0),
+        totalPaid: commissions
+          .filter(c => c.status === 'paid')
+          .reduce((sum, c) => sum + parseFloat(c.commissionAmount || '0'), 0),
+      };
+
+      // Buscar o código do motorista
+      const [driver] = await db
+        .select({ referralCode: drivers.referralCode })
+        .from(drivers)
+        .where(eq(drivers.id, driverId))
+        .limit(1);
+
+      return res.json({
+        success: true,
+        data: {
+          myReferralCode: driver?.referralCode || null,
+          settings: settings ? {
+            minimumDeliveries: settings.minimumDeliveries,
+            commissionAmount: settings.commissionAmount,
+          } : null,
+          referrals,
+          totals,
+        }
+      });
+    } catch (error) {
+      console.error("Erro ao buscar indicações:", error);
+      return res.status(500).json({ message: "Erro ao buscar indicações" });
+    }
+  });
+
+  // GET /api/v1/driver/profile - Buscar perfil do motorista logado
+  app.get("/api/v1/driver/profile", async (req, res) => {
+    try {
+      let driverId = req.session.driverId;
+
+      // Se não tiver sessão, tenta obter do token Bearer
+      if (!driverId) {
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          const token = authHeader.substring(7);
+          try {
+            const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf8'));
+            if (decoded.type === 'driver' && decoded.id) {
+              driverId = decoded.id;
+            }
+          } catch (e) {
+            console.error("Token inválido:", e);
+          }
+        }
+      }
+
+      if (!driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      // Buscar dados do motorista
+      const driver = await storage.getDriver(driverId);
+
+      if (!driver) {
+        return res.status(404).json({ message: "Motorista não encontrado" });
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          id: driver.id,
+          name: driver.name,
+          mobile: driver.mobile,
+          email: driver.email,
+          cpf: driver.cpf,
+          profilePicture: driver.profilePicture,
+          active: driver.active,
+          approve: driver.approve,
+          available: driver.available,
+          rating: driver.rating,
+          noOfRatings: driver.noOfRatings,
+          vehicleTypeId: driver.vehicleTypeId,
+          carMake: driver.carMake,
+          carModel: driver.carModel,
+          carNumber: driver.carNumber,
+          carColor: driver.carColor,
+          carYear: driver.carYear,
+          uploadedDocuments: driver.uploadedDocuments,
+          referralCode: driver.referralCode, // Código de indicação do motorista
+          totalDeliveries: driver.totalDeliveries, // Total de entregas completadas
+          referredByCode: driver.referredByCode, // Código de quem indicou (se houver)
+        }
+      });
+    } catch (error) {
+      console.error("Erro ao buscar perfil do motorista:", error);
+      return res.status(500).json({ message: "Erro ao buscar perfil" });
     }
   });
 
@@ -7447,6 +8064,45 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       if (!wasAlreadyCompleted) {
         await storage.incrementDriverMonthlyDeliveries(driverId);
         console.log(`✅ Contador mensal incrementado para motorista ${driverId}`);
+
+        // Incrementar total de entregas do motorista e verificar comissões de indicação
+        const [driver] = await db
+          .select()
+          .from(drivers)
+          .where(eq(drivers.id, driverId))
+          .limit(1);
+
+        if (driver) {
+          const newTotalDeliveries = (driver.totalDeliveries || 0) + 1;
+
+          // Atualizar total de entregas
+          await db
+            .update(drivers)
+            .set({
+              totalDeliveries: newTotalDeliveries,
+              updatedAt: new Date()
+            })
+            .where(eq(drivers.id, driverId));
+
+          // Verificar e processar comissão de indicação se aplicável
+          const { checkAndProcessReferralCommission } = await import("./utils/referralUtils");
+          const commissionResult = await checkAndProcessReferralCommission(driverId, newTotalDeliveries);
+
+          if (commissionResult.processed) {
+            console.log(`🎉 Comissão de indicação qualificada para o motorista ${commissionResult.referrerId}`);
+
+            // Atualizar tabela de indicações
+            const { driverReferrals } = await import("@shared/schema");
+            await db
+              .update(driverReferrals)
+              .set({
+                deliveriesCompleted: newTotalDeliveries,
+                commissionEarned: commissionResult.commission,
+                updatedAt: new Date()
+              })
+              .where(eq(driverReferrals.referredDriverId, driverId));
+          }
+        }
       } else {
         console.log(`⚠️ Entrega já estava completa, contador não incrementado`);
       }

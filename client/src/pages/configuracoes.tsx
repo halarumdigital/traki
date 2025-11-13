@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { ReferralSettings } from "@/components/ReferralSettings";
 import {
   Card,
   CardContent,
@@ -1085,71 +1086,7 @@ export default function Configuracoes() {
 
                 {/* Sistema de Indicação */}
                 <TabsContent value="referral" className="space-y-4">
-                  <FormField
-                    control={form.control}
-                    name="enableReferralSystem"
-                    render={({ field }) => (
-                      <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-                        <div className="space-y-0.5">
-                          <FormLabel className="text-base">Ativar Sistema de Indicação</FormLabel>
-                          <FormDescription>
-                            Permitir que usuários indiquem outras pessoas
-                          </FormDescription>
-                        </div>
-                        <FormControl>
-                          <Switch checked={field.value} onCheckedChange={field.onChange} />
-                        </FormControl>
-                      </FormItem>
-                    )}
-                  />
-
-                  {form.watch("enableReferralSystem") && (
-                    <>
-                      <FormField
-                        control={form.control}
-                        name="referralBonusAmount"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>Valor do Bônus (R$)</FormLabel>
-                            <FormControl>
-                              <Input
-                                type="number"
-                                placeholder="10"
-                                value={field.value ?? ""}
-                                onChange={(e) => field.onChange(e.target.value ? parseFloat(e.target.value) : null)}
-                              />
-                            </FormControl>
-                            <FormDescription>
-                              Valor creditado para quem indica e para o indicado
-                            </FormDescription>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-
-                      <FormField
-                        control={form.control}
-                        name="referralMinimumTrips"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>Mínimo de Corridas</FormLabel>
-                            <FormControl>
-                              <Input
-                                type="number"
-                                placeholder="1"
-                                value={field.value ?? ""}
-                                onChange={(e) => field.onChange(e.target.value ? parseInt(e.target.value) : null)}
-                              />
-                            </FormControl>
-                            <FormDescription>
-                              Número mínimo de corridas para liberar o bônus
-                            </FormDescription>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                    </>
-                  )}
+                  <ReferralSettings />
                 </TabsContent>
 
                 {/* Configurações SMTP */}

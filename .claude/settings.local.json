@@ -4,7 +4,12 @@
       "Bash(taskkill:*)",
       "Bash(powershell -Command:*)",
       "Bash(npm run dev:*)",
-      "Bash(node test-driver-notifications.mjs:*)"
+      "Bash(node test-driver-notifications.mjs:*)",
+      "Bash(npm run db:push:*)",
+      "Bash(npx tsx:*)",
+      "Bash(npm install:*)",
+      "Bash(netstat:*)",
+      "Bash(findstr:*)"
     ],
     "deny": [],
     "ask": []
