@@ -5267,6 +5267,16 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
             commissionPaid: false,
           });
 
+          // Criar também registro na tabela referral_commissions (necessário para tracking)
+          await db.insert(referralCommissions).values({
+            referrerDriverId: referrerDriver.id,
+            referredDriverId: driver.id,
+            requiredDeliveries: minimumDeliveries,
+            completedDeliveries: 0,
+            commissionAmount: commissionAmount,
+            status: "pending",
+          });
+
           console.log(`✅ Indicação registrada: ${referrerDriver.name} → ${driver.name}`);
         } catch (error) {
           console.error("❌ Erro ao registrar indicação:", error);
@@ -7609,6 +7619,67 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
             // Incrementar contador mensal de entregas do motorista
             await storage.incrementDriverMonthlyDeliveries(driverId);
 
+            // Incrementar total de entregas do motorista e verificar comissões de indicação
+            const [driver] = await db
+              .select()
+              .from(drivers)
+              .where(eq(drivers.id, driverId))
+              .limit(1);
+
+            if (driver) {
+              const newTotalDeliveries = (driver.totalDeliveries || 0) + 1;
+
+              // Atualizar total de entregas
+              await db
+                .update(drivers)
+                .set({
+                  totalDeliveries: newTotalDeliveries,
+                  updatedAt: new Date()
+                })
+                .where(eq(drivers.id, driverId));
+
+              // Verificar e processar comissão de indicação se aplicável
+              const { checkAndProcessReferralCommission } = await import("./utils/referralUtils");
+              const commissionResult = await checkAndProcessReferralCommission(driverId, newTotalDeliveries);
+
+              // Atualizar tabela de indicações SEMPRE (não apenas quando qualificado)
+              const { driverReferrals } = await import("@shared/schema");
+
+              // Verificar se existe uma indicação para este motorista
+              const [referral] = await db
+                .select()
+                .from(driverReferrals)
+                .where(eq(driverReferrals.referredDriverId, driverId))
+                .limit(1);
+
+              if (referral) {
+                if (commissionResult.processed) {
+                  console.log(`🎉 Comissão de indicação qualificada para o motorista ${commissionResult.referrerId}`);
+
+                  // Atualizar com comissão qualificada
+                  await db
+                    .update(driverReferrals)
+                    .set({
+                      deliveriesCompleted: newTotalDeliveries,
+                      commissionEarned: commissionResult.commission,
+                      updatedAt: new Date()
+                    })
+                    .where(eq(driverReferrals.referredDriverId, driverId));
+                } else {
+                  // Atualizar apenas o contador de entregas (sem qualificar comissão)
+                  await db
+                    .update(driverReferrals)
+                    .set({
+                      deliveriesCompleted: newTotalDeliveries,
+                      updatedAt: new Date()
+                    })
+                    .where(eq(driverReferrals.referredDriverId, driverId));
+
+                  console.log(`📊 Contador de entregas atualizado para indicado ${driverId}: ${newTotalDeliveries}`);
+                }
+              }
+            }
+
             // Marcar motorista como disponível
             await db
               .update(drivers)
@@ -7726,6 +7797,67 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
 
         // Incrementar contador mensal de entregas do motorista
         await storage.incrementDriverMonthlyDeliveries(driverId);
+
+        // Incrementar total de entregas do motorista e verificar comissões de indicação
+        const [driver] = await db
+          .select()
+          .from(drivers)
+          .where(eq(drivers.id, driverId))
+          .limit(1);
+
+        if (driver) {
+          const newTotalDeliveries = (driver.totalDeliveries || 0) + 1;
+
+          // Atualizar total de entregas
+          await db
+            .update(drivers)
+            .set({
+              totalDeliveries: newTotalDeliveries,
+              updatedAt: new Date()
+            })
+            .where(eq(drivers.id, driverId));
+
+          // Verificar e processar comissão de indicação se aplicável
+          const { checkAndProcessReferralCommission } = await import("./utils/referralUtils");
+          const commissionResult = await checkAndProcessReferralCommission(driverId, newTotalDeliveries);
+
+          // Atualizar tabela de indicações SEMPRE (não apenas quando qualificado)
+          const { driverReferrals } = await import("@shared/schema");
+
+          // Verificar se existe uma indicação para este motorista
+          const [referral] = await db
+            .select()
+            .from(driverReferrals)
+            .where(eq(driverReferrals.referredDriverId, driverId))
+            .limit(1);
+
+          if (referral) {
+            if (commissionResult.processed) {
+              console.log(`🎉 Comissão de indicação qualificada para o motorista ${commissionResult.referrerId}`);
+
+              // Atualizar com comissão qualificada
+              await db
+                .update(driverReferrals)
+                .set({
+                  deliveriesCompleted: newTotalDeliveries,
+                  commissionEarned: commissionResult.commission,
+                  updatedAt: new Date()
+                })
+                .where(eq(driverReferrals.referredDriverId, driverId));
+            } else {
+              // Atualizar apenas o contador de entregas (sem qualificar comissão)
+              await db
+                .update(driverReferrals)
+                .set({
+                  deliveriesCompleted: newTotalDeliveries,
+                  updatedAt: new Date()
+                })
+                .where(eq(driverReferrals.referredDriverId, driverId));
+
+              console.log(`📊 Contador de entregas atualizado para indicado ${driverId}: ${newTotalDeliveries}`);
+            }
+          }
+        }
 
         // Marcar motorista como disponível (não mais em entrega)
         await db
@@ -8088,19 +8220,41 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
           const { checkAndProcessReferralCommission } = await import("./utils/referralUtils");
           const commissionResult = await checkAndProcessReferralCommission(driverId, newTotalDeliveries);
 
-          if (commissionResult.processed) {
-            console.log(`🎉 Comissão de indicação qualificada para o motorista ${commissionResult.referrerId}`);
+          // Atualizar tabela de indicações SEMPRE (não apenas quando qualificado)
+          const { driverReferrals } = await import("@shared/schema");
 
-            // Atualizar tabela de indicações
-            const { driverReferrals } = await import("@shared/schema");
-            await db
-              .update(driverReferrals)
-              .set({
-                deliveriesCompleted: newTotalDeliveries,
-                commissionEarned: commissionResult.commission,
-                updatedAt: new Date()
-              })
-              .where(eq(driverReferrals.referredDriverId, driverId));
+          // Verificar se existe uma indicação para este motorista
+          const [referral] = await db
+            .select()
+            .from(driverReferrals)
+            .where(eq(driverReferrals.referredDriverId, driverId))
+            .limit(1);
+
+          if (referral) {
+            if (commissionResult.processed) {
+              console.log(`🎉 Comissão de indicação qualificada para o motorista ${commissionResult.referrerId}`);
+
+              // Atualizar com comissão qualificada
+              await db
+                .update(driverReferrals)
+                .set({
+                  deliveriesCompleted: newTotalDeliveries,
+                  commissionEarned: commissionResult.commission,
+                  updatedAt: new Date()
+                })
+                .where(eq(driverReferrals.referredDriverId, driverId));
+            } else {
+              // Atualizar apenas o contador de entregas (sem qualificar comissão)
+              await db
+                .update(driverReferrals)
+                .set({
+                  deliveriesCompleted: newTotalDeliveries,
+                  updatedAt: new Date()
+                })
+                .where(eq(driverReferrals.referredDriverId, driverId));
+
+              console.log(`📊 Contador de entregas atualizado para indicado ${driverId}: ${newTotalDeliveries}`);
+            }
           }
         }
       } else {

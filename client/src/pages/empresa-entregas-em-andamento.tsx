@@ -1525,7 +1525,57 @@ export default function EmpresaEntregasEmAndamento() {
                         })}
                       </div>
                     ) : (
-                      <p className="font-medium">{selectedDelivery.dropoffAddress}</p>
+                      (() => {
+                        let customerName = null;
+                        let whatsapp = null;
+                        let reference = null;
+                        let addressText = selectedDelivery.dropoffAddress;
+
+                        // Extrair WhatsApp: [WhatsApp: xxx]
+                        const whatsappMatch = addressText.match(/\[WhatsApp:\s*([^\]]+)\]/i);
+                        if (whatsappMatch) {
+                          whatsapp = whatsappMatch[1].trim();
+                          addressText = addressText.replace(/\[WhatsApp:\s*[^\]]+\]\s*/i, '').trim();
+                        }
+
+                        // Extrair Ref: [Ref: xxx]
+                        const refMatch = addressText.match(/\[Ref:\s*([^\]]+)\]/i);
+                        if (refMatch) {
+                          reference = refMatch[1].trim();
+                          addressText = addressText.replace(/\[Ref:\s*[^\]]+\]\s*/i, '').trim();
+                        }
+
+                        // Extrair nome do cliente: [nome]
+                        const nameMatch = addressText.match(/^\[([^\]]+)\]/);
+                        if (nameMatch) {
+                          customerName = nameMatch[1].trim();
+                          addressText = addressText.replace(/^\[([^\]]+)\]\s*/, '').trim();
+                        }
+
+                        return (
+                          <div className="space-y-2">
+                            {customerName && (
+                              <div className="flex items-center gap-1.5">
+                                <User className="h-4 w-4 text-blue-600 flex-shrink-0" />
+                                <span className="font-semibold text-blue-600 text-sm">{customerName}</span>
+                              </div>
+                            )}
+                            {whatsapp && (
+                              <div className="flex items-center gap-1.5 text-sm text-gray-700">
+                                <span className="flex-shrink-0">📱</span>
+                                <span>WhatsApp: {whatsapp}</span>
+                              </div>
+                            )}
+                            {reference && (
+                              <div className="flex items-center gap-1.5 text-sm text-gray-700">
+                                <span className="flex-shrink-0 text-gray-400">○</span>
+                                <span>Ref: {reference}</span>
+                              </div>
+                            )}
+                            <div className="text-sm text-gray-900 font-medium">{addressText}</div>
+                          </div>
+                        );
+                      })()
                     )}
                   </div>
                 </div>
