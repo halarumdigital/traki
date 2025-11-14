@@ -141,3 +141,78 @@ export async function checkAndProcessReferralCommission(driverId: string, totalD
     return { processed: false, reason: "Erro ao processar comissão", error };
   }
 }
+
+/**
+ * Atualiza o progresso de indicações ativas do motorista
+ * Marca commissionEarned = true quando atingir a meta
+ */
+export async function updateDriverReferralProgress(driverId: string, totalDeliveries: number) {
+  try {
+    const { driverReferrals, referralSettings } = await import("@shared/schema");
+
+    // Busca as configurações de indicação
+    const settings = await db
+      .select()
+      .from(referralSettings)
+      .where(eq(referralSettings.enabled, true))
+      .limit(1);
+
+    if (settings.length === 0) {
+      return { updated: false, reason: "Sistema de indicação desabilitado" };
+    }
+
+    const currentSettings = settings[0];
+    const minimumDeliveries = currentSettings.minimumDeliveries;
+
+    // Busca indicações ativas onde este motorista é o indicado
+    const activeReferrals = await db
+      .select()
+      .from(driverReferrals)
+      .where(eq(driverReferrals.referredDriverId, driverId))
+      .where(eq(driverReferrals.status, "active"));
+
+    if (activeReferrals.length === 0) {
+      return { updated: false, reason: "Sem indicações ativas" };
+    }
+
+    let updatedCount = 0;
+
+    for (const referral of activeReferrals) {
+      // Se já atingiu a meta e ainda não foi marcado como earned
+      if (totalDeliveries >= minimumDeliveries && !referral.commissionEarned) {
+        await db
+          .update(driverReferrals)
+          .set({
+            deliveriesCompleted: totalDeliveries,
+            commissionEarned: true,
+            updatedAt: new Date()
+          })
+          .where(eq(driverReferrals.id, referral.id));
+
+        updatedCount++;
+      }
+      // Atualiza apenas o contador de entregas
+      else if (totalDeliveries !== referral.deliveriesCompleted) {
+        await db
+          .update(driverReferrals)
+          .set({
+            deliveriesCompleted: totalDeliveries,
+            updatedAt: new Date()
+          })
+          .where(eq(driverReferrals.id, referral.id));
+
+        updatedCount++;
+      }
+    }
+
+    return {
+      updated: true,
+      updatedCount,
+      qualifiedCount: activeReferrals.filter(r => totalDeliveries >= minimumDeliveries).length
+    };
+
+  } catch (error) {
+    console.error("Erro ao atualizar progresso de indicação:", error);
+    return { updated: false, reason: "Erro ao atualizar progresso", error };
+  }
+}

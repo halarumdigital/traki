@@ -1490,10 +1490,19 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       }
 
       const { id } = req.params;
-      const { driverReferrals } = await import("@shared/schema");
+      const { driverReferrals, referralSettings } = await import("@shared/schema");
+
+      // Buscar configurações de indicação
+      const [settings] = await db
+        .select()
+        .from(referralSettings)
+        .limit(1);
+
+      const minimumDeliveries = settings?.minimumDeliveries || 10;
+      const commissionAmount = settings?.commissionAmount || "50.00";
 
       // Buscar todas as indicações feitas por este motorista
-      const referrals = await db
+      const rawReferrals = await db
         .select({
           id: driverReferrals.id,
           referredDriverId: driverReferrals.referredDriverId,
@@ -1510,7 +1519,73 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         .where(eq(driverReferrals.referrerDriverId, id))
         .orderBy(desc(driverReferrals.createdAt));
 
-      return res.json(referrals);
+      // Buscar nome do motorista indicado se já estiver cadastrado
+      const referrals = await Promise.all(rawReferrals.map(async (referral) => {
+        let referredName = referral.referredName;
+
+        // Se tiver referredDriverId, buscar nome atualizado da tabela drivers
+        if (referral.referredDriverId) {
+          const [referred] = await db
+            .select({ name: drivers.name })
+            .from(drivers)
+            .where(eq(drivers.id, referral.referredDriverId))
+            .limit(1);
+
+          if (referred?.name) {
+            referredName = referred.name;
+          }
+        }
+
+        return {
+          ...referral,
+          referredName: referredName || 'N/A'
+        };
+      }));
+
+      // Adicionar informações de configuração a cada indicação
+      const referralsWithConfig = referrals.map(referral => ({
+        ...referral,
+        minimumDeliveries,
+        commissionAmount,
+        // Status para exibição no app:
+        // - Se commissionPaid = true: "pago"
+        // - Se commissionEarned = true e commissionPaid = false: "aguardando"
+        // - Se commissionEarned = false: "em_progresso"
+        displayStatus: referral.commissionPaid
+          ? "pago"
+          : referral.commissionEarned
+            ? "aguardando"
+            : "em_progresso"
+      }));
+
+      // Calcular totais para exibir nos cards
+      const totals = {
+        // Total de comissões qualificadas (aguardando ou pagas)
+        totalEarned: referrals
+          .filter(r => r.commissionEarned)
+          .reduce((sum, r) => sum + parseFloat(commissionAmount), 0),
+        // Total já pago
+        totalPaid: referrals
+          .filter(r => r.commissionPaid)
+          .reduce((sum, r) => sum + parseFloat(commissionAmount), 0),
+        // Total aguardando pagamento
+        totalPending: referrals
+          .filter(r => r.commissionEarned && !r.commissionPaid)
+          .reduce((sum, r) => sum + parseFloat(commissionAmount), 0),
+        // Contadores
+        count: {
+          total: referrals.length,
+          active: referrals.filter(r => r.status === "active").length,
+          earned: referrals.filter(r => r.commissionEarned).length,
+          paid: referrals.filter(r => r.commissionPaid).length,
+          pending: referrals.filter(r => r.commissionEarned && !r.commissionPaid).length,
+        }
+      };
+
+      return res.json({
+        referrals: referralsWithConfig,
+        totals
+      });
     } catch (error) {
       console.error("Erro ao buscar indicações:", error);
       return res.status(500).json({ message: "Erro ao buscar indicações" });
@@ -1616,6 +1691,151 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         .where(eq(driverReferrals.referredDriverId, commission.referredDriverId));
 
       return res.json(updatedCommission);
+    } catch (error) {
+      console.error("Erro ao marcar comissão como paga:", error);
+      return res.status(500).json({ message: "Erro ao processar pagamento" });
+    }
+  });
+
+  // GET /api/referrals - Listar todas as indicações/comissões (para admin)
+  app.get("/api/referrals", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { driverReferrals, referralSettings } = await import("@shared/schema");
+
+      // Buscar configurações de indicação para saber quantas entregas são necessárias
+      const [settings] = await db
+        .select()
+        .from(referralSettings)
+        .limit(1);
+
+      const deliveriesRequired = settings?.minimumDeliveries || 10;
+      const commissionAmount = settings?.commissionAmount || "50.00";
+
+      // Buscar todas as indicações com informações dos motoristas e cidades
+      const rawReferrals = await db
+        .select({
+          id: driverReferrals.id,
+          referrerId: driverReferrals.referrerDriverId,
+          referredId: driverReferrals.referredDriverId,
+          deliveriesCompleted: driverReferrals.deliveriesCompleted,
+          commissionEarned: driverReferrals.commissionEarned,
+          commissionPaid: driverReferrals.commissionPaid,
+          status: driverReferrals.status,
+          createdAt: driverReferrals.createdAt,
+        })
+        .from(driverReferrals)
+        .orderBy(desc(driverReferrals.createdAt));
+
+      // Buscar dados dos motoristas e cidades separadamente
+      const referrals = await Promise.all(rawReferrals.map(async (referral) => {
+        // Buscar dados do indicador
+        const [referrer] = await db
+          .select({
+            name: drivers.name,
+            email: drivers.email,
+            cpf: drivers.cpf,
+            serviceLocationId: drivers.serviceLocationId,
+          })
+          .from(drivers)
+          .where(eq(drivers.id, referral.referrerId))
+          .limit(1);
+
+        // Buscar dados do indicado (se já estiver cadastrado)
+        const [referred] = referral.referredId ? await db
+          .select({
+            name: drivers.name,
+            email: drivers.email,
+            cpf: drivers.cpf,
+            serviceLocationId: drivers.serviceLocationId,
+          })
+          .from(drivers)
+          .where(eq(drivers.id, referral.referredId))
+          .limit(1) : [];
+
+        // Buscar cidade do indicador
+        const [referrerCity] = referrer?.serviceLocationId ? await db
+          .select({ nome: serviceLocations.name })
+          .from(serviceLocations)
+          .where(eq(serviceLocations.id, referrer.serviceLocationId))
+          .limit(1) : [{ nome: 'N/A' }];
+
+        // Buscar cidade do indicado
+        const [referredCity] = referred?.serviceLocationId ? await db
+          .select({ nome: serviceLocations.name })
+          .from(serviceLocations)
+          .where(eq(serviceLocations.id, referred.serviceLocationId))
+          .limit(1) : [{ nome: 'N/A' }];
+
+        return {
+          id: referral.id,
+          referrerId: referral.referrerId,
+          referrerName: referrer?.name || 'N/A',
+          referrerEmail: referrer?.email || 'N/A',
+          referrerCpf: referrer?.cpf || 'N/A',
+          referrerCity: referrerCity?.nome || 'N/A',
+          referrerCityId: referrer?.serviceLocationId || null,
+          referredId: referral.referredId || null,
+          referredName: referred?.name || 'N/A',
+          referredEmail: referred?.email || 'N/A',
+          referredCpf: referred?.cpf || 'N/A',
+          referredCity: referredCity?.nome || 'N/A',
+          referredCityId: referred?.serviceLocationId || null,
+          deliveriesCompleted: referral.deliveriesCompleted,
+          deliveriesRequired: deliveriesRequired,
+          commissionPaid: referral.commissionPaid,
+          commissionAmount: `R$ ${parseFloat(referral.commissionEarned || commissionAmount).toFixed(2)}`,
+          status: referral.status,
+          createdAt: referral.createdAt,
+        };
+      }));
+
+      return res.json(referrals);
+    } catch (error) {
+      console.error("Erro ao buscar indicações:", error);
+      return res.status(500).json({ message: "Erro ao buscar indicações" });
+    }
+  });
+
+  // PUT /api/referrals/:id/mark-commission-paid - Marcar comissão como paga
+  app.put("/api/referrals/:id/mark-commission-paid", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+      const { driverReferrals } = await import("@shared/schema");
+
+      // Buscar a indicação
+      const [referral] = await db
+        .select()
+        .from(driverReferrals)
+        .where(eq(driverReferrals.id, id))
+        .limit(1);
+
+      if (!referral) {
+        return res.status(404).json({ message: "Indicação não encontrada" });
+      }
+
+      if (referral.commissionPaid) {
+        return res.status(400).json({ message: "Comissão já foi paga" });
+      }
+
+      // Atualizar status para pago
+      const [updatedReferral] = await db
+        .update(driverReferrals)
+        .set({
+          commissionPaid: true,
+          updatedAt: new Date(),
+        })
+        .where(eq(driverReferrals.id, id))
+        .returning();
+
+      return res.json(updatedReferral);
     } catch (error) {
       console.error("Erro ao marcar comissão como paga:", error);
       return res.status(500).json({ message: "Erro ao processar pagamento" });
@@ -5768,7 +5988,7 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         return res.status(401).json({ message: "Não autenticado" });
       }
 
-      const { driverReferrals, referralCommissions, referralSettings } = await import("@shared/schema");
+      const { driverReferrals, referralCommissions, referralSettings, drivers } = await import("@shared/schema");
 
       // Buscar configurações de indicação
       const [settings] = await db
@@ -5778,7 +5998,7 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         .limit(1);
 
       // Buscar todas as indicações feitas por este motorista
-      const referrals = await db
+      const rawReferrals = await db
         .select({
           id: driverReferrals.id,
           referredDriverId: driverReferrals.referredDriverId,
@@ -5794,6 +6014,29 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         .from(driverReferrals)
         .where(eq(driverReferrals.referrerDriverId, driverId))
         .orderBy(desc(driverReferrals.createdAt));
+
+      // Buscar nome do motorista indicado se já estiver cadastrado
+      const referrals = await Promise.all(rawReferrals.map(async (referral) => {
+        let referredName = referral.referredName;
+
+        // Se tiver referredDriverId, buscar nome atualizado da tabela drivers
+        if (referral.referredDriverId) {
+          const [referred] = await db
+            .select({ name: drivers.name })
+            .from(drivers)
+            .where(eq(drivers.id, referral.referredDriverId))
+            .limit(1);
+
+          if (referred?.name) {
+            referredName = referred.name;
+          }
+        }
+
+        return {
+          ...referral,
+          referredName: referredName || 'N/A'
+        };
+      }));
 
       // Buscar comissões
       const commissions = await db
@@ -7817,46 +8060,19 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
             })
             .where(eq(drivers.id, driverId));
 
-          // Verificar e processar comissão de indicação se aplicável
-          const { checkAndProcessReferralCommission } = await import("./utils/referralUtils");
-          const commissionResult = await checkAndProcessReferralCommission(driverId, newTotalDeliveries);
+          // Atualizar progresso de indicações ativas
+          const { updateDriverReferralProgress } = await import("./utils/referralUtils");
+          const referralResult = await updateDriverReferralProgress(driverId, newTotalDeliveries);
 
-          // Atualizar tabela de indicações SEMPRE (não apenas quando qualificado)
-          const { driverReferrals } = await import("@shared/schema");
-
-          // Verificar se existe uma indicação para este motorista
-          const [referral] = await db
-            .select()
-            .from(driverReferrals)
-            .where(eq(driverReferrals.referredDriverId, driverId))
-            .limit(1);
-
-          if (referral) {
-            if (commissionResult.processed) {
-              console.log(`🎉 Comissão de indicação qualificada para o motorista ${commissionResult.referrerId}`);
-
-              // Atualizar com comissão qualificada
-              await db
-                .update(driverReferrals)
-                .set({
-                  deliveriesCompleted: newTotalDeliveries,
-                  commissionEarned: commissionResult.commission,
-                  updatedAt: new Date()
-                })
-                .where(eq(driverReferrals.referredDriverId, driverId));
-            } else {
-              // Atualizar apenas o contador de entregas (sem qualificar comissão)
-              await db
-                .update(driverReferrals)
-                .set({
-                  deliveriesCompleted: newTotalDeliveries,
-                  updatedAt: new Date()
-                })
-                .where(eq(driverReferrals.referredDriverId, driverId));
-
-              console.log(`📊 Contador de entregas atualizado para indicado ${driverId}: ${newTotalDeliveries}`);
-            }
+          if (referralResult.updated && referralResult.qualifiedCount && referralResult.qualifiedCount > 0) {
+            console.log(`🎉 ${referralResult.qualifiedCount} indicação(ões) qualificada(s) (aguardando pagamento) para o motorista ${driverId}`);
+          } else if (referralResult.updated) {
+            console.log(`📊 Progresso de indicação atualizado para indicado ${driverId}: ${newTotalDeliveries} entregas`);
           }
+
+          // Manter compatibilidade com sistema antigo de comissões
+          const { checkAndProcessReferralCommission } = await import("./utils/referralUtils");
+          await checkAndProcessReferralCommission(driverId, newTotalDeliveries);
         }
 
         // Marcar motorista como disponível (não mais em entrega)
@@ -8216,46 +8432,19 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
             })
             .where(eq(drivers.id, driverId));
 
-          // Verificar e processar comissão de indicação se aplicável
-          const { checkAndProcessReferralCommission } = await import("./utils/referralUtils");
-          const commissionResult = await checkAndProcessReferralCommission(driverId, newTotalDeliveries);
+          // Atualizar progresso de indicações ativas
+          const { updateDriverReferralProgress } = await import("./utils/referralUtils");
+          const referralResult = await updateDriverReferralProgress(driverId, newTotalDeliveries);
 
-          // Atualizar tabela de indicações SEMPRE (não apenas quando qualificado)
-          const { driverReferrals } = await import("@shared/schema");
-
-          // Verificar se existe uma indicação para este motorista
-          const [referral] = await db
-            .select()
-            .from(driverReferrals)
-            .where(eq(driverReferrals.referredDriverId, driverId))
-            .limit(1);
-
-          if (referral) {
-            if (commissionResult.processed) {
-              console.log(`🎉 Comissão de indicação qualificada para o motorista ${commissionResult.referrerId}`);
-
-              // Atualizar com comissão qualificada
-              await db
-                .update(driverReferrals)
-                .set({
-                  deliveriesCompleted: newTotalDeliveries,
-                  commissionEarned: commissionResult.commission,
-                  updatedAt: new Date()
-                })
-                .where(eq(driverReferrals.referredDriverId, driverId));
-            } else {
-              // Atualizar apenas o contador de entregas (sem qualificar comissão)
-              await db
-                .update(driverReferrals)
-                .set({
-                  deliveriesCompleted: newTotalDeliveries,
-                  updatedAt: new Date()
-                })
-                .where(eq(driverReferrals.referredDriverId, driverId));
-
-              console.log(`📊 Contador de entregas atualizado para indicado ${driverId}: ${newTotalDeliveries}`);
-            }
+          if (referralResult.updated && referralResult.qualifiedCount && referralResult.qualifiedCount > 0) {
+            console.log(`🎉 ${referralResult.qualifiedCount} indicação(ões) qualificada(s) (aguardando pagamento) para o motorista ${driverId}`);
+          } else if (referralResult.updated) {
+            console.log(`📊 Progresso de indicação atualizado para indicado ${driverId}: ${newTotalDeliveries} entregas`);
           }
+
+          // Manter compatibilidade com sistema antigo de comissões
+          const { checkAndProcessReferralCommission } = await import("./utils/referralUtils");
+          await checkAndProcessReferralCommission(driverId, newTotalDeliveries);
         }
       } else {
         console.log(`⚠️ Entrega já estava completa, contador não incrementado`);
