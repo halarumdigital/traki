@@ -13,6 +13,7 @@ import path from "path";
 import fs from "fs";
 import { initializeFirebase, sendPushNotification, sendPushToMultipleDevices } from "./firebase";
 import { sentryUserContext } from "./sentry-middleware";
+import { uploadToR2, deleteFromR2, isValidImage, isValidDocument, isValidFileSize } from "./r2-storage";
 
 const PgSession = connectPgSimple(session);
 
@@ -145,6 +146,33 @@ const uploadTicket = multer({
       console.log("❌ Arquivo rejeitado pelo filtro - tipo não permitido");
       // Ignora o arquivo se não for válido (em vez de dar erro)
       return cb(null, false);
+    }
+  },
+});
+
+// Configuração do multer para upload em memória (para R2)
+const uploadR2 = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  fileFilter: (req, file, cb) => {
+    console.log(`📎 [UPLOAD R2] Validando arquivo:`);
+    console.log(`   - Original name: ${file.originalname}`);
+    console.log(`   - MIME type: ${file.mimetype}`);
+    console.log(`   - Field name: ${file.fieldname}`);
+
+    const allowedTypes = /jpeg|jpg|png|gif|pdf|doc|docx|xls|xlsx|webp/i;
+    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = isValidDocument(file.mimetype);
+
+    console.log(`   - Extensão válida: ${extname}`);
+    console.log(`   - MIME type válido: ${mimetype}`);
+
+    if (mimetype || extname) {
+      console.log(`   ✅ Arquivo aceito`);
+      return cb(null, true);
+    } else {
+      console.log(`   ❌ Arquivo rejeitado - mimetype: ${file.mimetype}, extensão: ${path.extname(file.originalname)}`);
+      cb(new Error("Tipo de arquivo não permitido"));
     }
   },
 });
@@ -6254,14 +6282,14 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     }
   });
 
-  // POST /api/v1/driver/documents - Enviar documento do motorista
+  // POST /api/v1/driver/documents - Enviar documento do motorista (com R2)
   app.post("/api/v1/driver/documents", (req, res, next) => {
     console.log("\n🚀 POST /api/v1/driver/documents - Requisição recebida");
     console.log("  - Content-Type:", req.headers["content-type"]);
     console.log("  - Session exists:", !!req.session);
     console.log("  - Session driverId:", req.session?.driverId);
     next();
-  }, uploadDocument.single("document"), async (req, res) => {
+  }, uploadR2.single("document"), async (req, res) => {
     try {
       // Debug: verificar o que está vindo no body
       console.log("\n📤 Após multer processamento:");
@@ -6310,8 +6338,13 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         });
       }
 
-      // Salvar documento no banco
-      const documentPath = `/uploads/documents_driver/${req.file.filename}`;
+      // Fazer upload para R2
+      console.log("☁️  Fazendo upload para R2...");
+      const documentUrl = await uploadToR2(
+        req.file.buffer,
+        "documentos_entregadores",
+        req.file.originalname
+      );
 
       // Verificar se já existe um documento deste tipo para o motorista
       const existingDoc = await db
@@ -6328,12 +6361,22 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       let document;
 
       if (existingDoc.length > 0) {
+        // Deletar arquivo antigo do R2 se existir
+        if (existingDoc[0].documentUrl && existingDoc[0].documentUrl.includes('r2.dev')) {
+          try {
+            console.log(`🗑️  Deletando arquivo antigo do R2...`);
+            await deleteFromR2(existingDoc[0].documentUrl);
+          } catch (error) {
+            console.error("Erro ao deletar arquivo antigo:", error);
+          }
+        }
+
         // Atualizar documento existente (reenvio)
         console.log(`📝 Atualizando documento existente (tipo: ${documentTypeId})`);
         const [updated] = await db
           .update(driverDocuments)
           .set({
-            documentUrl: documentPath,
+            documentUrl: documentUrl,
             status: "pending", // Resetar status para pendente
             rejectionReason: null, // Limpar motivo de rejeição anterior
             updatedAt: new Date(),
@@ -6349,7 +6392,7 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
           .values({
             driverId: driverId,
             documentTypeId: documentTypeId,
-            documentUrl: documentPath,
+            documentUrl: documentUrl,
             status: "pending",
           })
           .returning();
@@ -6368,11 +6411,11 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         await db
           .update(drivers)
           .set({
-            profilePicture: documentPath,
+            profilePicture: documentUrl,
           })
           .where(eq(drivers.id, driverId));
 
-        console.log(`✅ Foto de perfil atualizada: ${documentPath}`);
+        console.log(`✅ Foto de perfil atualizada: ${documentUrl}`);
       }
 
       // Verificar se todos os documentos obrigatórios foram enviados
@@ -9857,16 +9900,11 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     }
   });
 
-  // POST /api/support-tickets/:id/reply - Responder ticket (Admin)
-  app.post("/api/support-tickets/:id/reply", upload.single("attachment"), async (req, res) => {
+  // POST /api/support-tickets/:id/reply - Responder ticket (Admin) com R2
+  app.post("/api/support-tickets/:id/reply", uploadR2.single("attachment"), async (req, res) => {
     console.log("🎫 [ADMIN REPLY] Recebendo resposta de ticket:");
     console.log("  - Body:", req.body);
-    console.log("  - File:", req.file ? {
-      filename: req.file.filename,
-      originalname: req.file.originalname,
-      mimetype: req.file.mimetype,
-      size: req.file.size
-    } : "Nenhum arquivo");
+    console.log("  - File:", req.file ? req.file.originalname : "Nenhum arquivo");
 
     if (!req.session.userId || !req.session.isAdmin) {
       return res.status(401).json({ message: "Não autorizado" });
@@ -9890,11 +9928,16 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         return res.status(404).json({ message: "Ticket não encontrado" });
       }
 
-      // Preparar URL do anexo
+      // Fazer upload para R2 se houver arquivo
       let attachmentUrl = null;
       if (req.file) {
-        attachmentUrl = `/uploads/${req.file.filename}`;
-        console.log("✅ Arquivo salvo:", attachmentUrl);
+        console.log("☁️  Fazendo upload da imagem da resposta do admin para R2...");
+        attachmentUrl = await uploadToR2(
+          req.file.buffer,
+          "imagens_tickets",
+          req.file.originalname
+        );
+        console.log("✅ Arquivo salvo no R2:", attachmentUrl);
       } else {
         console.log("ℹ️  Nenhum arquivo enviado");
       }
@@ -9990,11 +10033,11 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     }
   });
 
-  // POST /api/v1/driver/support-tickets - Criar ticket (Driver App)
-  app.post("/api/v1/driver/support-tickets", uploadTicket.single("images"), async (req, res) => {
+  // POST /api/v1/driver/support-tickets - Criar ticket (Driver App) com R2
+  app.post("/api/v1/driver/support-tickets", uploadR2.single("images"), async (req, res) => {
     console.log("📝 Criação de ticket - Dados recebidos:");
     console.log("  Body:", req.body);
-    console.log("  File:", req.file ? req.file.filename : "Nenhum arquivo");
+    console.log("  File:", req.file ? req.file.originalname : "Nenhum arquivo");
 
     const { subjectId, message } = req.body;
 
@@ -10051,10 +10094,15 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         .from(supportTickets);
       const ticketNumber = `TKT-${String(Number(count[0].count) + 1).padStart(5, "0")}`;
 
-      // Preparar URL do anexo
+      // Fazer upload para R2 se houver arquivo
       let attachmentUrl = null;
       if (req.file) {
-        attachmentUrl = `/uploads/${req.file.filename}`;
+        console.log("☁️  Fazendo upload da imagem do ticket para R2...");
+        attachmentUrl = await uploadToR2(
+          req.file.buffer,
+          "imagens_tickets",
+          req.file.originalname
+        );
       }
 
       const ticketData = {
@@ -10283,29 +10331,21 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     }
   });
 
-  // POST /api/v1/driver/support-tickets/:id/reply - Responder ticket (Driver App)
+  // POST /api/v1/driver/support-tickets/:id/reply - Responder ticket (Driver App) com R2
   app.post("/api/v1/driver/support-tickets/:id/reply",
     (req, res, next) => {
       console.log("🌐 [PRE-MULTER] Requisição recebida:");
       console.log("  - Content-Type:", req.headers['content-type']);
       console.log("  - Method:", req.method);
       console.log("  - URL:", req.url);
-      console.log("  - Headers:", JSON.stringify(req.headers, null, 2));
       next();
     },
-    uploadTicket.single("images"),
+    uploadR2.single("images"),
     async (req, res) => {
     console.log("📱 [DRIVER REPLY] Recebendo resposta de motorista:");
     console.log("  - Params:", req.params);
     console.log("  - Body:", req.body);
-    console.log("  - File:", req.file ? {
-      fieldname: req.file.fieldname,
-      filename: req.file.filename,
-      originalname: req.file.originalname,
-      mimetype: req.file.mimetype,
-      size: req.file.size,
-      path: req.file.path
-    } : "Nenhum arquivo");
+    console.log("  - File:", req.file ? req.file.originalname : "Nenhum arquivo");
 
     const { id } = req.params;
     const { driverId, driverName, message } = req.body;
@@ -10338,11 +10378,16 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         });
       }
 
-      // Preparar URL do anexo
+      // Fazer upload para R2 se houver arquivo
       let attachmentUrl = null;
       if (req.file) {
-        attachmentUrl = `/uploads/${req.file.filename}`;
-        console.log("✅ Arquivo do motorista salvo:", attachmentUrl);
+        console.log("☁️  Fazendo upload da imagem da resposta para R2...");
+        attachmentUrl = await uploadToR2(
+          req.file.buffer,
+          "imagens_tickets",
+          req.file.originalname
+        );
+        console.log("✅ Arquivo do motorista salvo no R2:", attachmentUrl);
       } else {
         console.log("ℹ️  Motorista não enviou arquivo");
       }
@@ -10640,6 +10685,201 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
     return Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
   }
+
+  // ========================
+  // R2 UPLOAD ENDPOINTS
+  // ========================
+
+  // POST /api/r2/upload/driver-document - Upload de documento de entregador para R2
+  app.post("/api/r2/upload/driver-document", uploadR2.single("document"), async (req, res) => {
+    try {
+      console.log("📤 Upload de documento de entregador para R2");
+      console.log("  - Body:", req.body);
+      console.log("  - File:", req.file ? req.file.originalname : "Nenhum arquivo");
+
+      // Permitir envio com sessão OU com driverId no body
+      const driverId = req.session?.driverId || req.body.driverId;
+
+      if (!driverId) {
+        return res.status(401).json({
+          message: "Driver ID é obrigatório. Forneça via sessão ou no corpo da requisição.",
+        });
+      }
+
+      const { documentTypeId } = req.body;
+
+      if (!documentTypeId) {
+        return res.status(400).json({
+          message: "O tipo de documento é obrigatório",
+        });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({
+          message: "Nenhum arquivo foi enviado",
+        });
+      }
+
+      // Validar tamanho do arquivo
+      if (!isValidFileSize(req.file.size, 10)) {
+        return res.status(400).json({
+          message: "Arquivo muito grande. Tamanho máximo: 10MB",
+        });
+      }
+
+      // Verificar se o motorista existe
+      const [driver] = await db
+        .select()
+        .from(drivers)
+        .where(eq(drivers.id, driverId))
+        .limit(1);
+
+      if (!driver) {
+        return res.status(404).json({
+          message: "Motorista não encontrado",
+        });
+      }
+
+      // Fazer upload para R2
+      const documentUrl = await uploadToR2(
+        req.file.buffer,
+        "documentos_entregadores",
+        req.file.originalname
+      );
+
+      // Verificar se já existe um documento deste tipo para o motorista
+      const existingDoc = await db
+        .select()
+        .from(driverDocuments)
+        .where(
+          and(
+            eq(driverDocuments.driverId, driverId),
+            eq(driverDocuments.documentTypeId, documentTypeId)
+          )
+        )
+        .limit(1);
+
+      let document;
+
+      if (existingDoc.length > 0) {
+        // Deletar arquivo antigo do R2
+        if (existingDoc[0].documentUrl) {
+          try {
+            await deleteFromR2(existingDoc[0].documentUrl);
+          } catch (error) {
+            console.error("Erro ao deletar arquivo antigo do R2:", error);
+          }
+        }
+
+        // Atualizar documento existente
+        console.log(`📝 Atualizando documento existente (tipo: ${documentTypeId})`);
+        const [updated] = await db
+          .update(driverDocuments)
+          .set({
+            documentUrl: documentUrl,
+            status: "pending",
+            rejectionReason: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(driverDocuments.id, existingDoc[0].id))
+          .returning();
+        document = updated;
+      } else {
+        // Inserir novo documento
+        console.log(`✨ Inserindo novo documento (tipo: ${documentTypeId})`);
+        const [inserted] = await db
+          .insert(driverDocuments)
+          .values({
+            driverId: driverId,
+            documentTypeId: documentTypeId,
+            documentUrl: documentUrl,
+            status: "pending",
+          })
+          .returning();
+        document = inserted;
+      }
+
+      res.status(201).json({
+        message: "Documento enviado com sucesso",
+        document,
+      });
+    } catch (error) {
+      console.error("Erro ao fazer upload do documento:", error);
+      res.status(500).json({
+        message: "Erro ao fazer upload do documento",
+      });
+    }
+  });
+
+  // POST /api/r2/upload/ticket-image - Upload de imagem de ticket para R2
+  app.post("/api/r2/upload/ticket-image", uploadR2.single("image"), async (req, res) => {
+    try {
+      console.log("📤 Upload de imagem de ticket para R2");
+      console.log("  - Body:", req.body);
+      console.log("  - File:", req.file ? req.file.originalname : "Nenhum arquivo");
+
+      if (!req.file) {
+        return res.status(400).json({
+          message: "Nenhum arquivo foi enviado",
+        });
+      }
+
+      // Validar se é uma imagem
+      if (!isValidImage(req.file.mimetype)) {
+        return res.status(400).json({
+          message: "Apenas imagens são permitidas (JPEG, PNG, GIF, WEBP)",
+        });
+      }
+
+      // Validar tamanho do arquivo
+      if (!isValidFileSize(req.file.size, 5)) {
+        return res.status(400).json({
+          message: "Imagem muito grande. Tamanho máximo: 5MB",
+        });
+      }
+
+      // Fazer upload para R2
+      const imageUrl = await uploadToR2(
+        req.file.buffer,
+        "imagens_tickets",
+        req.file.originalname
+      );
+
+      res.status(201).json({
+        message: "Imagem enviada com sucesso",
+        url: imageUrl,
+      });
+    } catch (error) {
+      console.error("Erro ao fazer upload da imagem:", error);
+      res.status(500).json({
+        message: "Erro ao fazer upload da imagem",
+      });
+    }
+  });
+
+  // DELETE /api/r2/delete - Deletar arquivo do R2
+  app.delete("/api/r2/delete", async (req, res) => {
+    try {
+      const { fileUrl } = req.body;
+
+      if (!fileUrl) {
+        return res.status(400).json({
+          message: "URL do arquivo é obrigatória",
+        });
+      }
+
+      await deleteFromR2(fileUrl);
+
+      res.json({
+        message: "Arquivo deletado com sucesso",
+      });
+    } catch (error) {
+      console.error("Erro ao deletar arquivo:", error);
+      res.status(500).json({
+        message: "Erro ao deletar arquivo",
+      });
+    }
+  });
 
   // ========================
   // Sentry Test Endpoints (Development Only)
