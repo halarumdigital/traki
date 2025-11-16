@@ -9,6 +9,7 @@ import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { startAutoCancelJob } from "./auto-cancel-deliveries";
 import { startMonthlyResetJob } from "./monthly-reset-job";
+import { startScheduledDeliveriesJob } from "./scheduled-deliveries-job";
 
 const app = express();
 const httpServer = createServer(app);
@@ -120,5 +121,6 @@ app.use((req, res, next) => {
     // Iniciar jobs
     startAutoCancelJob();
     startMonthlyResetJob();
+    startScheduledDeliveriesJob();
   });
 })();

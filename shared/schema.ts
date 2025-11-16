@@ -299,6 +299,7 @@ export const requests = pgTable("requests", {
 
   // Timing
   isLater: boolean("is_later").notNull().default(false),
+  scheduledAt: timestamp("scheduled_at"), // Data/hora para entrega agendada
   tripStartTime: timestamp("trip_start_time"),
   acceptedAt: timestamp("accepted_at"),
   arrivedAt: timestamp("arrived_at"),

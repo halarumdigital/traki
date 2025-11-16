@@ -72,6 +72,8 @@ interface Delivery {
   completedAt: string | null;
   cancellationFeePercentage: string | null;
   needsReturn: boolean | null;
+  isLater: boolean | null;
+  scheduledAt: string | null;
 }
 
 interface VehicleType {
@@ -123,6 +125,7 @@ const formatBrazilianDateTime = (date: string | Date) => {
 
 const statusMap: Record<string, { label: string; color: string }> = {
   pending: { label: "Pendente", color: "bg-yellow-100 text-yellow-700" },
+  scheduled: { label: "Agendada", color: "bg-orange-100 text-orange-700" },
   accepted: { label: "Aceito", color: "bg-blue-100 text-blue-700" },
   arrived_pickup: { label: "Cheguei para retirada", color: "bg-cyan-100 text-cyan-700" },
   in_progress: { label: "Em Andamento", color: "bg-purple-100 text-purple-700" },
@@ -160,6 +163,9 @@ export default function EmpresaEntregasEmAndamento() {
     pickupReference: "",
     vehicleTypeId: "",
     needsReturn: false,
+    isScheduled: false,
+    scheduledDate: null as Date | null,
+    scheduledTime: "",
   });
   const [deliveryPoints, setDeliveryPoints] = useState<DeliveryPoint[]>([
     {
@@ -573,13 +579,48 @@ export default function EmpresaEntregasEmAndamento() {
     mutationFn: async (data: any) => {
       return await apiRequest("POST", "/api/empresa/deliveries", data);
     },
-    onSuccess: () => {
+    onSuccess: (response: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/empresa/deliveries/in-progress"] });
-      toast({
-        title: "Entrega criada com sucesso!",
-        description: "A entrega foi registrada e está aguardando um motorista.",
-      });
+
+      if (response.isScheduled && response.scheduledAt) {
+        const scheduledDate = new Date(response.scheduledAt);
+        toast({
+          title: "Entrega agendada com sucesso!",
+          description: `A entrega foi agendada para ${format(scheduledDate, "PPP 'às' HH:mm", { locale: ptBR })}. Os motoristas serão notificados na data/hora programada.`,
+        });
+      } else {
+        toast({
+          title: "Entrega criada com sucesso!",
+          description: "A entrega foi registrada e está aguardando um motorista.",
+        });
+      }
+
       setNewDeliveryOpen(false);
+      // Resetar formulário
+      setDeliveryForm({
+        pickupAddress: "",
+        pickupNumber: "",
+        pickupNeighborhood: "",
+        pickupReference: "",
+        vehicleTypeId: "",
+        needsReturn: false,
+        isScheduled: false,
+        scheduledDate: null,
+        scheduledTime: "",
+      });
+      setDeliveryPoints([{
+        id: 1,
+        customerName: "",
+        customerWhatsapp: "",
+        cep: "",
+        address: "",
+        number: "",
+        neighborhood: "",
+        reference: "",
+        city: "",
+        state: "",
+      }]);
+      setRouteInfo(null);
     },
     onError: (error: any) => {
       toast({
@@ -857,6 +898,40 @@ export default function EmpresaEntregasEmAndamento() {
       return;
     }
 
+    // Validação de agendamento
+    if (deliveryForm.isScheduled) {
+      if (!deliveryForm.scheduledDate) {
+        toast({
+          variant: "destructive",
+          title: "Data obrigatória",
+          description: "Por favor, selecione a data do agendamento.",
+        });
+        return;
+      }
+      if (!deliveryForm.scheduledTime) {
+        toast({
+          variant: "destructive",
+          title: "Hora obrigatória",
+          description: "Por favor, selecione a hora do agendamento.",
+        });
+        return;
+      }
+
+      // Validar se a data/hora é futura
+      const [hours, minutes] = deliveryForm.scheduledTime.split(":").map(Number);
+      const scheduledDateTime = new Date(deliveryForm.scheduledDate);
+      scheduledDateTime.setHours(hours, minutes, 0, 0);
+
+      if (scheduledDateTime <= new Date()) {
+        toast({
+          variant: "destructive",
+          title: "Data/hora inválida",
+          description: "A data e hora do agendamento deve ser futura.",
+        });
+        return;
+      }
+    }
+
     const pickupCity = companyData?.city || "";
     const pickupState = companyData?.state || "";
     const pickupFullAddress = `${deliveryForm.pickupAddress}, ${deliveryForm.pickupNumber || "S/N"}, ${deliveryForm.pickupNeighborhood}${pickupCity ? `, ${pickupCity}` : ""}${pickupState ? ` - ${pickupState}` : ""}, Brasil`;
@@ -927,6 +1002,20 @@ export default function EmpresaEntregasEmAndamento() {
       return;
     }
 
+    // Preparar dados de agendamento
+    let scheduledAt = null;
+    if (deliveryForm.isScheduled && deliveryForm.scheduledDate && deliveryForm.scheduledTime) {
+      // Formatar como string sem conversão de timezone
+      // O backend vai salvar diretamente no banco como hora local (São Paulo)
+      const year = deliveryForm.scheduledDate.getFullYear();
+      const month = String(deliveryForm.scheduledDate.getMonth() + 1).padStart(2, '0');
+      const day = String(deliveryForm.scheduledDate.getDate()).padStart(2, '0');
+      const [hours, minutes] = deliveryForm.scheduledTime.split(":");
+
+      // Formato: YYYY-MM-DD HH:MM:SS (será salvo diretamente no banco)
+      scheduledAt = `${year}-${month}-${day} ${hours}:${minutes}:00`;
+    }
+
     createDeliveryMutation.mutate({
       pickupAddress: {
         address: pickupFullAddress,
@@ -947,6 +1036,7 @@ export default function EmpresaEntregasEmAndamento() {
       customerWhatsapp: validDeliveryPoints[0]?.customerWhatsapp || null,
       deliveryReference: validDeliveryPoints[0]?.reference || null,
       needsReturn: deliveryForm.needsReturn,
+      scheduledAt: scheduledAt,
     });
   };
 
@@ -1322,14 +1412,22 @@ export default function EmpresaEntregasEmAndamento() {
                       )}
                     </TableCell>
                     <TableCell>
-                      <Badge
-                        className={
-                          statusMap[delivery.status]?.color ||
-                          "bg-gray-100 text-gray-700"
-                        }
-                      >
-                        {statusMap[delivery.status]?.label || delivery.status}
-                      </Badge>
+                      <div className="flex flex-col gap-1">
+                        <Badge
+                          className={
+                            statusMap[delivery.status]?.color ||
+                            "bg-gray-100 text-gray-700"
+                          }
+                        >
+                          {statusMap[delivery.status]?.label || delivery.status}
+                        </Badge>
+                        {delivery.status === "scheduled" && delivery.scheduledAt && (
+                          <div className="text-xs text-orange-600 flex items-center gap-1">
+                            <Clock className="h-3 w-3" />
+                            {format(new Date(delivery.scheduledAt), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}
+                          </div>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>
                       {delivery.totalPrice ? (
@@ -1418,6 +1516,12 @@ export default function EmpresaEntregasEmAndamento() {
                   <Badge className={statusMap[selectedDelivery.status]?.color}>
                     {statusMap[selectedDelivery.status]?.label || selectedDelivery.status}
                   </Badge>
+                  {selectedDelivery.status === "scheduled" && selectedDelivery.scheduledAt && (
+                    <p className="text-xs text-orange-600 mt-1 flex items-center gap-1">
+                      <Clock className="h-3 w-3" />
+                      {format(new Date(selectedDelivery.scheduledAt), "dd/MM/yyyy 'às' HH:mm", { locale: ptBR })}
+                    </p>
+                  )}
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Cliente</p>
@@ -1992,6 +2096,80 @@ export default function EmpresaEntregasEmAndamento() {
                     </Label>
                   </div>
                 </div>
+              </div>
+
+              {/* Opção de Agendamento */}
+              <div className="space-y-3">
+                <div className="flex items-center space-x-3">
+                  <input
+                    type="checkbox"
+                    id="isScheduled"
+                    checked={deliveryForm.isScheduled}
+                    onChange={(e) => {
+                      setDeliveryForm({
+                        ...deliveryForm,
+                        isScheduled: e.target.checked,
+                        scheduledDate: e.target.checked ? deliveryForm.scheduledDate : null,
+                        scheduledTime: e.target.checked ? deliveryForm.scheduledTime : "",
+                      });
+                    }}
+                    className="h-5 w-5 rounded border-gray-300 text-primary focus:ring-primary focus:ring-2 focus:ring-offset-2"
+                  />
+                  <Label htmlFor="isScheduled" className="text-sm font-medium cursor-pointer">
+                    Agendar entrega?
+                  </Label>
+                </div>
+
+                {deliveryForm.isScheduled && (
+                  <div className="space-y-3 pl-8 border-l-2 border-primary/30">
+                    <div>
+                      <Label className="text-xs">Data do Agendamento</Label>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button
+                            variant="outline"
+                            className={cn(
+                              "w-full justify-start text-left font-normal h-9",
+                              !deliveryForm.scheduledDate && "text-muted-foreground"
+                            )}
+                          >
+                            <CalendarIcon className="mr-2 h-4 w-4" />
+                            {deliveryForm.scheduledDate ? (
+                              format(deliveryForm.scheduledDate, "PPP", { locale: ptBR })
+                            ) : (
+                              <span>Selecione a data</span>
+                            )}
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <Calendar
+                            mode="single"
+                            selected={deliveryForm.scheduledDate || undefined}
+                            onSelect={(date) =>
+                              setDeliveryForm({ ...deliveryForm, scheduledDate: date || null })
+                            }
+                            disabled={(date) => date < new Date(new Date().setHours(0, 0, 0, 0))}
+                            initialFocus
+                            locale={ptBR}
+                          />
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+
+                    <div>
+                      <Label htmlFor="scheduledTime" className="text-xs">Hora do Agendamento</Label>
+                      <Input
+                        id="scheduledTime"
+                        type="time"
+                        value={deliveryForm.scheduledTime}
+                        onChange={(e) =>
+                          setDeliveryForm({ ...deliveryForm, scheduledTime: e.target.value })
+                        }
+                        className="h-9"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Botões de Ação */}

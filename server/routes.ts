@@ -3241,6 +3241,8 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
           r.total_distance AS "totalDistance",
           r.total_time AS "totalTime",
           r.estimated_time AS "estimatedTime",
+          r.is_later AS "isLater",
+          to_char(r.scheduled_at, 'YYYY-MM-DD"T"HH24:MI:SS') AS "scheduledAt",
           rp.pick_address AS "pickupAddress",
           rp.drop_address AS "dropoffAddress",
           rp.pick_lat AS "pickupLat",
@@ -3259,6 +3261,7 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
             WHEN r.is_driver_arrived = true AND r.is_trip_start = false THEN 'arrived_pickup'
             WHEN r.is_trip_start = true AND r.is_completed = false THEN 'in_progress'
             WHEN r.driver_id IS NOT NULL THEN 'accepted'
+            WHEN r.is_later = true AND r.scheduled_at IS NOT NULL THEN 'scheduled'
             ELSE 'pending'
           END AS status
         FROM requests r
@@ -3735,6 +3738,7 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         customerWhatsapp,
         deliveryReference,
         needsReturn,
+        scheduledAt,
       } = req.body;
 
       if (!pickupAddress || !dropoffAddress || !vehicleTypeId) {
@@ -3876,6 +3880,24 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
   - estimatedTime (salvo no banco): ${estimatedTime} min
   - estimatedAmount (salvo no banco): R$ ${totalPrice.toFixed(2)}`);
 
+      // Determinar se é uma entrega agendada
+      const isScheduledDelivery = scheduledAt ? true : false;
+      // scheduledAt agora vem como string no formato "YYYY-MM-DD HH:MM:SS" (hora local de São Paulo)
+      // Vamos salvar diretamente como a hora que o usuário selecionou, sem conversão
+      let scheduledAtDate: Date | null = null;
+      let scheduledAtString: string | null = null;
+
+      if (scheduledAt && typeof scheduledAt === 'string') {
+        // Guardar a string original para inserir diretamente no banco
+        scheduledAtString = scheduledAt;
+        // Criar Date object apenas para validação/logs (será UTC internamente, mas o banco receberá a string)
+        scheduledAtDate = new Date(scheduledAt.replace(' ', 'T'));
+        console.log(`📅 Entrega agendada para: ${scheduledAt} (hora local BR)`);
+      } else if (scheduledAt && typeof scheduledAt === 'number') {
+        scheduledAtDate = new Date(scheduledAt);
+        console.log(`📅 Entrega agendada para: ${scheduledAtDate.toISOString()} (UTC)`);
+      }
+
       const request = await storage.createRequest({
         requestNumber,
         companyId: req.session.companyId,
@@ -3889,13 +3911,23 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         totalTime: estimatedTime || null,
         requestEtaAmount: driverAmount, // Valor líquido para o motorista (após comissão)
         needsReturn: needsReturn || false, // Salva informação sobre retorno ao ponto de origem
-        isLater: false,
+        isLater: isScheduledDelivery, // Marcado como "para depois" se agendado
+        scheduledAt: null, // Será atualizado via SQL direto para evitar conversão de timezone
         isDriverStarted: false,
         isDriverArrived: false,
         isTripStart: false,
         isCompleted: false,
         isCancelled: false,
       });
+
+      // Se for entrega agendada, atualizar o scheduledAt via SQL direto para evitar conversão de timezone
+      if (scheduledAtString) {
+        await pool.query(
+          `UPDATE requests SET scheduled_at = $1::timestamp WHERE id = $2`,
+          [scheduledAtString, request.id]
+        );
+        console.log(`📅 scheduledAt salvo diretamente no banco: ${scheduledAtString}`);
+      }
 
       // Create request places
       await pool.query(
@@ -4115,6 +4147,21 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
 
       console.log(`✓ ${driversWithinRadius.length} de ${availableDrivers.rows.length} motoristas estão dentro do raio de ${searchRadius} km`);
 
+      // Se a entrega é agendada, não enviar notificações agora
+      if (isScheduledDelivery) {
+        console.log(`📅 Entrega agendada para ${scheduledAtDate}. Notificações serão enviadas na data/hora programada.`);
+        return res.status(201).json({
+          message: "Entrega agendada com sucesso",
+          delivery: request,
+          totalPrice: totalPrice.toFixed(2),
+          driverAmount: driverAmount,
+          needsReturn: needsReturn || false,
+          returnPrice: needsReturn ? returnPrice.toFixed(2) : "0.00",
+          scheduledAt: scheduledAtDate,
+          isScheduled: true,
+        });
+      }
+
       // Enviar notificação push para motoristas dentro do raio
       if (driversWithinRadius.length > 0) {
         const fcmTokens = driversWithinRadius
@@ -4187,7 +4234,9 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         totalPrice: totalPrice.toFixed(2),
         driverAmount: driverAmount,
         needsReturn: needsReturn || false,
-        returnPrice: needsReturn ? returnPrice.toFixed(2) : "0.00"
+        returnPrice: needsReturn ? returnPrice.toFixed(2) : "0.00",
+        scheduledAt: null,
+        isScheduled: false,
       });
     } catch (error) {
       console.error("Erro ao criar entrega:", error);
