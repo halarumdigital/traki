@@ -37,7 +37,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Pencil, Trash2, CheckCircle, XCircle, Users, Clock, Search, Eye, FileText, X } from "lucide-react";
+import { Pencil, Trash2, CheckCircle, XCircle, Users, Clock, Search, Eye, FileText, X, AlertTriangle, Shield, RefreshCw } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { Textarea } from "@/components/ui/textarea";
 import type { VehicleType, Brand, VehicleModel } from "@shared/schema";
@@ -59,6 +59,13 @@ type Driver = {
   active: boolean;
   approve: boolean;
   serviceLocationId: string;
+  hasCriminalRecords?: boolean;
+  criminalRecords?: Array<{
+    tipo: string;
+    assunto: string;
+    tribunalTipo: string;
+  }>;
+  criminalCheckDate?: string;
 };
 
 type FormData = {
@@ -391,6 +398,54 @@ export default function MotoristasAguardando() {
         title: "Sucesso",
         description: "Motorista rejeitado",
       });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Erro",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Mutation para consultar processos criminais
+  const checkCriminalMutation = useMutation({
+    mutationFn: async (driverId: string) => {
+      const response = await fetch(`/api/drivers/${driverId}/check-criminal`, {
+        method: "POST",
+        credentials: 'include',
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Erro ao consultar processos criminais");
+      }
+      return response.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/drivers"] });
+
+      // Atualizar o selectedDriver com os dados da consulta
+      if (selectedDriver) {
+        setSelectedDriver({
+          ...selectedDriver,
+          hasCriminalRecords: data.hasCriminalRecords,
+          criminalRecords: data.criminalRecords,
+          criminalCheckDate: data.checkDate,
+        });
+      }
+
+      if (data.hasCriminalRecords) {
+        toast({
+          title: "Atenção",
+          description: `Encontrados ${data.criminalRecords.length} processo(s) criminal(is)`,
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Consulta Concluída",
+          description: "Nenhum processo criminal encontrado",
+        });
+      }
     },
     onError: (error: Error) => {
       toast({
@@ -904,6 +959,76 @@ export default function MotoristasAguardando() {
                 </div>
               </div>
 
+              {/* Antecedentes Criminais */}
+              <div className="border rounded-lg p-4">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-semibold flex items-center gap-2">
+                    <Shield className="h-5 w-5" />
+                    Antecedentes Criminais
+                  </h3>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => checkCriminalMutation.mutate(selectedDriver.id)}
+                    disabled={checkCriminalMutation.isPending || !selectedDriver.cpf}
+                  >
+                    <RefreshCw className={`h-4 w-4 mr-2 ${checkCriminalMutation.isPending ? "animate-spin" : ""}`} />
+                    {checkCriminalMutation.isPending ? "Consultando..." : "Consultar CPF"}
+                  </Button>
+                </div>
+
+                {!selectedDriver.cpf ? (
+                  <p className="text-center text-amber-600 py-4">
+                    CPF não cadastrado. Não é possível consultar antecedentes.
+                  </p>
+                ) : !selectedDriver.criminalCheckDate ? (
+                  <p className="text-center text-muted-foreground py-4">
+                    Consulta de antecedentes não realizada. Clique em "Consultar CPF" para verificar.
+                  </p>
+                ) : selectedDriver.hasCriminalRecords ? (
+                  <div className="space-y-4">
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                      <div className="flex items-center gap-2 text-red-700 mb-2">
+                        <AlertTriangle className="h-5 w-5" />
+                        <span className="font-semibold">
+                          Atenção: {selectedDriver.criminalRecords?.length} processo(s) criminal(is) encontrado(s)
+                        </span>
+                      </div>
+                      <p className="text-sm text-red-600">
+                        Última consulta: {new Date(selectedDriver.criminalCheckDate).toLocaleString("pt-BR")}
+                      </p>
+                    </div>
+
+                    <div className="space-y-3">
+                      {selectedDriver.criminalRecords?.map((record, index) => (
+                        <div key={index} className="bg-red-50 border border-red-200 rounded-lg p-3">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                            <div>
+                              <label className="text-xs text-red-600 font-medium">Tipo</label>
+                              <p className="text-sm font-medium text-red-800">{record.tipo}</p>
+                            </div>
+                            <div>
+                              <label className="text-xs text-red-600 font-medium">Assunto</label>
+                              <p className="text-sm font-medium text-red-800">{record.assunto}</p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                    <div className="flex items-center gap-2 text-green-700">
+                      <CheckCircle className="h-5 w-5" />
+                      <span className="font-semibold">Nada consta</span>
+                    </div>
+                    <p className="text-sm text-green-600 mt-1">
+                      Nenhum processo criminal encontrado. Última consulta: {new Date(selectedDriver.criminalCheckDate).toLocaleString("pt-BR")}
+                    </p>
+                  </div>
+                )}
+              </div>
+
               {/* Documentos */}
               <div className="border rounded-lg p-4">
                 <h3 className="font-semibold mb-4 flex items-center gap-2">
@@ -924,7 +1049,7 @@ export default function MotoristasAguardando() {
                       >
                         <div className="flex items-start justify-between">
                           <div className="flex-1">
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <p className="font-medium">{doc.documentTypeName || "Documento"}</p>
                               {doc.status === "approved" && (
                                 <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">
@@ -941,7 +1066,17 @@ export default function MotoristasAguardando() {
                                   Pendente
                                 </span>
                               )}
+                              {doc.isExpired && (
+                                <span className="text-xs bg-red-600 text-white px-2 py-1 rounded font-bold">
+                                  DOCUMENTO VENCIDO
+                                </span>
+                              )}
                             </div>
+                            {doc.expirationDate && (
+                              <p className={`text-sm mt-1 ${doc.isExpired ? 'text-red-600 font-medium' : 'text-muted-foreground'}`}>
+                                Validade: {new Date(doc.expirationDate).toLocaleDateString("pt-BR")}
+                              </p>
+                            )}
                             {doc.rejectionReason && (
                               <p className="text-sm text-red-600 mt-1">
                                 Motivo da rejeição: {doc.rejectionReason}

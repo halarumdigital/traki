@@ -13,7 +13,10 @@
       "Bash(timeout /t 5 /nobreak)",
       "Bash(node:*)",
       "Bash(curl:*)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(npx drizzle-kit push:*)",
+      "Bash(PGPASSWORD='@0dJ2m0q82320' psql -h 206.183.129.145 -p 5432 -U postgres -d fretus-dev -c \"ALTER TABLE requests ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMP;\")",
+      "Bash(/usr/bin/env node --version)"
     ],
     "deny": [],
     "ask": []

@@ -2628,6 +2628,58 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         totalDeliveries: 0,
       });
 
+      // Consultar processos criminais automaticamente se o CPF foi fornecido
+      if (cpf && process.env.CELLEREIT_API_TOKEN) {
+        try {
+          const cleanCpf = cpf.replace(/[^\d]/g, "");
+          if (cleanCpf.length === 11) {
+            console.log(`🔍 Consultando CPF ${cleanCpf} automaticamente para novo motorista ${newDriver.id}`);
+
+            const apiUrl = `https://api.gw.cellereit.com.br/consultas/validacao-fiscal-pj?cpf=${cleanCpf}`;
+            const criminalResponse = await fetch(apiUrl, {
+              method: "GET",
+              headers: {
+                "Authorization": `Bearer ${process.env.CELLEREIT_API_TOKEN}`,
+              },
+            });
+
+            if (criminalResponse.ok) {
+              const apiData = await criminalResponse.json();
+              const criminalRecords: Array<{ tipo: string; assunto: string; tribunalTipo: string }> = [];
+
+              if (apiData.Processos && Array.isArray(apiData.Processos)) {
+                for (const processo of apiData.Processos) {
+                  if (processo.TribunalTipo === "CRIMINAL") {
+                    criminalRecords.push({
+                      tipo: processo.Tipo || "Não informado",
+                      assunto: processo.Assunto || "Não informado",
+                      tribunalTipo: processo.TribunalTipo,
+                    });
+                  }
+                }
+              }
+
+              const hasCriminalRecords = criminalRecords.length > 0;
+
+              await db
+                .update(drivers)
+                .set({
+                  hasCriminalRecords,
+                  criminalRecords: hasCriminalRecords ? criminalRecords : null,
+                  criminalCheckDate: new Date(),
+                  updatedAt: new Date(),
+                })
+                .where(eq(drivers.id, newDriver.id));
+
+              console.log(`✅ Consulta criminal automática concluída para motorista ${newDriver.id}. Processos: ${criminalRecords.length}`);
+            }
+          }
+        } catch (criminalError) {
+          console.error("Erro ao consultar processos criminais automaticamente:", criminalError);
+          // Não bloqueia o cadastro se a consulta falhar
+        }
+      }
+
       // Se foi indicado, criar registros de indicação e comissão
       if (referredById) {
         // Buscar configurações de indicação
@@ -3116,6 +3168,130 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     } catch (error) {
       console.error("Erro ao salvar device ID:", error);
       return res.status(500).json({ message: "Erro ao salvar device ID" });
+    }
+  });
+
+  // POST /api/drivers/:id/check-criminal - Consultar processos criminais do motorista
+  app.post("/api/drivers/:id/check-criminal", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+
+      // Verificar se o motorista existe
+      const [driver] = await db
+        .select()
+        .from(drivers)
+        .where(eq(drivers.id, id))
+        .limit(1);
+
+      if (!driver) {
+        return res.status(404).json({ message: "Motorista não encontrado" });
+      }
+
+      if (!driver.cpf) {
+        return res.status(400).json({ message: "Motorista não possui CPF cadastrado" });
+      }
+
+      // Limpar CPF (remover pontos e traços)
+      const cleanCpf = driver.cpf.replace(/[^\d]/g, "");
+
+      if (cleanCpf.length !== 11) {
+        return res.status(400).json({ message: "CPF inválido" });
+      }
+
+      const apiToken = process.env.CELLEREIT_API_TOKEN;
+      if (!apiToken) {
+        return res.status(500).json({ message: "Token da API de consulta não configurado" });
+      }
+
+      // Fazer consulta à API externa (GET com query string)
+      console.log(`🔍 Consultando CPF ${cleanCpf} para motorista ${id}`);
+
+      const apiUrl = `https://api.gw.cellereit.com.br/consultas/validacao-fiscal-pj?cpf=${cleanCpf}`;
+      const response = await fetch(apiUrl, {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${apiToken}`,
+        },
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("Erro na API externa:", errorText);
+
+        // Se a API retornar erro, pode ser que não encontrou nada (nada consta)
+        if (response.status === 404 || response.status === 400) {
+          // Marcar como consultado mas sem registros
+          const [updatedDriver] = await db
+            .update(drivers)
+            .set({
+              hasCriminalRecords: false,
+              criminalRecords: null,
+              criminalCheckDate: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(drivers.id, id))
+            .returning();
+
+          return res.json({
+            success: true,
+            hasCriminalRecords: false,
+            criminalRecords: [],
+            checkDate: updatedDriver.criminalCheckDate,
+            message: "Consulta realizada - Nada consta"
+          });
+        }
+
+        return res.status(500).json({ message: "Erro ao consultar API externa. Verifique o endpoint e token da API." });
+      }
+
+      const apiData = await response.json();
+      console.log("Resposta da API:", JSON.stringify(apiData, null, 2));
+
+      // Filtrar processos criminais
+      const criminalRecords: Array<{ tipo: string; assunto: string; tribunalTipo: string }> = [];
+
+      // Verificar se há processos na resposta (campo "Processos" com P maiúsculo conforme documentação)
+      if (apiData.Processos && Array.isArray(apiData.Processos)) {
+        for (const processo of apiData.Processos) {
+          if (processo.TribunalTipo === "CRIMINAL") {
+            criminalRecords.push({
+              tipo: processo.Tipo || "Não informado",
+              assunto: processo.Assunto || "Não informado",
+              tribunalTipo: processo.TribunalTipo,
+            });
+          }
+        }
+      }
+
+      const hasCriminalRecords = criminalRecords.length > 0;
+
+      // Atualizar motorista com os dados da consulta
+      const [updatedDriver] = await db
+        .update(drivers)
+        .set({
+          hasCriminalRecords,
+          criminalRecords: hasCriminalRecords ? criminalRecords : null,
+          criminalCheckDate: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(drivers.id, id))
+        .returning();
+
+      console.log(`✅ Consulta criminal concluída para motorista ${id}. Processos criminais: ${criminalRecords.length}`);
+
+      return res.json({
+        success: true,
+        hasCriminalRecords,
+        criminalRecords,
+        checkDate: updatedDriver.criminalCheckDate,
+      });
+    } catch (error) {
+      console.error("Erro ao consultar processos criminais:", error);
+      return res.status(500).json({ message: "Erro ao consultar processos criminais" });
     }
   });
 
@@ -5628,6 +5804,67 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         }
       }
 
+      // Consultar processos criminais automaticamente se o CPF foi fornecido
+      if (cpf && process.env.CELLEREIT_API_TOKEN) {
+        try {
+          const cleanCpf = cpf.replace(/[^\d]/g, "");
+          if (cleanCpf.length === 11) {
+            console.log(`🔍 Consultando CPF ${cleanCpf} automaticamente para novo motorista ${driver.id}`);
+
+            const apiUrl = `https://api.gw.cellereit.com.br/consultas/validacao-fiscal-pj?cpf=${cleanCpf}`;
+            const criminalResponse = await fetch(apiUrl, {
+              method: "GET",
+              headers: {
+                "Authorization": `Bearer ${process.env.CELLEREIT_API_TOKEN}`,
+              },
+            });
+
+            if (criminalResponse.ok) {
+              const apiData = await criminalResponse.json();
+              const criminalRecords: Array<{ tipo: string; assunto: string; tribunalTipo: string }> = [];
+
+              if (apiData.Processos && Array.isArray(apiData.Processos)) {
+                for (const processo of apiData.Processos) {
+                  if (processo.TribunalTipo === "CRIMINAL") {
+                    criminalRecords.push({
+                      tipo: processo.Tipo || "Não informado",
+                      assunto: processo.Assunto || "Não informado",
+                      tribunalTipo: processo.TribunalTipo,
+                    });
+                  }
+                }
+              }
+
+              const hasCriminalRecords = criminalRecords.length > 0;
+
+              await db
+                .update(drivers)
+                .set({
+                  hasCriminalRecords,
+                  criminalRecords: hasCriminalRecords ? criminalRecords : null,
+                  criminalCheckDate: new Date(),
+                  updatedAt: new Date(),
+                })
+                .where(eq(drivers.id, driver.id));
+
+              console.log(`✅ Consulta criminal automática concluída para motorista ${driver.id}. Processos: ${criminalRecords.length}`);
+            } else {
+              console.log(`⚠️ Erro na API de consulta criminal: ${criminalResponse.status}`);
+            }
+          }
+        } catch (criminalError) {
+          console.error("Erro ao consultar processos criminais automaticamente:", criminalError);
+          // Não bloqueia o cadastro se a consulta falhar
+        }
+      } else {
+        if (!cpf) {
+          console.log("⚠️ CPF não fornecido, pulando consulta criminal automática");
+        }
+        if (!process.env.CELLEREIT_API_TOKEN) {
+          console.log("⚠️ CELLEREIT_API_TOKEN não configurado, pulando consulta criminal automática");
+        }
+      }
+
       return res.status(201).json({
         success: true,
         message: "Motorista registrado com sucesso. Agora envie seus documentos e aguarde a aprovação do administrador.",
@@ -6465,6 +6702,284 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
           .where(eq(drivers.id, driverId));
 
         console.log(`✅ Foto de perfil atualizada: ${documentUrl}`);
+      }
+
+      // 🔍 Se o documento for CNH, validar data de validade automaticamente
+      if (documentType && documentType.name.toLowerCase().includes('cnh') && process.env.CELLEREIT_API_TOKEN) {
+        try {
+          console.log(`🔍 Validando CNH automaticamente...`);
+
+          // Converter imagem para base64
+          const imageBase64 = req.file.buffer.toString('base64');
+
+          // Chamar API Cellereit para extrair dados da CNH
+          const cnhResponse = await fetch('https://api.gw.cellereit.com.br/contextus/cnh', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${process.env.CELLEREIT_API_TOKEN}`,
+            },
+            body: JSON.stringify({
+              image: imageBase64
+            }),
+          });
+
+          if (cnhResponse.ok) {
+            const cnhData = await cnhResponse.json();
+            console.log(`📋 Dados da CNH extraídos:`, cnhData);
+
+            // Verificar se a API retornou erro interno (status.code != 200)
+            if (cnhData.status && cnhData.status.code !== 200) {
+              console.log(`⚠️ API retornou erro interno: ${cnhData.status.code} - ${cnhData.status.message || 'Sem mensagem'}`);
+              if (cnhData.result && cnhData.result[0] && cnhData.result[0].docQualityScore === 0) {
+                console.log(`⚠️ Imagem não reconhecida como CNH válida (qualidade: 0). Verifique se a imagem está clara e é uma CNH.`);
+              }
+            }
+
+            // Procurar campo data_validade na resposta
+            let expirationDateStr = null;
+            let validationData: Record<string, string> = {};
+
+            // A resposta pode vir em diferentes formatos, vamos tentar encontrar a data de validade
+            if (Array.isArray(cnhData)) {
+              // Se for array de campos
+              for (const field of cnhData) {
+                if (field.name && field.value) {
+                  validationData[field.name] = field.value;
+                  if (field.name === 'data_validade' || field.name === 'validade') {
+                    expirationDateStr = field.value;
+                  }
+                }
+              }
+            } else if (cnhData.result && Array.isArray(cnhData.result) && cnhData.result.length > 0) {
+              // Formato: { result: [{ fields: [...] }] }
+              const firstResult = cnhData.result[0];
+
+              // Verificar qualidade do documento
+              if (firstResult.docQualityScore) {
+                console.log(`📊 Qualidade do documento: ${(firstResult.docQualityScore * 100).toFixed(1)}%`);
+              }
+              if (firstResult.docType) {
+                console.log(`📄 Tipo de documento detectado: ${firstResult.docType}`);
+              }
+
+              if (firstResult.fields && Array.isArray(firstResult.fields) && firstResult.fields.length > 0) {
+                console.log(`📋 Campos encontrados (${firstResult.fields.length}):`, firstResult.fields.map((f: any) => f.name).join(', '));
+                for (const field of firstResult.fields) {
+                  if (field.name && field.value) {
+                    validationData[field.name] = field.value;
+                    if (field.name === 'data_validade' || field.name === 'validade') {
+                      expirationDateStr = field.value;
+                    }
+                  }
+                }
+              } else {
+                console.log(`⚠️ Nenhum campo extraído da imagem. A qualidade pode estar muito baixa ou não é uma CNH válida.`);
+              }
+            } else if (cnhData.data_validade) {
+              expirationDateStr = cnhData.data_validade;
+              validationData = cnhData;
+            } else if (cnhData.fields && Array.isArray(cnhData.fields)) {
+              for (const field of cnhData.fields) {
+                if (field.name && field.value) {
+                  validationData[field.name] = field.value;
+                  if (field.name === 'data_validade' || field.name === 'validade') {
+                    expirationDateStr = field.value;
+                  }
+                }
+              }
+            }
+
+            if (expirationDateStr) {
+              console.log(`📅 Data de validade encontrada: ${expirationDateStr}`);
+
+              // Converter data de validade (formato DD/MM/YYYY) para Date
+              const dateParts = expirationDateStr.split('/');
+              let expirationDate: Date | null = null;
+
+              if (dateParts.length === 3) {
+                const day = parseInt(dateParts[0], 10);
+                const month = parseInt(dateParts[1], 10) - 1; // Mês em JS é 0-indexed
+                const year = parseInt(dateParts[2], 10);
+                expirationDate = new Date(year, month, day);
+              }
+
+              if (expirationDate && !isNaN(expirationDate.getTime())) {
+                // Verificar se está vencido
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+                const isExpired = expirationDate < today;
+
+                console.log(`📅 Data de validade: ${expirationDate.toLocaleDateString('pt-BR')}`);
+                console.log(`${isExpired ? '⚠️ DOCUMENTO VENCIDO!' : '✅ Documento válido'}`);
+
+                // Atualizar documento com informações de validade
+                await db
+                  .update(driverDocuments)
+                  .set({
+                    expirationDate: expirationDate,
+                    isExpired: isExpired,
+                    validationData: validationData,
+                    updatedAt: new Date(),
+                  })
+                  .where(eq(driverDocuments.id, document.id));
+
+                // Atualizar variável document para retornar na resposta
+                document = {
+                  ...document,
+                  expirationDate: expirationDate,
+                  isExpired: isExpired,
+                  validationData: validationData,
+                };
+              }
+            } else {
+              console.log(`⚠️ Data de validade não encontrada na resposta da API`);
+            }
+          } else {
+            console.log(`⚠️ Erro na API de validação CNH: ${cnhResponse.status}`);
+          }
+        } catch (cnhError) {
+          console.error("Erro ao validar CNH automaticamente:", cnhError);
+          // Não bloqueia o upload se a validação falhar
+        }
+      }
+
+      // 🔍 Se o documento for CRLV, validar data de validade automaticamente
+      if (documentType && documentType.name.toLowerCase().includes('crlv') && process.env.CELLEREIT_API_TOKEN) {
+        try {
+          console.log(`🔍 Validando CRLV-Digital automaticamente...`);
+
+          // Criar FormData para enviar o arquivo
+          const FormData = (await import('form-data')).default;
+          const formData = new FormData();
+          formData.append('file', req.file.buffer, {
+            filename: req.file.originalname || 'crlv.pdf',
+            contentType: req.file.mimetype || 'application/pdf',
+          });
+
+          console.log(`📦 Tamanho do arquivo: ${req.file.buffer.length} bytes`);
+
+          // Chamar API Cellereit para extrair dados do CRLV
+          // A API do CRLV usa multipart/form-data
+          const crlvResponse = await fetch('https://api.gw.cellereit.com.br/contextus/crlv-digital', {
+            method: 'POST',
+            headers: {
+              ...formData.getHeaders(),
+              'Authorization': `Bearer ${process.env.CELLEREIT_API_TOKEN}`,
+            },
+            body: formData,
+          });
+
+          console.log(`📡 Status da resposta CRLV: ${crlvResponse.status}`);
+
+          if (crlvResponse.ok) {
+            const crlvData = await crlvResponse.json();
+            console.log(`📋 Dados do CRLV extraídos:`, crlvData);
+
+            // Verificar se a API retornou erro interno
+            if (crlvData.status && crlvData.status.code !== 200) {
+              console.log(`⚠️ API retornou erro interno: ${crlvData.status.code} - ${crlvData.status.message || 'Sem mensagem'}`);
+              if (crlvData.result && crlvData.result[0] && crlvData.result[0].docQualityScore === 0) {
+                console.log(`⚠️ Imagem não reconhecida como CRLV válido (qualidade: 0). Verifique se a imagem está clara e é um CRLV.`);
+              }
+            }
+
+            // Procurar campo data_validade na resposta
+            let expirationDateStr = null;
+            let validationData: Record<string, string> = {};
+
+            if (crlvData.result && Array.isArray(crlvData.result) && crlvData.result.length > 0) {
+              const firstResult = crlvData.result[0];
+
+              // Verificar qualidade do documento
+              if (firstResult.docQualityScore) {
+                console.log(`📊 Qualidade do documento: ${(firstResult.docQualityScore * 100).toFixed(1)}%`);
+              }
+              if (firstResult.docType) {
+                console.log(`📄 Tipo de documento detectado: ${firstResult.docType}`);
+              }
+
+              if (firstResult.fields && Array.isArray(firstResult.fields) && firstResult.fields.length > 0) {
+                console.log(`📋 Campos encontrados (${firstResult.fields.length}):`, firstResult.fields.map((f: any) => f.name).join(', '));
+                for (const field of firstResult.fields) {
+                  if (field.name && field.value) {
+                    validationData[field.name] = field.value;
+                    // CRLV pode ter diferentes nomes para data de validade
+                    if (field.name === 'data_validade' || field.name === 'validade' || field.name === 'exercicio' || field.name === 'ano_exercicio') {
+                      expirationDateStr = field.value;
+                    }
+                  }
+                }
+              } else {
+                console.log(`⚠️ Nenhum campo extraído da imagem. A qualidade pode estar muito baixa ou não é um CRLV válido.`);
+              }
+            }
+
+            if (expirationDateStr) {
+              console.log(`📅 Data de validade/exercício encontrada: ${expirationDateStr}`);
+
+              let expirationDate: Date | null = null;
+
+              // CRLV pode vir como data (DD/MM/YYYY) ou apenas ano (YYYY)
+              if (expirationDateStr.includes('/')) {
+                // Formato DD/MM/YYYY
+                const dateParts = expirationDateStr.split('/');
+                if (dateParts.length === 3) {
+                  const day = parseInt(dateParts[0], 10);
+                  const month = parseInt(dateParts[1], 10) - 1;
+                  const year = parseInt(dateParts[2], 10);
+                  expirationDate = new Date(year, month, day);
+                }
+              } else if (/^\d{4}$/.test(expirationDateStr)) {
+                // Apenas ano (YYYY) - considerar vencido se ano < ano atual
+                const year = parseInt(expirationDateStr, 10);
+                expirationDate = new Date(year, 11, 31); // Fim do ano de exercício
+              }
+
+              if (expirationDate && !isNaN(expirationDate.getTime())) {
+                // Verificar se está vencido
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+                const isExpired = expirationDate < today;
+
+                console.log(`📅 Data de validade: ${expirationDate.toLocaleDateString('pt-BR')}`);
+                console.log(`${isExpired ? '⚠️ DOCUMENTO VENCIDO!' : '✅ Documento válido'}`);
+
+                // Atualizar documento com informações de validade
+                await db
+                  .update(driverDocuments)
+                  .set({
+                    expirationDate: expirationDate,
+                    isExpired: isExpired,
+                    validationData: validationData,
+                    updatedAt: new Date(),
+                  })
+                  .where(eq(driverDocuments.id, document.id));
+
+                // Atualizar variável document para retornar na resposta
+                document = {
+                  ...document,
+                  expirationDate: expirationDate,
+                  isExpired: isExpired,
+                  validationData: validationData,
+                };
+              }
+            } else {
+              console.log(`⚠️ Data de validade não encontrada na resposta da API`);
+            }
+          } else {
+            console.log(`⚠️ Erro na API de validação CRLV: ${crlvResponse.status}`);
+            try {
+              const errorBody = await crlvResponse.text();
+              console.log(`📋 Corpo do erro:`, errorBody);
+            } catch (e) {
+              console.log(`Não foi possível ler o corpo do erro`);
+            }
+          }
+        } catch (crlvError) {
+          console.error("Erro ao validar CRLV automaticamente:", crlvError);
+          // Não bloqueia o upload se a validação falhar
+        }
       }
 
       // Verificar se todos os documentos obrigatórios foram enviados

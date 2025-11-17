@@ -16,7 +16,9 @@
       "Bash(dir:*)",
       "Bash(npx drizzle-kit push:*)",
       "Bash(PGPASSWORD='@0dJ2m0q82320' psql -h 206.183.129.145 -p 5432 -U postgres -d fretus-dev -c \"ALTER TABLE requests ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMP;\")",
-      "Bash(/usr/bin/env node --version)"
+      "Bash(/usr/bin/env node --version)",
+      "Bash(npx cross-env DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev npx tsx server/migrate-add-criminal-check.ts)",
+      "Bash(npm ls:*)"
     ],
     "deny": [],
     "ask": []

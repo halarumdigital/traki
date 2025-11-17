@@ -1233,7 +1233,7 @@ export default function EmpresaEntregasEmAndamento() {
             </CardTitle>
             <Button className="gap-2" onClick={handleNewDelivery}>
               <Plus className="h-4 w-4" />
-              Nova Entrega
+              Entrega Rápida
             </Button>
           </div>
         </CardHeader>

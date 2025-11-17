@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, boolean, timestamp, numeric, integer, uuid } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, boolean, timestamp, numeric, integer, uuid, json } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { relations } from "drizzle-orm";
@@ -125,6 +125,11 @@ export const driverDocuments = pgTable("driver_documents", {
   documentUrl: text("document_url").notNull(),
   status: varchar("status", { length: 20 }).notNull().default("pending"), // pending, approved, rejected
   rejectionReason: text("rejection_reason"),
+
+  // Campos de validação de documento (CNH)
+  expirationDate: timestamp("expiration_date"), // Data de validade extraída do documento
+  isExpired: boolean("is_expired").default(false), // Se o documento está vencido
+  validationData: json("validation_data").$type<Record<string, string>>(), // Dados extraídos da validação
 
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
@@ -273,6 +278,15 @@ export const drivers = pgTable("drivers", {
   referredByCode: varchar("referred_by_code", { length: 50 }), // Código de quem indicou
   referredById: varchar("referred_by_id").references(() => drivers.id), // ID de quem indicou
   totalDeliveries: integer("total_deliveries").notNull().default(0), // Total de entregas completas
+
+  // Criminal Background Check (Consulta de Antecedentes Criminais)
+  hasCriminalRecords: boolean("has_criminal_records").default(false), // Se tem processos criminais
+  criminalRecords: json("criminal_records").$type<Array<{
+    tipo: string;
+    assunto: string;
+    tribunalTipo: string;
+  }>>(), // Lista de processos criminais
+  criminalCheckDate: timestamp("criminal_check_date"), // Data da última consulta
 
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),

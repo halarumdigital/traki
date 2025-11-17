@@ -451,6 +451,10 @@ export class DatabaseStorage implements IStorage {
         documentUrl: driverDocuments.documentUrl,
         status: driverDocuments.status,
         rejectionReason: driverDocuments.rejectionReason,
+        // Campos de validação de documento (CNH)
+        expirationDate: driverDocuments.expirationDate,
+        isExpired: driverDocuments.isExpired,
+        validationData: driverDocuments.validationData,
         createdAt: driverDocuments.createdAt,
       })
       .from(driverDocuments)
@@ -741,6 +745,10 @@ export class DatabaseStorage implements IStorage {
         longitude: drivers.longitude,
         createdAt: drivers.createdAt,
         updatedAt: drivers.updatedAt,
+        // Campos de antecedentes criminais
+        hasCriminalRecords: drivers.hasCriminalRecords,
+        criminalRecords: drivers.criminalRecords,
+        criminalCheckDate: drivers.criminalCheckDate,
       })
       .from(drivers)
       .leftJoin(serviceLocations, eq(drivers.serviceLocationId, serviceLocations.id))
