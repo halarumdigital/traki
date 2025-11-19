@@ -514,6 +514,9 @@ export class DatabaseStorage implements IStorage {
         expirationDate: driverDocuments.expirationDate,
         isExpired: driverDocuments.isExpired,
         validationData: driverDocuments.validationData,
+        // Campos de validação FaceMatch (Selfie)
+        faceMatchScore: driverDocuments.faceMatchScore,
+        faceMatchValidated: driverDocuments.faceMatchValidated,
         createdAt: driverDocuments.createdAt,
       })
       .from(driverDocuments)

@@ -92,6 +92,10 @@ type DriverDocument = {
   status: "pending" | "approved" | "rejected";
   rejectionReason: string | null;
   createdAt: string;
+  expirationDate?: string;
+  isExpired?: boolean;
+  faceMatchScore?: number | null;
+  faceMatchValidated?: boolean | null;
 };
 
 type ServiceLocation = {
@@ -1076,6 +1080,28 @@ export default function MotoristasAguardando() {
                               <p className={`text-sm mt-1 ${doc.isExpired ? 'text-red-600 font-medium' : 'text-muted-foreground'}`}>
                                 Validade: {new Date(doc.expirationDate).toLocaleDateString("pt-BR")}
                               </p>
+                            )}
+                            {/* Validação FaceMatch para Selfie */}
+                            {doc.documentTypeName?.toLowerCase() === 'selfie' && doc.faceMatchValidated !== undefined && (
+                              <div className="flex items-center gap-2 mt-2">
+                                <span className="text-sm text-muted-foreground">Validação Facial:</span>
+                                {doc.faceMatchValidated === null ? (
+                                  <span className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded flex items-center gap-1 font-semibold">
+                                    <XCircle className="h-3 w-3" />
+                                    Selfie Inválida
+                                  </span>
+                                ) : doc.faceMatchValidated === true && doc.faceMatchScore ? (
+                                  <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded flex items-center gap-1 font-semibold">
+                                    <CheckCircle className="h-3 w-3" />
+                                    Selfie Válida ({doc.faceMatchScore.toFixed(1)}%)
+                                  </span>
+                                ) : (
+                                  <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded flex items-center gap-1 font-semibold">
+                                    <CheckCircle className="h-3 w-3" />
+                                    Selfie Válida
+                                  </span>
+                                )}
+                              </div>
                             )}
                             {doc.rejectionReason && (
                               <p className="text-sm text-red-600 mt-1">

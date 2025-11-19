@@ -11,6 +11,7 @@ import bcrypt from "bcrypt";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import nodeFetch from "node-fetch";
 import { initializeFirebase, sendPushNotification, sendPushToMultipleDevices } from "./firebase";
 import { sentryUserContext } from "./sentry-middleware";
 import { uploadToR2, deleteFromR2, isValidImage, isValidDocument, isValidFileSize } from "./r2-storage";
@@ -9401,6 +9402,180 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
           .where(eq(drivers.id, driverId));
 
         console.log(`✅ Foto de perfil atualizada: ${documentUrl}`);
+
+        // 🔍 Validar selfie com FaceMatch comparando com a CNH
+        if (process.env.CELLEREIT_API_TOKEN) {
+          try {
+            console.log(`🔍 Validando selfie com FaceMatch...`);
+
+            // Buscar a CNH do motorista
+            const cnhDoc = await db
+              .select()
+              .from(driverDocuments)
+              .innerJoin(
+                driverDocumentTypes,
+                eq(driverDocuments.documentTypeId, driverDocumentTypes.id)
+              )
+              .where(
+                and(
+                  eq(driverDocuments.driverId, driverId),
+                  sql`LOWER(${driverDocumentTypes.name}) LIKE '%cnh%'`
+                )
+              )
+              .limit(1);
+
+            if (cnhDoc.length > 0 && cnhDoc[0].driver_documents.documentUrl) {
+              console.log(`📄 CNH encontrada: ${cnhDoc[0].driver_documents.documentUrl}`);
+
+              // Baixar as imagens da CNH e Selfie do R2
+              const [cnhImageResponse, selfieImageResponse] = await Promise.all([
+                nodeFetch(cnhDoc[0].driver_documents.documentUrl),
+                nodeFetch(documentUrl),
+              ]);
+
+              if (!cnhImageResponse.ok || !selfieImageResponse.ok) {
+                throw new Error('Erro ao baixar imagens do R2');
+              }
+
+              const [cnhBuffer, selfieBuffer] = await Promise.all([
+                cnhImageResponse.arrayBuffer(),
+                selfieImageResponse.arrayBuffer(),
+              ]);
+
+              // Criar FormData para a API FaceMatch
+              const FormData = (await import('form-data')).default;
+              const formData = new FormData();
+
+              formData.append('face_a', Buffer.from(selfieBuffer), {
+                filename: 'selfie.jpg',
+                contentType: 'image/jpeg',
+              });
+
+              formData.append('face_b', Buffer.from(cnhBuffer), {
+                filename: 'cnh.jpg',
+                contentType: 'image/jpeg',
+              });
+
+              console.log(`📡 Enviando para API FaceMatch...`);
+
+              // Chamar API FaceMatch
+              const faceMatchResponse = await nodeFetch('https://api.gw.cellereit.com.br/facematch/', {
+                method: 'POST',
+                headers: {
+                  ...formData.getHeaders(),
+                  'Authorization': `Bearer ${process.env.CELLEREIT_API_TOKEN}`,
+                },
+                body: formData as any,
+              });
+
+              console.log(`📡 Status da resposta FaceMatch: ${faceMatchResponse.status}`);
+
+              if (faceMatchResponse.ok) {
+                const faceMatchData = await faceMatchResponse.json();
+                console.log(`📋 Resultado FaceMatch:`, JSON.stringify(faceMatchData, null, 2));
+
+                // Verificar se a API retornou erro interno (mesmo com HTTP 200)
+                if (faceMatchData.status && faceMatchData.status.code !== 200) {
+                  console.log(`⚠️ API FaceMatch retornou erro interno: ${faceMatchData.status.code} - ${faceMatchData.status.message}`);
+
+                  // Verificar detalhes do erro
+                  let selfieHasFace = false;
+                  if (faceMatchData.result?.img_stats) {
+                    const imgA = faceMatchData.result.img_stats.imga;
+                    const imgB = faceMatchData.result.img_stats.imgb;
+                    console.log(`📊 Faces detectadas:`);
+                    console.log(`   Selfie: ${imgA?.num_faces || 0} face(s) (score: ${imgA?.score || -1})`);
+                    console.log(`   CNH: ${imgB?.num_faces || 0} face(s) (score: ${imgB?.score || -1})`);
+
+                    selfieHasFace = (imgA?.num_faces || 0) === 1;
+                  }
+
+                  console.log(`${selfieHasFace ? '⚠️ Selfie válida mas falhou na comparação' : '❌ Selfie inválida - nenhuma face detectada'}`);
+
+                  // Salvar resultado indicando se detectou face ou não
+                  await db
+                    .update(driverDocuments)
+                    .set({
+                      faceMatchScore: null,
+                      faceMatchValidated: selfieHasFace ? false : null, // false = detectou face mas não passou na validação, null = não detectou face
+                      faceMatchData: faceMatchData,
+                      updatedAt: new Date(),
+                    })
+                    .where(eq(driverDocuments.id, document.id));
+
+                  // Atualizar variável document para retornar na resposta
+                  document = {
+                    ...document,
+                    faceMatchScore: null,
+                    faceMatchValidated: selfieHasFace ? false : null,
+                    faceMatchData: faceMatchData,
+                  };
+                } else {
+                  // Extrair score de similaridade
+                  // A API retorna 'confiability' e 'distance'
+                  let faceMatchScore: number | null = null;
+                  let faceMatchValidated = false;
+
+                  if (faceMatchData.result?.confiability !== undefined && faceMatchData.result.confiability !== '') {
+                    faceMatchScore = parseFloat(faceMatchData.result.confiability);
+                  } else if (faceMatchData.result?.distance !== undefined && faceMatchData.result.distance >= 0) {
+                    // Distance: quanto menor, mais similar (0 = idêntico)
+                    // Converter para porcentagem de similaridade (inverso)
+                    faceMatchScore = Math.max(0, 100 - (faceMatchData.result.distance * 10));
+                  }
+
+                  // Considerar validado se score >= 70% (ajuste conforme necessário)
+                  if (faceMatchScore !== null && faceMatchScore >= 70) {
+                    faceMatchValidated = true;
+                  }
+
+                  console.log(`📊 Score FaceMatch: ${faceMatchScore}`);
+                  console.log(`${faceMatchValidated ? '✅ Validação APROVADA' : '⚠️ Validação REPROVADA'}`);
+
+                  // Atualizar documento com informações do FaceMatch
+                  await db
+                    .update(driverDocuments)
+                    .set({
+                      faceMatchScore: faceMatchScore,
+                      faceMatchValidated: faceMatchValidated,
+                      faceMatchData: faceMatchData,
+                      updatedAt: new Date(),
+                    })
+                    .where(eq(driverDocuments.id, document.id));
+
+                  // Atualizar variável document para retornar na resposta
+                  document = {
+                    ...document,
+                    faceMatchScore: faceMatchScore,
+                    faceMatchValidated: faceMatchValidated,
+                    faceMatchData: faceMatchData,
+                  };
+                }
+              } else {
+                console.log(`⚠️ Erro na API FaceMatch: ${faceMatchResponse.status} ${faceMatchResponse.statusText}`);
+                try {
+                  const errorBody = await faceMatchResponse.text();
+                  console.log(`📋 Corpo do erro:`, errorBody);
+
+                  // Tentar parsear como JSON para ver se tem mais detalhes
+                  try {
+                    const errorJson = JSON.parse(errorBody);
+                    console.log(`📋 Erro JSON:`, JSON.stringify(errorJson, null, 2));
+                  } catch (e) {
+                    // Não é JSON, já logamos o texto acima
+                  }
+                } catch (e) {
+                  console.log(`Não foi possível ler o corpo do erro`);
+                }
+              }
+            } else {
+              console.log(`⚠️ CNH não encontrada para o motorista. Não é possível validar selfie.`);
+            }
+          } catch (faceMatchError) {
+            console.error("Erro ao validar selfie com FaceMatch:", faceMatchError);
+            // Não bloqueia o upload se a validação falhar
+          }
+        }
       }
 
       // 🔍 Se o documento for CNH, validar data de validade automaticamente
@@ -9716,7 +9891,10 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
           documentTypeId: document.documentTypeId,
           documentUrl: document.documentUrl,
           status: document.status,
-          allRequiredUploaded: allRequiredUploaded
+          allRequiredUploaded: allRequiredUploaded,
+          // Incluir dados de validação FaceMatch se disponíveis
+          faceMatchScore: document.faceMatchScore || null,
+          faceMatchValidated: document.faceMatchValidated || null,
         }
       });
     } catch (error) {
@@ -9741,6 +9919,10 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
           status: driverDocuments.status,
           rejectionReason: driverDocuments.rejectionReason,
           createdAt: driverDocuments.createdAt,
+          expirationDate: driverDocuments.expirationDate,
+          isExpired: driverDocuments.isExpired,
+          faceMatchScore: driverDocuments.faceMatchScore,
+          faceMatchValidated: driverDocuments.faceMatchValidated,
         })
         .from(driverDocuments)
         .leftJoin(

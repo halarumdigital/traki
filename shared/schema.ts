@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, boolean, timestamp, numeric, integer, uuid, json } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, boolean, timestamp, numeric, integer, uuid, json, real } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { relations } from "drizzle-orm";
@@ -130,6 +130,11 @@ export const driverDocuments = pgTable("driver_documents", {
   expirationDate: timestamp("expiration_date"), // Data de validade extraída do documento
   isExpired: boolean("is_expired").default(false), // Se o documento está vencido
   validationData: json("validation_data").$type<Record<string, string>>(), // Dados extraídos da validação
+
+  // Campos de validação FaceMatch (Selfie vs CNH)
+  faceMatchScore: real("face_match_score"), // Score de similaridade da comparação facial (0-100)
+  faceMatchValidated: boolean("face_match_validated"), // Se passou na validação facial
+  faceMatchData: json("face_match_data"), // Dados completos da resposta da API FaceMatch
 
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),

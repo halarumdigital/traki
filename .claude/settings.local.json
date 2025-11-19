@@ -32,7 +32,11 @@
       "Bash(test:*)",
       "Bash(npm run check:*)",
       "Bash(npx tsc:*)",
-      "Bash(npx cross-env DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev npx tsx server/check-entrega-status.ts)"
+      "Bash(npx cross-env DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev npx tsx server/check-entrega-status.ts)",
+      "Bash(npm run db:push:*)",
+      "Bash(npx cross-env DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev npx tsx server/add-facematch-columns.ts)",
+      "Bash(npx cross-env DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev npx tsx server/test-facematch.ts)",
+      "Bash(npx tsx:*)"
     ],
     "deny": [],
     "ask": []
