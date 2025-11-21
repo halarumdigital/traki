@@ -73,6 +73,8 @@ type FormData = {
   carColor: string;
   carYear: string;
   serviceLocationId: string;
+  pixKey?: string;
+  pixKeyType?: string;
 };
 
 export default function Motoristas() {
@@ -557,6 +559,46 @@ export default function Motoristas() {
                       placeholder="2024"
                       maxLength={4}
                     />
+                  </div>
+                </div>
+              </div>
+
+              {/* Dados PIX */}
+              <div className="border-b pb-4">
+                <h3 className="font-semibold mb-3">Dados PIX (Woovi)</h3>
+                <p className="text-sm text-muted-foreground mb-3">
+                  Cadastre uma chave PIX para receber pagamentos das entregas
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <Label htmlFor="pixKeyType">Tipo de Chave PIX</Label>
+                    <Select
+                      value={watch("pixKeyType")}
+                      onValueChange={(value) => setValue("pixKeyType", value)}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Selecione o tipo" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="EMAIL">Email</SelectItem>
+                        <SelectItem value="CPF">CPF</SelectItem>
+                        <SelectItem value="CNPJ">CNPJ</SelectItem>
+                        <SelectItem value="PHONE">Telefone</SelectItem>
+                        <SelectItem value="EVP">Chave Aleatória</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div>
+                    <Label htmlFor="pixKey">Chave PIX</Label>
+                    <Input
+                      id="pixKey"
+                      {...register("pixKey")}
+                      placeholder="Digite a chave PIX"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Esta chave será usada para receber pagamentos das entregas
+                    </p>
                   </div>
                 </div>
               </div>

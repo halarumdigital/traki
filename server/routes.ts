@@ -2,7 +2,7 @@ import express, { type Express } from "express";
 import { createServer, type Server } from "http";
 import { Server as SocketIOServer } from "socket.io";
 import { storage } from "./storage";
-import { loginSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications, cityPrices, settings, companyCancellationTypes, insertCompanyCancellationTypeSchema, promotions, insertPromotionSchema, companyDriverRatings, driverCompanyRatings, deliveryStops, faqs, insertFaqSchema, pushNotifications, referralSettings, driverReferrals, companyReferrals, ticketSubjects, insertTicketSubjectSchema, supportTickets, insertSupportTicketSchema, ticketReplies, insertTicketReplySchema, entregadorRotas, entregasIntermunicipais, rotasIntermunicipais, viagemColetas, viagemEntregas, wooviCharges, financialTransactions } from "@shared/schema";
+import { loginSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications, cityPrices, settings, companyCancellationTypes, insertCompanyCancellationTypeSchema, promotions, insertPromotionSchema, companyDriverRatings, driverCompanyRatings, deliveryStops, faqs, insertFaqSchema, pushNotifications, referralSettings, driverReferrals, companyReferrals, ticketSubjects, insertTicketSubjectSchema, supportTickets, insertSupportTicketSchema, ticketReplies, insertTicketReplySchema, entregadorRotas, entregasIntermunicipais, rotasIntermunicipais, viagemColetas, viagemEntregas, wooviCharges, financialTransactions, wooviSubaccounts } from "@shared/schema";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import { pool, db } from "./db";
@@ -15333,6 +15333,252 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     } catch (error) {
       console.error("Erro ao buscar transações do motorista:", error);
       return res.status(500).json({ message: "Erro ao buscar transações" });
+    }
+  });
+
+  // ==================== ENDPOINTS FINANCEIROS ADMIN ====================
+
+  // GET /api/financial/admin/subaccounts - Listar todas as subcontas
+  app.get("/api/financial/admin/subaccounts", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(401).json({ message: "Acesso negado - Apenas admin" });
+      }
+
+      const accountType = req.query.accountType as string;
+      const limit = parseInt(req.query.limit as string) || 100;
+      const offset = parseInt(req.query.offset as string) || 0;
+
+      let query = db.select().from(wooviSubaccounts);
+
+      if (accountType) {
+        query = query.where(eq(wooviSubaccounts.accountType, accountType)) as any;
+      }
+
+      const subaccounts = await query
+        .orderBy(desc(wooviSubaccounts.createdAt))
+        .limit(limit)
+        .offset(offset);
+
+      const enrichedSubaccounts = await Promise.all(
+        subaccounts.map(async (sub: any) => {
+          let ownerName = null;
+          let ownerData = null;
+
+          if (sub.companyId) {
+            const company = await storage.getCompany(sub.companyId);
+            ownerName = company?.name;
+            ownerData = company;
+          } else if (sub.driverId) {
+            const driver = await storage.getDriver(sub.driverId);
+            ownerName = driver?.name;
+            ownerData = driver;
+          }
+
+          return { ...sub, ownerName, ownerData };
+        })
+      );
+
+      return res.json({
+        subaccounts: enrichedSubaccounts,
+        pagination: { limit, offset, total: enrichedSubaccounts.length },
+      });
+    } catch (error) {
+      console.error("Erro ao listar subcontas:", error);
+      return res.status(500).json({ message: "Erro ao listar subcontas" });
+    }
+  });
+
+  // GET /api/financial/admin/subaccounts/:id/balance - Consultar saldo
+  app.get("/api/financial/admin/subaccounts/:id/balance", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(401).json({ message: "Acesso negado - Apenas admin" });
+      }
+
+      const { id } = req.params;
+      const balance = await financialService.updateSubaccountBalance(id);
+
+      const [subaccount] = await db
+        .select()
+        .from(wooviSubaccounts)
+        .where(eq(wooviSubaccounts.id, id))
+        .limit(1);
+
+      if (!subaccount) {
+        return res.status(404).json({ message: "Subconta não encontrada" });
+      }
+
+      return res.json({
+        subaccountId: id,
+        balance,
+        balanceCache: subaccount.balanceCache,
+        lastUpdate: subaccount.lastBalanceUpdate,
+        pixKey: subaccount.pixKey,
+        pixKeyType: subaccount.pixKeyType,
+        accountType: subaccount.accountType,
+      });
+    } catch (error) {
+      console.error("Erro ao consultar saldo:", error);
+      return res.status(500).json({
+        message: error instanceof Error ? error.message : "Erro ao consultar saldo"
+      });
+    }
+  });
+
+  // POST /api/financial/admin/subaccounts/:id/force-withdraw - Forçar saque
+  app.post("/api/financial/admin/subaccounts/:id/force-withdraw", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(401).json({ message: "Acesso negado - Apenas admin" });
+      }
+
+      const { id } = req.params;
+      const { reason } = req.body;
+
+      const [subaccount] = await db
+        .select()
+        .from(wooviSubaccounts)
+        .where(eq(wooviSubaccounts.id, id))
+        .limit(1);
+
+      if (!subaccount) {
+        return res.status(404).json({ message: "Subconta não encontrada" });
+      }
+
+      const balance = await financialService.updateSubaccountBalance(id);
+
+      if (balance <= 0) {
+        return res.status(400).json({ message: "Saldo insuficiente para saque" });
+      }
+
+      const { default: wooviService } = await import("./services/woovi.service");
+      const withdrawal = await wooviService.withdrawFromSubaccount(subaccount.pixKey);
+
+      await db.insert(financialTransactions).values({
+        type: 'withdrawal',
+        companyId: subaccount.companyId || undefined,
+        driverId: subaccount.driverId || undefined,
+        fromSubaccountId: subaccount.id,
+        amount: balance.toString(),
+        status: 'completed',
+        wooviTransactionId: withdrawal.transaction.correlationID,
+        description: `Saque forçado pelo admin - R$ ${balance.toFixed(2)}${reason ? ` - ${reason}` : ''}`,
+      });
+
+      await financialService.updateSubaccountBalance(subaccount.id);
+
+      return res.json({
+        message: "Saque forçado realizado com sucesso",
+        amount: balance,
+        destinationPixKey: subaccount.pixKey,
+        transactionId: withdrawal.transaction.correlationID,
+      });
+    } catch (error) {
+      console.error("Erro ao forçar saque:", error);
+      return res.status(500).json({
+        message: error instanceof Error ? error.message : "Erro ao forçar saque"
+      });
+    }
+  });
+
+  // GET /api/financial/admin/transactions - Ver todas as transações
+  app.get("/api/financial/admin/transactions", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(401).json({ message: "Acesso negado - Apenas admin" });
+      }
+
+      const type = req.query.type as string;
+      const status = req.query.status as string;
+      const limit = parseInt(req.query.limit as string) || 100;
+      const offset = parseInt(req.query.offset as string) || 0;
+
+      let query = db.select().from(financialTransactions);
+      const conditions = [];
+
+      if (type) conditions.push(eq(financialTransactions.type, type));
+      if (status) conditions.push(eq(financialTransactions.status, status));
+
+      if (conditions.length > 0) {
+        query = query.where(and(...conditions)) as any;
+      }
+
+      const transactions = await query
+        .orderBy(desc(financialTransactions.createdAt))
+        .limit(limit)
+        .offset(offset);
+
+      return res.json({
+        transactions,
+        pagination: { limit, offset, total: transactions.length },
+      });
+    } catch (error) {
+      console.error("Erro ao buscar transações:", error);
+      return res.status(500).json({ message: "Erro ao buscar transações" });
+    }
+  });
+
+  // GET /api/financial/admin/stats - Estatísticas financeiras
+  app.get("/api/financial/admin/stats", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(401).json({ message: "Acesso negado - Apenas admin" });
+      }
+
+      const allSubaccounts = await db.select().from(wooviSubaccounts);
+      const balances = await Promise.all(
+        allSubaccounts.map(sub => financialService.updateSubaccountBalance(sub.id))
+      );
+
+      const companySubaccounts = allSubaccounts.filter(s => s.accountType === 'company');
+      const driverSubaccounts = allSubaccounts.filter(s => s.accountType === 'driver');
+
+      const totalCompanyBalance = companySubaccounts.reduce((sum, sub) => {
+        const balance = balances[allSubaccounts.indexOf(sub)];
+        return sum + balance;
+      }, 0);
+
+      const totalDriverBalance = driverSubaccounts.reduce((sum, sub) => {
+        const balance = balances[allSubaccounts.indexOf(sub)];
+        return sum + balance;
+      }, 0);
+
+      const allTransactions = await db.select().from(financialTransactions);
+
+      const totalTransferred = allTransactions
+        .filter(t => t.type === 'transfer_delivery' && t.status === 'completed')
+        .reduce((sum, t) => sum + parseFloat(t.amount), 0);
+
+      const totalCancellationFees = allTransactions
+        .filter(t => t.type === 'transfer_cancellation' && t.status === 'completed')
+        .reduce((sum, t) => sum + parseFloat(t.amount), 0);
+
+      const totalWithdrawals = allTransactions
+        .filter(t => t.type === 'withdrawal' && t.status === 'completed')
+        .reduce((sum, t) => sum + parseFloat(t.amount), 0);
+
+      return res.json({
+        subaccounts: {
+          total: allSubaccounts.length,
+          companies: companySubaccounts.length,
+          drivers: driverSubaccounts.length,
+        },
+        balances: {
+          totalCompanyBalance,
+          totalDriverBalance,
+          grandTotal: totalCompanyBalance + totalDriverBalance,
+        },
+        transactions: {
+          total: allTransactions.length,
+          totalTransferred,
+          totalCancellationFees,
+          totalWithdrawals,
+        },
+      });
+    } catch (error) {
+      console.error("Erro ao buscar estatísticas:", error);
+      return res.status(500).json({ message: "Erro ao buscar estatísticas" });
     }
   });
 

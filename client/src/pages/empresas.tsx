@@ -548,6 +548,49 @@ export default function Empresas() {
                 </div>
               </div>
 
+              {/* Dados PIX */}
+              <div className="border-b pb-4">
+                <h3 className="font-semibold mb-3">Dados PIX (Woovi)</h3>
+                <p className="text-sm text-muted-foreground mb-3">
+                  Cadastre uma chave PIX para receber pagamentos e gerenciar saldo da empresa
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <Label htmlFor="pixKeyType">Tipo de Chave PIX</Label>
+                    <select
+                      id="pixKeyType"
+                      {...register("pixKeyType")}
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <option value="">Selecione o tipo</option>
+                      <option value="EMAIL">Email</option>
+                      <option value="CPF">CPF</option>
+                      <option value="CNPJ">CNPJ</option>
+                      <option value="PHONE">Telefone</option>
+                      <option value="EVP">Chave Aleatória</option>
+                    </select>
+                    {errors.pixKeyType && (
+                      <p className="text-sm text-red-500 mt-1">{errors.pixKeyType.message}</p>
+                    )}
+                  </div>
+
+                  <div>
+                    <Label htmlFor="pixKey">Chave PIX</Label>
+                    <Input
+                      id="pixKey"
+                      {...register("pixKey")}
+                      placeholder="Digite a chave PIX"
+                    />
+                    {errors.pixKey && (
+                      <p className="text-sm text-red-500 mt-1">{errors.pixKey.message}</p>
+                    )}
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Esta chave será usada para recarga de saldo via PIX
+                    </p>
+                  </div>
+                </div>
+              </div>
+
               {/* Endereço */}
               <div className="border-b pb-4">
                 <h3 className="font-semibold mb-3">Endereço</h3>
