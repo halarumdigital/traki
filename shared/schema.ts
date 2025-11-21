@@ -188,6 +188,10 @@ export const companies = pgTable("companies", {
   // Indicação
   referredByDriverId: varchar("referred_by_driver_id").references(() => drivers.id), // Motorista que indicou a empresa
 
+  // Financeiro - Chave PIX para transações
+  pixKey: varchar("pix_key", { length: 255 }),
+  pixKeyType: varchar("pix_key_type", { length: 20 }), // EMAIL, CPF, CNPJ, PHONE, EVP
+
   password: varchar("password", { length: 255 }),
 
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -225,8 +229,8 @@ export const entregadorRotas = pgTable("entregador_rotas", {
 
   // Disponibilidade
   diasSemana: integer("dias_semana").array().notNull(), // [1,2,3,4,5] = Seg a Sex
-  horarioSaida: varchar("horario_saida", { length: 5 }).notNull(), // TIME -> "08:00"
-  horarioChegada: varchar("horario_chegada", { length: 5 }), // TIME -> "11:00"
+  horarioSaida: varchar("horario_saida", { length: 8 }).notNull(), // TIME -> "08:00:00"
+  horarioChegada: varchar("horario_chegada", { length: 8 }), // TIME -> "11:00:00"
 
   // Capacidades definidas pelo entregador
   capacidadePacotes: integer("capacidade_pacotes").notNull(),
@@ -374,6 +378,10 @@ export const drivers = pgTable("drivers", {
     tribunalTipo: string;
   }>>(), // Lista de processos criminais
   criminalCheckDate: timestamp("criminal_check_date"), // Data da última consulta
+
+  // Financeiro - Chave PIX para transações
+  pixKey: varchar("pix_key", { length: 255 }),
+  pixKeyType: varchar("pix_key_type", { length: 20 }), // EMAIL, CPF, CNPJ, PHONE, EVP
 
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
@@ -1723,3 +1731,216 @@ export const insertViagemEntregaSchema = createInsertSchema(viagemEntregas, {
 
 export type ViagemEntrega = typeof viagemEntregas.$inferSelect;
 export type InsertViagemEntrega = z.infer<typeof insertViagemEntregaSchema>;
+
+// ========================================
+// SESSION TABLE (connect-pg-simple)
+// ========================================
+// Tabela de sessões criada pelo connect-pg-simple
+// NÃO modificar - gerenciada automaticamente pelo express-session
+export const sessions = pgTable("session", {
+  sid: varchar("sid").primaryKey(),
+  sess: json("sess").notNull(),
+  expire: timestamp("expire").notNull(),
+});
+
+// ========================================
+// WOOVI SUBACCOUNTS (Subcontas Woovi)
+// ========================================
+export const wooviSubaccounts = pgTable("woovi_subaccounts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Tipo de conta: 'company', 'driver', ou 'admin'
+  accountType: varchar("account_type", { length: 20 }).notNull(),
+
+  // Relacionamento com empresa ou entregador
+  companyId: varchar("company_id").references(() => companies.id, { onDelete: "cascade" }),
+  driverId: varchar("driver_id").references(() => drivers.id, { onDelete: "cascade" }),
+
+  // Dados da Woovi
+  pixKey: varchar("pix_key", { length: 255 }).notNull().unique(), // Chave PIX registrada
+  pixKeyType: varchar("pix_key_type", { length: 20 }).notNull(), // EMAIL, CPF, CNPJ, PHONE, EVP
+  wooviSubaccountId: varchar("woovi_subaccount_id", { length: 255 }), // ID retornado pela Woovi (se houver)
+
+  // Saldo virtual (cache do saldo da Woovi - atualizado periodicamente)
+  balanceCache: numeric("balance_cache", { precision: 10, scale: 2 }).default("0"),
+  lastBalanceUpdate: timestamp("last_balance_update"),
+
+  // Status
+  active: boolean("active").notNull().default(true),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertWooviSubaccountSchema = createInsertSchema(wooviSubaccounts, {
+  accountType: z.enum(["company", "driver", "admin"]),
+  pixKey: z.string().min(1, "Chave PIX é obrigatória"),
+  pixKeyType: z.enum(["EMAIL", "CPF", "CNPJ", "PHONE", "EVP"]),
+  companyId: z.string().optional(),
+  driverId: z.string().optional(),
+  wooviSubaccountId: z.string().optional(),
+  balanceCache: z.union([z.string(), z.number()]).transform(val => String(val)).optional(),
+  active: z.boolean().default(true),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type WooviSubaccount = typeof wooviSubaccounts.$inferSelect;
+export type InsertWooviSubaccount = z.infer<typeof insertWooviSubaccountSchema>;
+
+// ========================================
+// WOOVI CHARGES (Cobranças PIX - Recargas)
+// ========================================
+export const wooviCharges = pgTable("woovi_charges", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Empresa que solicitou a recarga
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  subaccountId: varchar("subaccount_id").notNull().references(() => wooviSubaccounts.id),
+
+  // Dados da Woovi
+  wooviChargeId: varchar("woovi_charge_id", { length: 255 }), // ID da cobrança retornado pela Woovi
+  correlationId: varchar("correlation_id", { length: 255 }).unique(), // ID único da cobrança
+
+  // Valor
+  value: numeric("value", { precision: 10, scale: 2 }).notNull(), // Valor em reais
+
+  // QR Code e BR Code
+  qrCode: text("qr_code"), // QR Code em base64
+  brCode: text("br_code"), // BR Code (copia e cola)
+
+  // Status: 'pending', 'paid', 'expired', 'cancelled'
+  status: varchar("status", { length: 20 }).notNull().default("pending"),
+
+  // Datas
+  paidAt: timestamp("paid_at"),
+  expiresAt: timestamp("expires_at"),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertWooviChargeSchema = createInsertSchema(wooviCharges, {
+  companyId: z.string().min(1, "Empresa é obrigatória"),
+  subaccountId: z.string().min(1, "Subconta é obrigatória"),
+  value: z.union([z.string(), z.number()]).transform(val => String(val)),
+  status: z.enum(["pending", "paid", "expired", "cancelled"]).default("pending"),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type WooviCharge = typeof wooviCharges.$inferSelect;
+export type InsertWooviCharge = z.infer<typeof insertWooviChargeSchema>;
+
+// ========================================
+// FINANCIAL TRANSACTIONS (Logs de Transações)
+// ========================================
+export const financialTransactions = pgTable("financial_transactions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Tipo de transação
+  type: varchar("type", { length: 30 }).notNull(),
+  // Tipos possíveis:
+  // - 'charge_created': Cobrança criada
+  // - 'charge_paid': Cobrança paga (recarga confirmada)
+  // - 'transfer_delivery': Transferência por finalização de entrega
+  // - 'transfer_cancellation': Transferência por cancelamento
+  // - 'withdrawal': Saque
+  // - 'balance_block': Bloqueio de saldo
+  // - 'balance_unblock': Desbloqueio de saldo
+
+  // Relacionamentos
+  companyId: varchar("company_id").references(() => companies.id),
+  driverId: varchar("driver_id").references(() => drivers.id),
+  entregaId: varchar("entrega_id").references(() => entregasIntermunicipais.id),
+  chargeId: varchar("charge_id").references(() => wooviCharges.id),
+  fromSubaccountId: varchar("from_subaccount_id").references(() => wooviSubaccounts.id),
+  toSubaccountId: varchar("to_subaccount_id").references(() => wooviSubaccounts.id),
+
+  // Valores
+  amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
+
+  // Status: 'pending', 'completed', 'failed'
+  status: varchar("status", { length: 20 }).notNull().default("pending"),
+
+  // Dados da API Woovi
+  wooviTransactionId: varchar("woovi_transaction_id", { length: 255 }), // ID retornado pela Woovi
+  wooviResponse: json("woovi_response"), // Resposta completa da API
+
+  // Descrição e observações
+  description: text("description").notNull(),
+  metadata: json("metadata"), // Dados adicionais (ex: detalhes do split, etc)
+
+  // Erro (se houver)
+  errorMessage: text("error_message"),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertFinancialTransactionSchema = createInsertSchema(financialTransactions, {
+  type: z.enum([
+    "charge_created",
+    "charge_paid",
+    "transfer_delivery",
+    "transfer_cancellation",
+    "withdrawal",
+    "balance_block",
+    "balance_unblock",
+  ]),
+  amount: z.union([z.string(), z.number()]).transform(val => String(val)),
+  status: z.enum(["pending", "completed", "failed"]).default("pending"),
+  description: z.string().min(1, "Descrição é obrigatória"),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type FinancialTransaction = typeof financialTransactions.$inferSelect;
+export type InsertFinancialTransaction = z.infer<typeof insertFinancialTransactionSchema>;
+
+// ========================================
+// COMPANY BALANCE BLOCKS (Bloqueios de Saldo)
+// ========================================
+export const companyBalanceBlocks = pgTable("company_balance_blocks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Empresa e subconta
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  subaccountId: varchar("subaccount_id").notNull().references(() => wooviSubaccounts.id),
+
+  // Entrega relacionada
+  entregaId: varchar("entrega_id").notNull().references(() => entregasIntermunicipais.id, { onDelete: "cascade" }),
+
+  // Valor bloqueado
+  blockedAmount: numeric("blocked_amount", { precision: 10, scale: 2 }).notNull(),
+
+  // Status: 'active' (bloqueado), 'released' (liberado por conclusão), 'cancelled' (liberado por cancelamento)
+  status: varchar("status", { length: 20 }).notNull().default("active"),
+
+  // Datas
+  releasedAt: timestamp("released_at"),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertCompanyBalanceBlockSchema = createInsertSchema(companyBalanceBlocks, {
+  companyId: z.string().min(1, "Empresa é obrigatória"),
+  subaccountId: z.string().min(1, "Subconta é obrigatória"),
+  entregaId: z.string().min(1, "Entrega é obrigatória"),
+  blockedAmount: z.union([z.string(), z.number()]).transform(val => String(val)),
+  status: z.enum(["active", "released", "cancelled"]).default("active"),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type CompanyBalanceBlock = typeof companyBalanceBlocks.$inferSelect;
+export type InsertCompanyBalanceBlock = z.infer<typeof insertCompanyBalanceBlockSchema>;

@@ -2,7 +2,7 @@ import express, { type Express } from "express";
 import { createServer, type Server } from "http";
 import { Server as SocketIOServer } from "socket.io";
 import { storage } from "./storage";
-import { loginSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications, cityPrices, settings, companyCancellationTypes, insertCompanyCancellationTypeSchema, promotions, insertPromotionSchema, companyDriverRatings, driverCompanyRatings, deliveryStops, faqs, insertFaqSchema, pushNotifications, referralSettings, driverReferrals, companyReferrals, ticketSubjects, insertTicketSubjectSchema, supportTickets, insertSupportTicketSchema, ticketReplies, insertTicketReplySchema, entregadorRotas, entregasIntermunicipais, rotasIntermunicipais, viagemColetas, viagemEntregas } from "@shared/schema";
+import { loginSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications, cityPrices, settings, companyCancellationTypes, insertCompanyCancellationTypeSchema, promotions, insertPromotionSchema, companyDriverRatings, driverCompanyRatings, deliveryStops, faqs, insertFaqSchema, pushNotifications, referralSettings, driverReferrals, companyReferrals, ticketSubjects, insertTicketSubjectSchema, supportTickets, insertSupportTicketSchema, ticketReplies, insertTicketReplySchema, entregadorRotas, entregasIntermunicipais, rotasIntermunicipais, viagemColetas, viagemEntregas, wooviCharges, financialTransactions } from "@shared/schema";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import { pool, db } from "./db";
@@ -15,6 +15,7 @@ import nodeFetch from "node-fetch";
 import { initializeFirebase, sendPushNotification, sendPushToMultipleDevices } from "./firebase";
 import { sentryUserContext } from "./sentry-middleware";
 import { uploadToR2, deleteFromR2, isValidImage, isValidDocument, isValidFileSize } from "./r2-storage";
+import { financialService } from "./services/financial.service";
 
 const PgSession = connectPgSimple(session);
 
@@ -2285,7 +2286,7 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         return res.status(401).json({ message: "Não autenticado" });
       }
 
-      const { name, cnpj, password } = req.body;
+      const { name, cnpj, password, pixKey, pixKeyType } = req.body;
 
       if (!name) {
         return res.status(400).json({
@@ -2310,6 +2311,24 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       }
 
       const newCompany = await storage.createCompany(companyData);
+
+      // Criar subconta Woovi se pixKey foi fornecida
+      if (pixKey && pixKeyType) {
+        try {
+          await financialService.createCompanySubaccount(
+            newCompany.id,
+            pixKey,
+            pixKeyType as 'EMAIL' | 'CPF' | 'CNPJ' | 'PHONE' | 'EVP',
+            newCompany.name
+          );
+          console.log(`✅ Subconta Woovi criada para empresa: ${newCompany.name}`);
+        } catch (subaccountError) {
+          // Log o erro mas não falha a criação da empresa
+          console.error('⚠️  Erro ao criar subconta Woovi:', subaccountError);
+          // Nota: A empresa foi criada, mas a subconta falhou
+          // Isso pode ser retentado manualmente depois
+        }
+      }
 
       return res.status(201).json(newCompany);
     } catch (error) {
@@ -3008,6 +3027,17 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         // Não falhar a criação da entrega por erro de notificação
       }
 
+      // ===== BLOQUEIO VIRTUAL DE SALDO =====
+      try {
+        console.log(`💰 Bloqueando saldo virtual de R$ ${valorTotal.toFixed(2)} para a entrega ${entrega.id}...`);
+        await financialService.blockBalance(company.id, entrega.id, valorTotal);
+        console.log("✅ Saldo bloqueado com sucesso");
+      } catch (balanceError) {
+        console.error("⚠️  Erro ao bloquear saldo:", balanceError);
+        // Não falhar a criação da entrega por erro de bloqueio
+        // O bloqueio pode ser refeito manualmente depois
+      }
+
       return res.status(201).json(entrega);
     } catch (error: any) {
       console.error("❌ Erro ao criar entrega:", error);
@@ -3102,6 +3132,83 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       console.log(`📝 Cancelando entrega ${id}...`);
       await storage.updateEntregaIntermunicipal(id, { status: "cancelada" });
       console.log(`✅ Entrega ${id} cancelada`);
+
+      // ===== LÓGICA DE TAXA DE CANCELAMENTO (50%) =====
+      if (entrega.viagemId) {
+        // Se a entrega já foi aceita por um motorista, cobrar taxa de cancelamento
+        try {
+          console.log("💰 Processando taxa de cancelamento (50%)...");
+
+          const valorTotal = parseFloat(entrega.valorTotal);
+          const taxaCancelamento = valorTotal * 0.5; // 50%
+
+          console.log(`   Valor total da entrega: R$ ${valorTotal.toFixed(2)}`);
+          console.log(`   Taxa de cancelamento (50%): R$ ${taxaCancelamento.toFixed(2)}`);
+
+          // Buscar subcontas
+          const companySubaccount = await financialService.getCompanySubaccount(entrega.empresaId);
+
+          if (companySubaccount && taxaCancelamento > 0) {
+            // Importar wooviService
+            const { default: wooviService } = await import("./services/woovi.service");
+
+            // Buscar motorista da viagem
+            const viagem = await storage.getViagemIntermunicipal(entrega.viagemId);
+
+            if (viagem && viagem.entregadorId) {
+              const driverSubaccount = await financialService.getDriverSubaccount(viagem.entregadorId);
+
+              if (driverSubaccount) {
+                // Transferir taxa de cancelamento para o motorista
+                console.log(`   🚚 Transferindo taxa de R$ ${taxaCancelamento.toFixed(2)} para o motorista...`);
+                await wooviService.transferBetweenSubaccounts({
+                  value: wooviService.toCents(taxaCancelamento),
+                  fromPixKey: companySubaccount.pixKey,
+                  fromPixKeyType: companySubaccount.pixKeyType as any,
+                  toPixKey: driverSubaccount.pixKey,
+                  toPixKeyType: driverSubaccount.pixKeyType as any,
+                  correlationID: `CANCEL_${entrega.id}_FEE`,
+                });
+
+                // Registrar log
+                await db.insert(financialTransactions).values({
+                  type: 'transfer_cancellation',
+                  companyId: entrega.empresaId,
+                  driverId: viagem.entregadorId,
+                  entregaId: entrega.id,
+                  fromSubaccountId: companySubaccount.id,
+                  toSubaccountId: driverSubaccount.id,
+                  amount: taxaCancelamento.toString(),
+                  status: 'completed',
+                  description: `Taxa de cancelamento (50%) - Entrega ${entrega.numeroPedido}`,
+                });
+
+                // Atualizar saldos em cache
+                await financialService.updateSubaccountBalance(companySubaccount.id);
+                await financialService.updateSubaccountBalance(driverSubaccount.id);
+
+                console.log("✅ Taxa de cancelamento transferida com sucesso");
+              }
+            }
+          }
+
+          // Liberar bloqueio de saldo (o restante volta para a empresa)
+          console.log(`   🔓 Liberando bloqueio de saldo...`);
+          await financialService.releaseBalance(entrega.id, 'cancelled');
+
+        } catch (cancelFeeError) {
+          console.error("❌ Erro ao processar taxa de cancelamento:", cancelFeeError);
+          // Não falhar o cancelamento por erro financeiro
+        }
+      } else {
+        // Entrega ainda não aceita - liberar bloqueio sem taxa
+        try {
+          console.log(`   🔓 Liberando bloqueio de saldo (sem taxa - entrega não aceita)...`);
+          await financialService.releaseBalance(entrega.id, 'cancelled');
+        } catch (releaseError) {
+          console.error("❌ Erro ao liberar bloqueio de saldo:", releaseError);
+        }
+      }
 
       // Verificar se a viagem deve ser cancelada (se todas entregas estão canceladas)
       console.log(`🔍 Verificando viagem... viagemId: ${entrega.viagemId}`);
@@ -4950,6 +5057,109 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
           console.error("❌ Erro ao enviar notificação de conclusão:", notifError);
           // Não falhar a atualização por erro de notificação
         }
+
+        // ===== TRANSFERÊNCIAS FINANCEIRAS AUTOMÁTICAS =====
+        try {
+          console.log("💰 Iniciando transferências financeiras...");
+
+          // Buscar entrega intermunicipal para pegar o valor
+          const entregaIntermu = await storage.getEntregaIntermunicipal(entrega.entregaId);
+
+          if (entregaIntermu) {
+            const valorTotal = parseFloat(entregaIntermu.valorTotal);
+            const empresaId = entregaIntermu.empresaId;
+
+            // Buscar configurações para pegar a comissão admin
+            const settings = await storage.getSettings();
+            const comissaoAdminPercent = settings?.adminCommision ? parseFloat(settings.adminCommision) : 10; // Default 10%
+
+            // Calcular valores
+            const comissaoAdmin = valorTotal * (comissaoAdminPercent / 100);
+            const valorMotorista = valorTotal - comissaoAdmin;
+
+            console.log(`   Valor total: R$ ${valorTotal.toFixed(2)}`);
+            console.log(`   Comissão admin (${comissaoAdminPercent}%): R$ ${comissaoAdmin.toFixed(2)}`);
+            console.log(`   Valor motorista: R$ ${valorMotorista.toFixed(2)}`);
+
+            // Buscar subcontas
+            const companySubaccount = await financialService.getCompanySubaccount(empresaId);
+            const driverSubaccount = await financialService.getDriverSubaccount(driverId);
+
+            if (companySubaccount && driverSubaccount) {
+              // Importar wooviService
+              const { default: wooviService } = await import("./services/woovi.service");
+
+              // 1. Transferir da empresa para o motorista
+              console.log(`   🚚 Transferindo R$ ${valorMotorista.toFixed(2)} para o motorista...`);
+              await wooviService.transferBetweenSubaccounts({
+                value: wooviService.toCents(valorMotorista),
+                fromPixKey: companySubaccount.pixKey,
+                fromPixKeyType: companySubaccount.pixKeyType as any,
+                toPixKey: driverSubaccount.pixKey,
+                toPixKeyType: driverSubaccount.pixKeyType as any,
+                correlationID: `DELIVERY_${entregaIntermu.id}_DRIVER`,
+              });
+
+              // Registrar log
+              await db.insert(financialTransactions).values({
+                type: 'transfer_delivery',
+                companyId: empresaId,
+                driverId,
+                entregaId: entregaIntermu.id,
+                fromSubaccountId: companySubaccount.id,
+                toSubaccountId: driverSubaccount.id,
+                amount: valorMotorista.toString(),
+                status: 'completed',
+                description: `Pagamento de entrega ${entregaIntermu.numeroPedido} - Motorista`,
+              });
+
+              // 2. Transferir comissão para o admin
+              if (comissaoAdmin > 0) {
+                console.log(`   💼 Transferindo comissão de R$ ${comissaoAdmin.toFixed(2)} para o admin...`);
+
+                // Buscar ou criar subconta admin
+                const adminPixKey = process.env.WOOVI_ADMIN_PIX_KEY || 'admin@fretus.com';
+                const adminPixKeyType = process.env.WOOVI_ADMIN_PIX_KEY_TYPE || 'EMAIL';
+
+                await wooviService.transferBetweenSubaccounts({
+                  value: wooviService.toCents(comissaoAdmin),
+                  fromPixKey: companySubaccount.pixKey,
+                  fromPixKeyType: companySubaccount.pixKeyType as any,
+                  toPixKey: adminPixKey,
+                  toPixKeyType: adminPixKeyType as any,
+                  correlationID: `DELIVERY_${entregaIntermu.id}_ADMIN`,
+                });
+
+                // Registrar log
+                await db.insert(financialTransactions).values({
+                  type: 'transfer_delivery',
+                  companyId: empresaId,
+                  entregaId: entregaIntermu.id,
+                  fromSubaccountId: companySubaccount.id,
+                  amount: comissaoAdmin.toString(),
+                  status: 'completed',
+                  description: `Comissão admin de entrega ${entregaIntermu.numeroPedido}`,
+                });
+              }
+
+              // 3. Liberar bloqueio de saldo
+              console.log(`   🔓 Liberando bloqueio de saldo...`);
+              await financialService.releaseBalance(entregaIntermu.id, 'released');
+
+              // 4. Atualizar saldos em cache
+              await financialService.updateSubaccountBalance(companySubaccount.id);
+              await financialService.updateSubaccountBalance(driverSubaccount.id);
+
+              console.log("✅ Transferências financeiras concluídas com sucesso");
+            } else {
+              console.warn("⚠️  Subcontas não encontradas - transferências não realizadas");
+            }
+          }
+        } catch (financeError) {
+          console.error("❌ Erro ao processar transferências financeiras:", financeError);
+          // Não falhar a entrega por erro financeiro
+          // As transferências podem ser reprocessadas manualmente
+        }
       }
 
       // ===== VERIFICAR SE TODAS AS ENTREGAS FORAM CONCLUÍDAS =====
@@ -5688,6 +5898,25 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
             commissionEarned: "0",
             commissionPaid: false,
           });
+        }
+      }
+
+      // Criar subconta Woovi se pixKey foi fornecida
+      const { pixKey, pixKeyType } = req.body;
+      if (pixKey && pixKeyType) {
+        try {
+          await financialService.createDriverSubaccount(
+            newDriver.id,
+            pixKey,
+            pixKeyType as 'EMAIL' | 'CPF' | 'CNPJ' | 'PHONE' | 'EVP',
+            newDriver.name
+          );
+          console.log(`✅ Subconta Woovi criada para entregador: ${newDriver.name}`);
+        } catch (subaccountError) {
+          // Log o erro mas não falha a criação do motorista
+          console.error('⚠️  Erro ao criar subconta Woovi:', subaccountError);
+          // Nota: O motorista foi criado, mas a subconta falhou
+          // Isso pode ser retentado manualmente depois
         }
       }
 
@@ -14832,6 +15061,280 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
 
     console.log("🐛 Sentry test endpoints enabled (development mode)");
   }
+
+  // ==================== ENDPOINTS FINANCEIROS WOOVI ====================
+
+  // POST /api/financial/company/recharge - Solicitar recarga via PIX
+  app.post("/api/financial/company/recharge", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { companyId, amount } = req.body;
+
+      if (!companyId || !amount) {
+        return res.status(400).json({ message: "companyId e amount são obrigatórios" });
+      }
+
+      if (amount <= 0) {
+        return res.status(400).json({ message: "Valor deve ser maior que zero" });
+      }
+
+      // Criar cobrança PIX
+      const charge = await financialService.createRecharge(companyId, parseFloat(amount));
+
+      return res.status(201).json({
+        chargeId: charge.id,
+        qrCode: charge.qrCode,
+        brCode: charge.brCode,
+        value: charge.value,
+        status: charge.status,
+        createdAt: charge.createdAt,
+      });
+    } catch (error) {
+      console.error("Erro ao criar recarga:", error);
+      return res.status(500).json({
+        message: error instanceof Error ? error.message : "Erro ao criar recarga"
+      });
+    }
+  });
+
+  // GET /api/financial/company/:companyId/balance - Consultar saldo da empresa
+  app.get("/api/financial/company/:companyId/balance", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { companyId } = req.params;
+
+      // Buscar subconta da empresa
+      const subaccount = await financialService.getCompanySubaccount(companyId);
+
+      if (!subaccount) {
+        return res.status(404).json({
+          message: "Subconta não encontrada. Certifique-se de que a empresa possui uma chave PIX cadastrada."
+        });
+      }
+
+      // Atualizar saldo consultando a Woovi
+      const balance = await financialService.updateSubaccountBalance(subaccount.id);
+
+      return res.json({
+        balance,
+        balanceCache: subaccount.balanceCache,
+        lastUpdate: subaccount.lastBalanceUpdate,
+        pixKey: subaccount.pixKey,
+      });
+    } catch (error) {
+      console.error("Erro ao consultar saldo:", error);
+      return res.status(500).json({
+        message: error instanceof Error ? error.message : "Erro ao consultar saldo"
+      });
+    }
+  });
+
+  // GET /api/financial/company/:companyId/transactions - Histórico de transações
+  app.get("/api/financial/company/:companyId/transactions", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { companyId } = req.params;
+      const limit = parseInt(req.query.limit as string) || 50;
+      const offset = parseInt(req.query.offset as string) || 0;
+
+      // Buscar transações da empresa
+      const transactions = await db
+        .select()
+        .from(financialTransactions)
+        .where(eq(financialTransactions.companyId, companyId))
+        .orderBy(desc(financialTransactions.createdAt))
+        .limit(limit)
+        .offset(offset);
+
+      return res.json({
+        transactions,
+        pagination: {
+          limit,
+          offset,
+          total: transactions.length,
+        },
+      });
+    } catch (error) {
+      console.error("Erro ao buscar transações:", error);
+      return res.status(500).json({ message: "Erro ao buscar transações" });
+    }
+  });
+
+  // GET /api/financial/company/:companyId/charges - Listar cobranças PIX
+  app.get("/api/financial/company/:companyId/charges", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { companyId } = req.params;
+      const limit = parseInt(req.query.limit as string) || 20;
+      const offset = parseInt(req.query.offset as string) || 0;
+
+      // Buscar cobranças da empresa
+      const charges = await db
+        .select()
+        .from(wooviCharges)
+        .where(eq(wooviCharges.companyId, companyId))
+        .orderBy(desc(wooviCharges.createdAt))
+        .limit(limit)
+        .offset(offset);
+
+      return res.json({
+        charges,
+        pagination: {
+          limit,
+          offset,
+          total: charges.length,
+        },
+      });
+    } catch (error) {
+      console.error("Erro ao buscar cobranças:", error);
+      return res.status(500).json({ message: "Erro ao buscar cobranças" });
+    }
+  });
+
+  // ==================== ENDPOINTS FINANCEIROS MOTORISTA (API) ====================
+
+  // GET /api/v1/driver/balance - Consultar saldo do motorista (requer autenticação de motorista)
+  app.get("/api/v1/driver/balance", async (req, res) => {
+    try {
+      // Aqui deveria ter autenticação de driver via token JWT
+      // Por ora, vamos assumir que o driverId vem do header ou query
+      const driverId = req.headers['x-driver-id'] as string || req.query.driverId as string;
+
+      if (!driverId) {
+        return res.status(401).json({ message: "Driver ID não fornecido" });
+      }
+
+      // Buscar subconta do motorista
+      const subaccount = await financialService.getDriverSubaccount(driverId);
+
+      if (!subaccount) {
+        return res.status(404).json({
+          message: "Subconta não encontrada. Certifique-se de que você possui uma chave PIX cadastrada."
+        });
+      }
+
+      // Atualizar saldo consultando a Woovi
+      const balance = await financialService.updateSubaccountBalance(subaccount.id);
+
+      return res.json({
+        balance,
+        balanceCache: subaccount.balanceCache,
+        lastUpdate: subaccount.lastBalanceUpdate,
+        pixKey: subaccount.pixKey,
+      });
+    } catch (error) {
+      console.error("Erro ao consultar saldo do motorista:", error);
+      return res.status(500).json({
+        message: error instanceof Error ? error.message : "Erro ao consultar saldo"
+      });
+    }
+  });
+
+  // POST /api/v1/driver/withdraw - Solicitar saque (transfere todo o saldo para a chave PIX)
+  app.post("/api/v1/driver/withdraw", async (req, res) => {
+    try {
+      const driverId = req.headers['x-driver-id'] as string || req.body.driverId;
+
+      if (!driverId) {
+        return res.status(401).json({ message: "Driver ID não fornecido" });
+      }
+
+      // Buscar subconta do motorista
+      const subaccount = await financialService.getDriverSubaccount(driverId);
+
+      if (!subaccount) {
+        return res.status(404).json({
+          message: "Subconta não encontrada"
+        });
+      }
+
+      // Verificar saldo disponível
+      const balance = await financialService.updateSubaccountBalance(subaccount.id);
+
+      if (balance <= 0) {
+        return res.status(400).json({
+          message: "Saldo insuficiente para saque"
+        });
+      }
+
+      // Solicitar saque via Woovi
+      const { default: wooviService } = await import("./services/woovi.service");
+      const withdrawal = await wooviService.withdrawFromSubaccount(subaccount.pixKey);
+
+      // Registrar log da transação
+      await db.insert(financialTransactions).values({
+        type: 'withdrawal',
+        driverId,
+        fromSubaccountId: subaccount.id,
+        amount: balance.toString(),
+        status: 'completed',
+        wooviTransactionId: withdrawal.transaction.correlationID,
+        description: `Saque realizado para ${subaccount.pixKey} - R$ ${balance.toFixed(2)}`,
+      });
+
+      // Atualizar saldo em cache
+      await financialService.updateSubaccountBalance(subaccount.id);
+
+      return res.json({
+        message: "Saque realizado com sucesso",
+        amount: balance,
+        destinationPixKey: subaccount.pixKey,
+        transactionId: withdrawal.transaction.correlationID,
+      });
+    } catch (error) {
+      console.error("Erro ao realizar saque:", error);
+      return res.status(500).json({
+        message: error instanceof Error ? error.message : "Erro ao realizar saque"
+      });
+    }
+  });
+
+  // GET /api/v1/driver/transactions - Histórico de transações do motorista
+  app.get("/api/v1/driver/transactions", async (req, res) => {
+    try {
+      const driverId = req.headers['x-driver-id'] as string || req.query.driverId as string;
+
+      if (!driverId) {
+        return res.status(401).json({ message: "Driver ID não fornecido" });
+      }
+
+      const limit = parseInt(req.query.limit as string) || 50;
+      const offset = parseInt(req.query.offset as string) || 0;
+
+      // Buscar transações do motorista
+      const transactions = await db
+        .select()
+        .from(financialTransactions)
+        .where(eq(financialTransactions.driverId, driverId))
+        .orderBy(desc(financialTransactions.createdAt))
+        .limit(limit)
+        .offset(offset);
+
+      return res.json({
+        transactions,
+        pagination: {
+          limit,
+          offset,
+          total: transactions.length,
+        },
+      });
+    } catch (error) {
+      console.error("Erro ao buscar transações do motorista:", error);
+      return res.status(500).json({ message: "Erro ao buscar transações" });
+    }
+  });
 
   // Configurar Socket.IO
   const io = new SocketIOServer(httpServer, {

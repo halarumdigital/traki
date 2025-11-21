@@ -40,12 +40,7 @@
       "Bash(npx cross-env DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev npx tsx server/migrate-company-referrals.ts)",
       "Bash(npx cross-env DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev npx tsx server/check-company-referral.ts)",
       "Bash(npx cross-env DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev npx tsx server/test-company-referral-endpoint.ts)",
-      "Bash(npx cross-env DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev npx tsx server/test-company-referral-response.ts)",
-      "Bash(npx cross-env DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev npx tsx server/fix-all-orphaned-references.ts)",
-      "Bash(npm run check:entregas-orphaned:*)",
-      "Bash(node --loader tsx:*)",
-      "Bash(./node_modules/.bin/tsx:*)",
-      "Bash(echo:*)"
+      "Bash(npx cross-env DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev npx tsx server/test-company-referral-response.ts)"
     ],
     "deny": [],
     "ask": []
