@@ -1,4 +1,4 @@
-import { Home, Package, LogOut, Building2, Menu, ChevronDown, Truck, CheckCircle2, XCircle, MapPin } from "lucide-react";
+import { Home, Package, LogOut, Building2, Menu, ChevronDown, Truck, CheckCircle2, XCircle, MapPin, Wallet } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { useMutation } from "@tanstack/react-query";
@@ -43,6 +43,11 @@ export function EmpresaSidebar() {
       label: "Dashboard",
       icon: Home,
       path: "/empresa/dashboard",
+    },
+    {
+      label: "Carteira",
+      icon: Wallet,
+      path: "/empresa/carteira",
     },
     {
       label: "Entregas",

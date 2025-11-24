@@ -50,20 +50,7 @@
       "Bash(npm run test:woovi-integration:*)",
       "Bash(/usr/bin/env npx cross-env DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev npx tsx server/test-woovi-integration.ts)",
       "Bash(DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev ./node_modules/.bin/tsx:*)",
-      "Bash(DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev /home/gilliard/.nvm/versions/node/v22.21.1/bin/node:*)",
-      "Bash(npx cross-env DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev npx tsx server/check-image-urls.ts)",
-      "Bash(npm run check:image-urls:*)",
-      "Bash(DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev node:*)",
-      "Bash(/home/gilliard/.nvm/versions/node/v22.21.1/bin/node:*)",
-      "Bash(npm run tsx:*)",
-      "Bash(chmod:*)",
-      "Bash(./run-webhook-setup.sh:*)",
-      "Bash(WOOVI_APP_ID='Q2xpZW50X0lkXzVlNTFiYWEwLWMxM2QtNGVkMS05MzhiLTY5MjE3MWMzM2UyMjpDbGllbnRfU2VjcmV0X2pBREhlTzB2Uk5Pcmd0T3NuNnRKNjc3SjJGL0tvT3ZJbEhqU2Nod2FoMmM9' /home/gilliard/.nvm/versions/node/v22.21.1/bin/node:*)",
-      "Bash(python3:*)",
-      "Bash(.env)",
-      "Bash(WOOVI_APP_ID='Q2xpZW50X0lkXzk3ODRlNzM3LTlkZGUtNGZkNS05MWVlLTVkMzQ3N2M0Y2NjODpDbGllbnRfU2VjcmV0XzJJSVozUXlGaTZXVWQyU2IrQTVDc0dsUTFYbTVRZmtWdncwMTBCdUZvaVE=' WOOVI_PRODUCTION=true /home/gilliard/.nvm/versions/node/v22.21.1/bin/node:*)",
-      "Bash(timeout 5 curl -X POST http://fretus.ddnsking.com:5010/api/webhooks/woovi )",
-      "Bash(WOOVI_APP_ID='Q2xpZW50X0lkXzk3ODRlNzM3LTlkZGUtNGZkNS05MWVlLTVkMzQ3N2M0Y2NjODpDbGllbnRfU2VjcmV0XzJJSVozUXlGaTZXVWQyU2IrQTVDc0dsUTFYbTVRZmtWdncwMTBCdUZvaVE9' /home/gilliard/.nvm/versions/node/v22.21.1/bin/node:*)"
+      "Bash(DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev /home/gilliard/.nvm/versions/node/v22.21.1/bin/node:*)"
     ],
     "deny": [],
     "ask": []

@@ -36,6 +36,12 @@ interface CreateChargeParams {
   correlationID: string;
   comment?: string;
   expiresIn?: number; // Tempo em segundos até expirar
+  splits?: Array<{ // Para split de pagamento conforme documentação
+    pixKey: string;
+    percent?: number; // Porcentagem do valor total (0-100)
+    value?: number; // Valor fixo em centavos (alternativa ao percent)
+    splitType?: string; // Tipo de split: SPLIT_SUB_ACCOUNT para subcontas virtuais
+  }>;
 }
 
 interface CreateChargeResponse {
@@ -45,9 +51,12 @@ interface CreateChargeResponse {
     correlationID: string;
     status: string;
     createdAt: string;
+    qrCodeImage: string; // URL da imagem do QR Code
+    brCode: string; // BR Code duplicado para compatibilidade
+    [key: string]: any; // Outras propriedades da API
   };
   brCode: string; // BR Code (Pix Copia e Cola)
-  qrCode: string; // QR Code em base64
+  correlationID: string;
 }
 
 interface TransferBetweenSubaccountsParams {
@@ -158,9 +167,9 @@ class WooviService {
   /**
    * Lista todas as subcontas
    */
-  async listSubaccounts(limit: number = 100, skip: number = 0): Promise<ListSubaccountsResponse> {
+  async listSubaccounts(skip: number = 0, limit: number = 100): Promise<ListSubaccountsResponse> {
     return this.request<ListSubaccountsResponse>(
-      `/api/v1/subaccount?limit=${limit}&skip=${skip}`,
+      `/api/v1/subaccount/list?skip=${skip}&limit=${limit}`,
       'GET'
     );
   }
@@ -213,6 +222,38 @@ class WooviService {
   }
 
   /**
+   * Registra um webhook para receber notificações
+   * Conforme documentação: https://developers.woovi.com/docs/apis/api-create-webhook
+   */
+  async registerWebhook(params: {
+    name: string;
+    url: string;
+    authorization?: string;
+    isActive?: boolean;
+  }): Promise<any> {
+    // Remover event - não está na documentação oficial
+    const webhookData = {
+      name: params.name,
+      url: params.url,
+      authorization: params.authorization,
+      isActive: params.isActive !== false, // true por padrão
+    };
+
+    return this.request(
+      '/api/openpix/v1/webhook', // Endpoint correto conforme documentação
+      'POST',
+      { webhook: webhookData }
+    );
+  }
+
+  /**
+   * Lista webhooks registrados
+   */
+  async listWebhooks(): Promise<any> {
+    return this.request('/api/openpix/v1/webhook', 'GET');
+  }
+
+  /**
    * Saca todo o saldo de uma subconta para a chave PIX registrada
    * @param pixKey - Chave PIX da subconta
    */
@@ -244,6 +285,31 @@ class WooviService {
     const timestamp = Date.now();
     const random = Math.random().toString(36).substring(2, 15);
     return prefix ? `${prefix}_${timestamp}_${random}` : `${timestamp}_${random}`;
+  }
+
+  /**
+   * Lista todas as subcontas
+   * Conforme documentação: https://developers.woovi.com/docs/subaccount/how-to-list-subaccounts-of-a-company-using-api
+   */
+  async listSubaccounts(skip: number = 0, limit: number = 100): Promise<ListSubaccountsResponse> {
+    return this.request<ListSubaccountsResponse>(
+      `/api/v1/subaccount/list?skip=${skip}&limit=${limit}`,
+      'GET'
+    );
+  }
+
+  /**
+   * Busca uma subconta específica pela chave PIX
+   */
+  async getSubaccountByPixKey(pixKey: string): Promise<any> {
+    try {
+      const response = await this.listSubaccounts(0, 100);
+      const subaccount = response.subAccounts?.find(sub => sub.pixKey === pixKey);
+      return subaccount || null;
+    } catch (error) {
+      console.error('Erro ao buscar subconta:', error);
+      return null;
+    }
   }
 }
 

@@ -6,7 +6,7 @@ import { loginSchema, insertSettingsSchema, serviceLocations, vehicleTypes, bran
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import { pool, db } from "./db";
-import { eq, and, or, sql, desc } from "drizzle-orm";
+import { eq, and, or, sql, desc, isNotNull, ilike } from "drizzle-orm";
 import bcrypt from "bcrypt";
 import multer from "multer";
 import path from "path";
@@ -15,6 +15,7 @@ import nodeFetch from "node-fetch";
 import { initializeFirebase, sendPushNotification, sendPushToMultipleDevices } from "./firebase";
 import { sentryUserContext } from "./sentry-middleware";
 import { uploadToR2, deleteFromR2, isValidImage, isValidDocument, isValidFileSize } from "./r2-storage";
+import { r2ProxyHandler, transformR2Urls } from "./r2-proxy";
 import { financialService } from "./services/financial.service";
 
 const PgSession = connectPgSimple(session);
@@ -246,6 +247,9 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     next();
   });
   app.use("/uploads", express.static(uploadsDir));
+
+  // Rota de proxy para servir imagens do R2
+  app.get("/api/r2-proxy/*", r2ProxyHandler);
   app.use(
     session({
       store: new PgSession({
@@ -573,7 +577,7 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     try {
       console.log("📝 Tentativa de registro de nova empresa");
 
-      const { name, email, password, cnpj, phone, referralCode, ...addressData } = req.body;
+      const { name, email, password, cnpj, phone, referralCode, pixKey, pixKeyType, ...addressData } = req.body;
 
       // Validação básica
       if (!name || !email || !password) {
@@ -622,6 +626,8 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
           password: hashedPassword,
           cnpj: cnpj || null,
           phone: phone || null,
+          pixKey: pixKey || null,
+          pixKeyType: pixKeyType || null,
           referredByDriverId: referrerDriverId || null,
           ...addressData,
           active: true,
@@ -630,6 +636,23 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
 
       const company = newCompany[0];
       console.log("✅ Empresa criada:", company.name);
+
+      // Criar subconta Woovi se pixKey foi fornecida
+      if (pixKey && pixKeyType) {
+        try {
+          console.log("💳 Criando subconta Woovi para a empresa...");
+          await financialService.createCompanySubaccount(
+            company.id,
+            pixKey,
+            pixKeyType as 'EMAIL' | 'CPF' | 'CNPJ' | 'PHONE' | 'EVP',
+            company.name
+          );
+          console.log("✅ Subconta Woovi criada com sucesso!");
+        } catch (subaccountError) {
+          console.error("⚠️  Erro ao criar subconta Woovi:", subaccountError);
+          // Não falha o registro da empresa se a subconta falhar
+        }
+      }
 
       // Se houve indicação, criar registro de indicação
       if (referrerDriverId && company) {
@@ -6026,9 +6049,21 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       const { id } = req.params;
       const documents = await storage.getDriverDocuments(id);
 
+      // Atualizar URLs para usar o CDN correto
+      const documentsWithCorrectUrls = documents.map(doc => {
+        if (doc.documentUrl && doc.documentUrl.includes('pub-6ba0d61f74d5418bbe35b6a595078a72.r2.dev')) {
+          // Substituir domínio antigo pelo CDN funcionando
+          doc.documentUrl = doc.documentUrl.replace(
+            'https://pub-6ba0d61f74d5418bbe35b6a595078a72.r2.dev',
+            'https://cdn.fretus.com.br'
+          );
+        }
+        return doc;
+      });
+
       return res.json({
         success: true,
-        documents: documents
+        documents: documentsWithCorrectUrls
       });
     } catch (error) {
       console.error("Erro ao buscar documentos do motorista:", error);
@@ -15064,31 +15099,89 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
 
   // ==================== ENDPOINTS FINANCEIROS WOOVI ====================
 
-  // POST /api/financial/company/recharge - Solicitar recarga via PIX
-  app.post("/api/financial/company/recharge", async (req, res) => {
+  // GET /api/financial/company/balance - Buscar saldo da empresa
+  app.get("/api/financial/company/balance", async (req, res) => {
     try {
-      if (!req.session.userId) {
+      // Verificar se é uma empresa autenticada
+      if (!req.session.companyId) {
         return res.status(401).json({ message: "Não autenticado" });
       }
 
-      const { companyId, amount } = req.body;
+      // Buscar subconta da empresa
+      const [subconta] = await db
+        .select()
+        .from(wooviSubaccounts)
+        .where(
+          and(
+            eq(wooviSubaccounts.companyId, req.session.companyId),
+            eq(wooviSubaccounts.accountType, 'company'),
+            eq(wooviSubaccounts.active, true)
+          )
+        )
+        .limit(1);
 
-      if (!companyId || !amount) {
-        return res.status(400).json({ message: "companyId e amount são obrigatórios" });
+      if (!subconta) {
+        return res.json({
+          balance: 0,
+          hasSubaccount: false,
+          lastUpdate: null
+        });
+      }
+
+      // Atualizar saldo se necessário (cache de 5 minutos)
+      const now = new Date();
+      const lastUpdate = subconta.lastBalanceUpdate ? new Date(subconta.lastBalanceUpdate) : null;
+      const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
+
+      let balance = parseFloat(subconta.balanceCache || '0');
+
+      if (!lastUpdate || lastUpdate < fiveMinutesAgo) {
+        // Atualizar saldo via API Woovi
+        try {
+          balance = await financialService.updateSubaccountBalance(subconta.id);
+        } catch (error) {
+          console.error("Erro ao atualizar saldo:", error);
+          // Usar cache mesmo se falhar
+        }
+      }
+
+      return res.json({
+        balance,
+        hasSubaccount: true,
+        lastUpdate: subconta.lastBalanceUpdate
+      });
+    } catch (error) {
+      console.error("Erro ao buscar saldo da empresa:", error);
+      return res.status(500).json({ message: "Erro ao buscar saldo" });
+    }
+  });
+
+  // POST /api/financial/company/recharge - Solicitar recarga via PIX
+  app.post("/api/financial/company/recharge", async (req, res) => {
+    try {
+      // Verificar se é uma empresa autenticada
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { amount } = req.body;
+
+      if (!amount) {
+        return res.status(400).json({ message: "amount é obrigatório" });
       }
 
       if (amount <= 0) {
         return res.status(400).json({ message: "Valor deve ser maior que zero" });
       }
 
-      // Criar cobrança PIX
-      const charge = await financialService.createRecharge(companyId, parseFloat(amount));
+      // Criar cobrança PIX com split para subconta
+      const charge = await financialService.createRechargeWithSplit(req.session.companyId, parseFloat(amount));
 
       return res.status(201).json({
         chargeId: charge.id,
         qrCode: charge.qrCode,
         brCode: charge.brCode,
-        value: charge.value,
+        value: parseFloat(charge.value) * 100, // Converter para centavos para o frontend
         status: charge.status,
         createdAt: charge.createdAt,
       });
@@ -15096,6 +15189,172 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       console.error("Erro ao criar recarga:", error);
       return res.status(500).json({
         message: error instanceof Error ? error.message : "Erro ao criar recarga"
+      });
+    }
+  });
+
+  // GET /api/financial/company/transactions - Histórico de transações da empresa logada
+  app.get("/api/financial/company/transactions", async (req, res) => {
+    try {
+      // Verificar se é uma empresa autenticada
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const limit = parseInt(req.query.limit as string) || 50;
+      const offset = parseInt(req.query.offset as string) || 0;
+
+      // Buscar transações da empresa
+      const transactions = await db
+        .select()
+        .from(financialTransactions)
+        .where(eq(financialTransactions.companyId, req.session.companyId))
+        .orderBy(desc(financialTransactions.createdAt))
+        .limit(limit)
+        .offset(offset);
+
+      return res.json({
+        transactions,
+        pagination: {
+          limit,
+          offset,
+          total: transactions.length,
+        },
+      });
+    } catch (error) {
+      console.error("Erro ao buscar transações:", error);
+      return res.status(500).json({
+        message: error instanceof Error ? error.message : "Erro ao buscar transações"
+      });
+    }
+  });
+
+  // GET /api/webhooks/woovi - Endpoint de validação do webhook
+  app.get("/api/webhooks/woovi", async (req, res) => {
+    console.log('✅ Webhook GET - Validação da Woovi');
+    return res.status(200).json({ status: "ok", message: "Webhook endpoint is ready" });
+  });
+
+  // POST /api/webhooks/woovi - Webhook para receber notificações de pagamento da Woovi
+  app.post("/api/webhooks/woovi", async (req, res) => {
+    // Responder imediatamente com sucesso para evitar timeout
+    res.status(200).json({ success: true });
+
+    // Processar o webhook de forma assíncrona
+    (async () => {
+      try {
+        // Verificar a autorização do webhook (opcional mas recomendado)
+        const authHeader = req.headers.authorization;
+        const expectedAuth = process.env.WOOVI_WEBHOOK_AUTH || 'woovi_webhook_secret_2024';
+
+        // Log para debug
+        console.log('🔐 Authorization header recebido:', authHeader);
+        console.log('🔑 Authorization esperado:', expectedAuth);
+
+        // Durante o registro, a Woovi pode não enviar o header de autorização
+        if (authHeader && authHeader !== expectedAuth && authHeader !== '') {
+          console.warn('⚠️ Webhook recebido com autorização inválida');
+          return;
+        }
+
+        console.log('📨 Webhook Woovi recebido:', JSON.stringify(req.body, null, 2));
+
+        const { event, charge } = req.body;
+
+      // Processar diferentes tipos de eventos
+      if (event === 'OPENPIX:CHARGE_COMPLETED' || event === 'CHARGE_COMPLETED') {
+        console.log(`✅ Pagamento confirmado para cobrança: ${charge?.correlationID}`);
+
+        if (charge?.correlationID) {
+          // Buscar a cobrança no banco pelo correlationID
+          const [wooviCharge] = await db
+            .select()
+            .from(wooviCharges)
+            .where(eq(wooviCharges.correlationId, charge.correlationID))
+            .limit(1);
+
+          if (wooviCharge) {
+            // Atualizar status da cobrança para 'completed'
+            await db
+              .update(wooviCharges)
+              .set({
+                status: 'completed',
+                updatedAt: new Date(),
+              })
+              .where(eq(wooviCharges.id, wooviCharge.id));
+
+            console.log(`✅ Status atualizado para completed: ${wooviCharge.id}`);
+
+            // Atualizar o saldo da subconta
+            if (wooviCharge.subaccountId) {
+              try {
+                await financialService.updateSubaccountBalance(wooviCharge.subaccountId);
+                console.log(`✅ Saldo da subconta atualizado: ${wooviCharge.subaccountId}`);
+              } catch (balanceError) {
+                console.error('❌ Erro ao atualizar saldo:', balanceError);
+              }
+            }
+
+            // Registrar log da transação
+            await financialService.logTransaction({
+              type: 'payment_confirmed',
+              companyId: wooviCharge.companyId,
+              chargeId: wooviCharge.id,
+              amount: wooviCharge.value,
+              status: 'completed',
+              description: `Pagamento PIX confirmado - Recarga de R$ ${parseFloat(wooviCharge.value).toFixed(2)}`,
+              metadata: { webhookData: charge },
+            });
+          } else {
+            console.warn(`⚠️ Cobrança não encontrada para correlationID: ${charge.correlationID}`);
+          }
+        }
+      } else if (event === 'OPENPIX:CHARGE_EXPIRED' || event === 'CHARGE_EXPIRED') {
+        console.log(`⏰ Cobrança expirada: ${charge?.correlationID}`);
+
+        if (charge?.correlationID) {
+          // Atualizar status para expired
+          await db
+            .update(wooviCharges)
+            .set({
+              status: 'expired',
+              updatedAt: new Date(),
+            })
+            .where(eq(wooviCharges.correlationId, charge.correlationID));
+        }
+      }
+      } catch (error) {
+        console.error("❌ Erro ao processar webhook:", error);
+      }
+    })(); // Executar a função assíncrona
+  });
+
+  // GET /api/financial/company/charges - Cobranças PIX da empresa logada
+  app.get("/api/financial/company/charges", async (req, res) => {
+    try {
+      // Verificar se é uma empresa autenticada
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      // Buscar cobranças pendentes
+      const charges = await db
+        .select()
+        .from(wooviCharges)
+        .where(
+          and(
+            eq(wooviCharges.companyId, req.session.companyId),
+            eq(wooviCharges.status, 'pending')
+          )
+        )
+        .orderBy(desc(wooviCharges.createdAt))
+        .limit(10);
+
+      return res.json({ charges });
+    } catch (error) {
+      console.error("Erro ao buscar cobranças:", error);
+      return res.status(500).json({
+        message: error instanceof Error ? error.message : "Erro ao buscar cobranças"
       });
     }
   });
@@ -15479,6 +15738,64 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       return res.status(500).json({
         message: error instanceof Error ? error.message : "Erro ao forçar saque"
       });
+    }
+  });
+
+  // GET /api/financial/admin/companies-with-subaccounts - Buscar empresas com subcontas
+  app.get("/api/financial/admin/companies-with-subaccounts", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(401).json({ message: "Acesso negado - Apenas admin" });
+      }
+
+      const { search } = req.query;
+
+      // Buscar empresas com subcontas
+      let query = db
+        .select({
+          id: companies.id,
+          name: companies.name,
+          cnpj: companies.cnpj,
+          pixKey: companies.pixKey,
+          pixKeyType: companies.pixKeyType,
+          subaccountId: wooviSubaccounts.id,
+          balance: sql<number>`COALESCE(${wooviSubaccounts.balanceCache}::numeric, 0)`,
+          lastBalanceUpdate: wooviSubaccounts.lastBalanceUpdate,
+        })
+        .from(companies)
+        .leftJoin(
+          wooviSubaccounts,
+          and(
+            eq(wooviSubaccounts.companyId, companies.id),
+            eq(wooviSubaccounts.accountType, 'company'),
+            eq(wooviSubaccounts.active, true)
+          )
+        )
+        .where(
+          and(
+            isNotNull(companies.pixKey),
+            search ? or(
+              ilike(companies.name, `%${search}%`),
+              ilike(companies.cnpj, `%${search}%`)
+            ) : undefined
+          )
+        )
+        .orderBy(desc(wooviSubaccounts.balanceCache));
+
+      const companiesWithSubaccounts = await query;
+
+      // Calcular totais
+      const totalBalance = companiesWithSubaccounts.reduce((sum, company) => sum + company.balance, 0);
+      const totalCompanies = companiesWithSubaccounts.filter(c => c.subaccountId).length;
+
+      res.json({
+        companies: companiesWithSubaccounts,
+        totalBalance,
+        totalCompanies,
+      });
+    } catch (error) {
+      console.error("Erro ao buscar empresas com subcontas:", error);
+      res.status(500).json({ message: "Erro ao buscar empresas com subcontas" });
     }
   });
 

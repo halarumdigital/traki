@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   Dialog,
   DialogContent,
@@ -24,30 +25,52 @@ import { useToast } from "@/hooks/use-toast";
 import { Wallet, Plus, RefreshCw, TrendingUp, TrendingDown, Clock, Copy, Check } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
-// Assumir que temos o companyId da sessão
-const COMPANY_ID = "current-company-id"; // Isso virá da sessão/auth
-
 export default function Carteira() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [rechargeDialogOpen, setRechargeDialogOpen] = useState(false);
   const [rechargeAmount, setRechargeAmount] = useState("");
+  const [selectedPresetAmount, setSelectedPresetAmount] = useState<string>("");
   const [qrCodeData, setQrCodeData] = useState<any>(null);
   const [copied, setCopied] = useState(false);
 
+  // Valores pré-definidos
+  const presetAmounts = [50, 100, 150];
+
   // Buscar saldo
   const { data: balanceData, isLoading: loadingBalance, refetch: refetchBalance } = useQuery({
-    queryKey: [`/api/financial/company/${COMPANY_ID}/balance`],
+    queryKey: ["/api/financial/company/balance"],
+    queryFn: async () => {
+      const response = await fetch("/api/financial/company/balance", {
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Erro ao buscar saldo");
+      return response.json();
+    },
   });
 
   // Buscar transações
   const { data: transactionsData, isLoading: loadingTransactions } = useQuery({
-    queryKey: [`/api/financial/company/${COMPANY_ID}/transactions`],
+    queryKey: ["/api/financial/company/transactions"],
+    queryFn: async () => {
+      const response = await fetch("/api/financial/company/transactions", {
+        credentials: "include",
+      });
+      if (!response.ok) return { transactions: [] };
+      return response.json();
+    },
   });
 
   // Buscar cobranças PIX
   const { data: chargesData } = useQuery({
-    queryKey: [`/api/financial/company/${COMPANY_ID}/charges`],
+    queryKey: ["/api/financial/company/charges"],
+    queryFn: async () => {
+      const response = await fetch("/api/financial/company/charges", {
+        credentials: "include",
+      });
+      if (!response.ok) return { charges: [] };
+      return response.json();
+    },
   });
 
   // Mutation para criar recarga
@@ -56,10 +79,7 @@ export default function Carteira() {
       const res = await fetch("/api/financial/company/recharge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          companyId: COMPANY_ID,
-          amount,
-        }),
+        body: JSON.stringify({ amount }),
         credentials: "include",
       });
 
@@ -76,7 +96,7 @@ export default function Carteira() {
         title: "QR Code gerado!",
         description: "Escaneie o QR Code para realizar o pagamento",
       });
-      queryClient.invalidateQueries({ queryKey: [`/api/financial/company/${COMPANY_ID}/charges`] });
+      queryClient.invalidateQueries({ queryKey: ["/api/financial/company/charges"] });
     },
     onError: (error: Error) => {
       toast({
@@ -88,16 +108,21 @@ export default function Carteira() {
   });
 
   const handleRecharge = () => {
-    const amount = parseFloat(rechargeAmount);
+    const amount = parseFloat(rechargeAmount || selectedPresetAmount);
     if (isNaN(amount) || amount <= 0) {
       toast({
         title: "Valor inválido",
-        description: "Digite um valor maior que zero",
+        description: "Selecione ou digite um valor maior que zero",
         variant: "destructive",
       });
       return;
     }
     rechargeMutation.mutate(amount);
+  };
+
+  const handlePresetAmountSelect = (value: string) => {
+    setSelectedPresetAmount(value);
+    setRechargeAmount(value);
   };
 
   const copyToClipboard = (text: string) => {
@@ -242,7 +267,26 @@ export default function Carteira() {
           {!qrCodeData ? (
             <div className="space-y-4">
               <div>
-                <Label htmlFor="amount">Valor (R$)</Label>
+                <Label>Valores Sugeridos</Label>
+                <ToggleGroup
+                  type="single"
+                  value={selectedPresetAmount}
+                  onValueChange={handlePresetAmountSelect}
+                  className="justify-start mt-2"
+                >
+                  {presetAmounts.map((amount) => (
+                    <ToggleGroupItem
+                      key={amount}
+                      value={amount.toString()}
+                      className="px-6"
+                    >
+                      R$ {amount}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+              </div>
+              <div>
+                <Label htmlFor="amount">Ou digite outro valor (R$)</Label>
                 <Input
                   id="amount"
                   type="number"
@@ -250,7 +294,10 @@ export default function Carteira() {
                   min="0"
                   placeholder="0,00"
                   value={rechargeAmount}
-                  onChange={(e) => setRechargeAmount(e.target.value)}
+                  onChange={(e) => {
+                    setRechargeAmount(e.target.value);
+                    setSelectedPresetAmount("");
+                  }}
                 />
               </div>
             </div>
@@ -297,6 +344,7 @@ export default function Carteira() {
                 onClick={() => {
                   setQrCodeData(null);
                   setRechargeAmount("");
+                  setSelectedPresetAmount("");
                   setRechargeDialogOpen(false);
                 }}
               >

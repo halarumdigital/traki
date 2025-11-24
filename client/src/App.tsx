@@ -23,6 +23,7 @@ import CompleteEGanhe from "@/pages/complete-e-ganhe";
 import Indicacao from "@/pages/indicacao";
 import Notificacoes from "@/pages/notificacoes";
 import Empresas from "@/pages/empresas";
+import Financeiro from "@/pages/financeiro";
 import Precos from "@/pages/precos";
 import RotasIntermunicipais from "@/pages/rotas-intermunicipais";
 import MotoristasAtivos from "@/pages/motoristas-ativos";
@@ -37,6 +38,7 @@ import EmpresaEntregas from "@/pages/empresa-entregas";
 import EmpresaEntregasEmAndamento from "@/pages/empresa-entregas-em-andamento";
 import EmpresaEntregasConcluidas from "@/pages/empresa-entregas-concluidas";
 import EmpresaEntregasCanceladas from "@/pages/empresa-entregas-canceladas";
+import EmpresaCarteira from "@/pages/carteira";
 import EntregasIntermunicipais from "@/pages/entregas-intermunicipais";
 import EntregasEmAndamento from "@/pages/entregas-em-andamento";
 import EntregasConcluidas from "@/pages/entregas-concluidas";
@@ -87,6 +89,7 @@ function Router() {
           <main className="h-full overflow-auto p-6">
             <Switch>
               <Route path="/empresa/dashboard" component={EmpresaDashboard} />
+              <Route path="/empresa/carteira" component={EmpresaCarteira} />
               <Route path="/empresa/entregas/em-andamento" component={EmpresaEntregasEmAndamento} />
               <Route path="/empresa/entregas/concluidas" component={EmpresaEntregasConcluidas} />
               <Route path="/empresa/entregas/canceladas" component={EmpresaEntregasCanceladas} />
@@ -126,6 +129,7 @@ function Router() {
               <Route path="/promocoes/indicacao" component={Indicacao} />
               <Route path="/notificacoes" component={Notificacoes} />
               <Route path="/empresas" component={Empresas} />
+              <Route path="/financeiro" component={Financeiro} />
               <Route path="/precos" component={Precos} />
               <Route path="/rotas-intermunicipais" component={RotasIntermunicipais} />
               <Route path="/motoristas/ativos" component={MotoristasAtivos} />

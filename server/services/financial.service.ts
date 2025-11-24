@@ -44,6 +44,7 @@ class FinancialService {
         companyId,
         pixKey,
         pixKeyType,
+        name: `Empresa: ${companyName}`,
         wooviSubaccountId: wooviResponse.subAccount.pixKey, // Woovi usa pixKey como ID
         balanceCache: '0',
         active: true,
@@ -162,7 +163,15 @@ class FinancialService {
 
       // Consultar saldo na Woovi
       const balanceResponse = await wooviService.getSubaccountBalance(subaccount.pixKey);
-      const balance = balanceResponse.SubAccount.balance;
+
+      // Verificar se a resposta é válida
+      if (!balanceResponse || !balanceResponse.SubAccount) {
+        console.warn(`Resposta inválida da Woovi para subconta ${subaccount.pixKey}`);
+        // Retornar o saldo em cache se não conseguir atualizar
+        return parseInt(subaccount.balanceCache || '0');
+      }
+
+      const balance = balanceResponse.SubAccount.balance || 0;
 
       // Atualizar cache no banco
       await db
@@ -214,7 +223,7 @@ class FinancialService {
         wooviChargeId: chargeResponse.charge.correlationID,
         correlationId: correlationID,
         value: amount.toString(),
-        qrCode: chargeResponse.qrCode,
+        qrCode: chargeResponse.charge.qrCodeImage, // URL da imagem do QR Code
         brCode: chargeResponse.brCode,
         status: 'pending',
       }).returning();
@@ -233,6 +242,97 @@ class FinancialService {
       return charge;
     } catch (error) {
       console.error('Erro ao criar recarga:', error);
+      throw new Error(`Falha ao criar recarga: ${error instanceof Error ? error.message : 'Erro desconhecido'}`);
+    }
+  }
+
+  /**
+   * Cria uma recarga com split direto para a subconta da empresa
+   * Conforme documentação: https://developers.woovi.com/docs/subaccount/how-to-create-charge-with-split-to-subbaccount-using-api
+   */
+  async createRechargeWithSplit(companyId: string, amount: number): Promise<any> {
+    try {
+      console.log(`🔍 createRechargeWithSplit - Company ID: ${companyId}, Amount: R$ ${amount}`);
+
+      // Buscar subconta da empresa
+      const subaccount = await this.getCompanySubaccount(companyId);
+
+      if (!subaccount) {
+        console.error(`❌ Subconta não encontrada para empresa ${companyId}`);
+        throw new Error('Empresa não possui subconta. Configure sua chave PIX para receber pagamentos.');
+      }
+
+      console.log(`✅ Subconta encontrada:`);
+      console.log(`   ID: ${subaccount.id}`);
+      console.log(`   PIX Key: ${subaccount.pixKey}`);
+      console.log(`   PIX Type: ${subaccount.pixKeyType}`);
+
+      const correlationID = `recharge_${companyId}_${Date.now()}`;
+
+      // Criar cobrança na Woovi com split para subconta (valor em centavos)
+      const valueInCents = wooviService.toCents(amount);
+
+      // Taxa da plataforma: R$ 0,85 (85 centavos)
+      const platformFeeInCents = 85;
+
+      // Valor que vai para a subconta da empresa (total - taxa)
+      const subaccountValueInCents = valueInCents - platformFeeInCents;
+
+      // Validar que o valor é suficiente para cobrir a taxa
+      if (valueInCents <= platformFeeInCents) {
+        throw new Error(`Valor mínimo para recarga é R$ ${(platformFeeInCents / 100 + 0.01).toFixed(2)}`);
+      }
+
+      // De acordo com a documentação, para fazer split para subconta:
+      // A taxa fica na conta principal, o resto vai para a subconta
+      const chargeResponse = await wooviService.createCharge({
+        value: valueInCents,
+        correlationID,
+        comment: `Recarga de saldo - Empresa`,
+        expiresIn: 3600, // 1 hora para expirar
+        splits: [
+          {
+            pixKey: subaccount.pixKey, // Chave PIX da subconta
+            value: subaccountValueInCents, // Valor menos a taxa vai para a subconta (valor - 85 centavos)
+            splitType: 'SPLIT_SUB_ACCOUNT' // Tipo de split para subconta virtual (valor correto da API)
+          }
+        ]
+      });
+
+      // Salvar cobrança no banco de dados
+      const [charge] = await db.insert(wooviCharges).values({
+        companyId,
+        subaccountId: subaccount.id,
+        wooviChargeId: chargeResponse.charge.correlationID,
+        correlationId: correlationID,
+        value: amount.toString(),
+        qrCode: chargeResponse.charge.qrCodeImage, // URL da imagem do QR Code
+        brCode: chargeResponse.brCode,
+        status: 'pending',
+      }).returning();
+
+      // Registrar log da transação
+      await this.logTransaction({
+        type: 'charge_created',
+        companyId,
+        chargeId: charge.id,
+        amount: amount.toString(),
+        status: 'pending',
+        description: `Cobrança PIX criada com split para subconta - Recarga de R$ ${amount.toFixed(2)} (Taxa: R$ 0,85)`,
+        metadata: JSON.parse(JSON.stringify({
+          chargeResponse,
+          split: {
+            pixKey: subaccount.pixKey,
+            valueToSubaccount: subaccountValueInCents,
+            platformFee: platformFeeInCents,
+            totalValue: valueInCents
+          }
+        })),
+      });
+
+      return charge;
+    } catch (error) {
+      console.error('Erro ao criar recarga com split:', error);
       throw new Error(`Falha ao criar recarga: ${error instanceof Error ? error.message : 'Erro desconhecido'}`);
     }
   }

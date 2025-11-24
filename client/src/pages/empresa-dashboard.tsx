@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Package, Clock, CheckCircle2, XCircle } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Package, Clock, CheckCircle2, XCircle, Wallet, CreditCard } from "lucide-react";
+import { useLocation } from "wouter";
 
 interface CompanyStats {
   totalTrips: number;
@@ -10,8 +12,23 @@ interface CompanyStats {
 }
 
 export default function EmpresaDashboard() {
+  const [, setLocation] = useLocation();
+
   const { data: companyInfo } = useQuery({
     queryKey: ["/api/empresa/auth/me"],
+  });
+
+  // Buscar saldo da empresa
+  const { data: balanceData, refetch: refetchBalance } = useQuery({
+    queryKey: ["/api/financial/company/balance"],
+    queryFn: async () => {
+      const response = await fetch("/api/financial/company/balance", {
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Erro ao buscar saldo");
+      return response.json();
+    },
+    refetchInterval: 60000, // Atualizar a cada minuto
   });
 
   // TODO: Fetch real stats from API
@@ -22,8 +39,43 @@ export default function EmpresaDashboard() {
     cancelledTrips: 0,
   };
 
+  const formatCurrency = (value: number) => {
+    return new Intl.NumberFormat('pt-BR', {
+      style: 'currency',
+      currency: 'BRL'
+    }).format(value);
+  };
+
+  const handleRecharge = () => {
+    setLocation("/empresa/carteira");
+  };
+
   return (
     <div className="space-y-6">
+      {/* Barra de Saldo */}
+      <Card className="bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-950 dark:to-emerald-950 border-green-200 dark:border-green-800">
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Wallet className="h-6 w-6 text-green-600 dark:text-green-400" />
+              <div>
+                <p className="text-sm text-muted-foreground">Saldo Disponível</p>
+                <p className="text-2xl font-bold text-green-600 dark:text-green-400">
+                  {balanceData ? formatCurrency(balanceData.balance) : "R$ 0,00"}
+                </p>
+              </div>
+            </div>
+            <Button
+              onClick={handleRecharge}
+              className="bg-green-600 hover:bg-green-700 text-white"
+            >
+              <CreditCard className="h-4 w-4 mr-2" />
+              Recarregar
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       <div>
         <h1 className="text-3xl font-bold text-foreground">
           Bem-vindo, {companyInfo?.name || "Empresa"}!

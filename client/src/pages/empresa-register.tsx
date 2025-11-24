@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
-import { Eye, EyeOff, Loader2, Building2, Mail, Phone, MapPin, User, Tag } from "lucide-react";
+import { Eye, EyeOff, Loader2, Building2, Mail, Phone, MapPin, User, Tag, Wallet } from "lucide-react";
 import { useLocation, Link } from "wouter";
 
 const empresaRegisterSchema = z.object({
@@ -43,6 +43,10 @@ const empresaRegisterSchema = z.object({
   // Senha
   password: z.string().min(8, "Senha deve ter pelo menos 8 caracteres"),
   confirmPassword: z.string(),
+
+  // Dados PIX
+  pixKeyType: z.enum(["EMAIL", "CPF", "CNPJ", "PHONE", "EVP"]).optional(),
+  pixKey: z.string().optional(),
 
   // Indicação
   referralCode: z.string().optional(),
@@ -141,6 +145,8 @@ export default function EmpresaRegister() {
       responsibleEmail: "",
       password: "",
       confirmPassword: "",
+      pixKeyType: undefined,
+      pixKey: "",
       referralCode: "",
     },
   });
@@ -528,6 +534,52 @@ export default function EmpresaRegister() {
                   <p className="text-sm text-destructive">{form.formState.errors.confirmPassword.message}</p>
                 )}
               </div>
+            </div>
+
+            {/* Dados PIX (Woovi) */}
+            <div className="space-y-4">
+              <h3 className="text-lg font-semibold flex items-center gap-2">
+                <Wallet className="h-5 w-5" />
+                Dados PIX para Pagamentos
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                Configure uma chave PIX para receber pagamentos e gerenciar o saldo da empresa
+              </p>
+              <div className="grid md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="pixKeyType">Tipo de Chave PIX</Label>
+                  <select
+                    id="pixKeyType"
+                    {...form.register("pixKeyType")}
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <option value="">Selecione o tipo (opcional)</option>
+                    <option value="EMAIL">Email</option>
+                    <option value="CPF">CPF</option>
+                    <option value="CNPJ">CNPJ</option>
+                    <option value="PHONE">Telefone</option>
+                    <option value="EVP">Chave Aleatória</option>
+                  </select>
+                  {form.formState.errors.pixKeyType && (
+                    <p className="text-sm text-destructive">{form.formState.errors.pixKeyType.message}</p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="pixKey">Chave PIX</Label>
+                  <Input
+                    id="pixKey"
+                    placeholder="Digite sua chave PIX"
+                    {...form.register("pixKey")}
+                  />
+                  {form.formState.errors.pixKey && (
+                    <p className="text-sm text-destructive">{form.formState.errors.pixKey.message}</p>
+                  )}
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                💡 A chave PIX será usada para receber pagamentos das entregas e recargas de saldo via PIX
+              </p>
             </div>
 
             {/* Código de Indicação */}
