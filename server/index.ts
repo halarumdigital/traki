@@ -125,6 +125,6 @@ app.use((req, res, next) => {
     startMonthlyResetJob();
     startScheduledDeliveriesJob();
     startViagemRemindersJob();
-    startPaymentSyncJob();
+    startPaymentSyncJob(io);
   });
 })();

@@ -3,7 +3,10 @@ import { wooviCharges, wooviSubaccounts } from "../shared/schema";
 import { eq, and } from "drizzle-orm";
 import wooviService from "./services/woovi.service";
 import financialService from "./services/financial.service";
-import { io } from "./index";
+import type { Server as SocketIOServer } from "socket.io";
+
+// Referência ao Socket.IO (será definida pelo startPaymentSyncJob)
+let socketIO: SocketIOServer | null = null;
 
 /**
  * Sincroniza o status das cobranças pendentes com a Woovi
@@ -60,8 +63,8 @@ export async function syncPendingPayments() {
           }
 
           // Emitir evento real-time para a empresa
-          if (charge.companyId) {
-            io.emit(`payment:confirmed:${charge.companyId}`, {
+          if (charge.companyId && socketIO) {
+            socketIO.emit(`payment:confirmed:${charge.companyId}`, {
               chargeId: charge.id,
               correlationId: charge.correlationId,
               value: parseFloat(charge.value),
@@ -119,8 +122,14 @@ export async function syncPendingPayments() {
 /**
  * Inicia o job de sincronização de pagamentos
  * Executa a cada 30 segundos
+ * @param io - Instância do Socket.IO para emitir eventos real-time
  */
-export function startPaymentSyncJob() {
+export function startPaymentSyncJob(io?: SocketIOServer) {
+  // Armazenar referência ao Socket.IO
+  if (io) {
+    socketIO = io;
+  }
+
   // Executar após 5 segundos do início (para não sobrecarregar no boot)
   setTimeout(() => {
     syncPendingPayments();
