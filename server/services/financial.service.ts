@@ -52,7 +52,7 @@ class FinancialService {
 
       // Registrar log da transação
       await this.logTransaction({
-        type: 'charge_created',
+        type: 'recarga_criada',
         companyId,
         amount: '0',
         status: 'completed',
@@ -96,7 +96,7 @@ class FinancialService {
 
       // Registrar log da transação
       await this.logTransaction({
-        type: 'charge_created',
+        type: 'recarga_criada',
         driverId,
         amount: '0',
         status: 'completed',
@@ -231,7 +231,7 @@ class FinancialService {
 
       // Registrar log da transação
       await this.logTransaction({
-        type: 'charge_created',
+        type: 'recarga_criada',
         companyId,
         chargeId: charge.id,
         amount: amount.toString(),
@@ -314,7 +314,7 @@ class FinancialService {
 
       // Registrar log da transação
       await this.logTransaction({
-        type: 'charge_created',
+        type: 'recarga_criada',
         companyId,
         chargeId: charge.id,
         amount: amount.toString(),

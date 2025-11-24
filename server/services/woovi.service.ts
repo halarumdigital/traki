@@ -204,6 +204,17 @@ class WooviService {
   }
 
   /**
+   * Busca uma cobrança pelo correlationID
+   * @param correlationId - ID de correlação da cobrança
+   */
+  async getCharge(correlationId: string): Promise<any> {
+    return this.request<any>(
+      `/api/v1/charge/${correlationId}`,
+      'GET'
+    );
+  }
+
+  /**
    * Transfere valor entre subcontas
    * Usado para transferir da subconta da empresa para a subconta do entregador
    */

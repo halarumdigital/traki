@@ -11,6 +11,7 @@ import { startAutoCancelJob } from "./auto-cancel-deliveries";
 import { startMonthlyResetJob } from "./monthly-reset-job";
 import { startScheduledDeliveriesJob } from "./scheduled-deliveries-job";
 import { startViagemRemindersJob } from "./viagens-intermunicipais-reminder-job";
+import { startPaymentSyncJob } from "./scheduled-payments-job";
 
 const app = express();
 const httpServer = createServer(app);
@@ -124,5 +125,6 @@ app.use((req, res, next) => {
     startMonthlyResetJob();
     startScheduledDeliveriesJob();
     startViagemRemindersJob();
+    startPaymentSyncJob();
   });
 })();

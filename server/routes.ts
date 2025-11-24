@@ -15305,7 +15305,7 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
 
             // Registrar log da transação
             await financialService.logTransaction({
-              type: 'payment_confirmed',
+              type: 'pagamento_confirmado',
               companyId: wooviCharge.companyId,
               chargeId: wooviCharge.id,
               amount: wooviCharge.value,

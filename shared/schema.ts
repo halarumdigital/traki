@@ -1845,8 +1845,8 @@ export const financialTransactions = pgTable("financial_transactions", {
   // Tipo de transação
   type: varchar("type", { length: 30 }).notNull(),
   // Tipos possíveis:
-  // - 'charge_created': Cobrança criada
-  // - 'charge_paid': Cobrança paga (recarga confirmada)
+  // - 'recarga_criada': Recarga criada
+  // - 'pagamento_confirmado': Pagamento confirmado (recarga confirmada)
   // - 'transfer_delivery': Transferência por finalização de entrega
   // - 'transfer_cancellation': Transferência por cancelamento
   // - 'withdrawal': Saque
@@ -1884,8 +1884,8 @@ export const financialTransactions = pgTable("financial_transactions", {
 
 export const insertFinancialTransactionSchema = createInsertSchema(financialTransactions, {
   type: z.enum([
-    "charge_created",
-    "charge_paid",
+    "recarga_criada",
+    "pagamento_confirmado",
     "transfer_delivery",
     "transfer_cancellation",
     "withdrawal",

@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useSocket } from "@/hooks/useSocket";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,6 +37,47 @@ export default function Carteira() {
 
   // Valores pré-definidos
   const presetAmounts = [50, 100, 150];
+
+  // Buscar dados da empresa para o companyId
+  const { data: companyData } = useQuery<any>({
+    queryKey: ["/api/empresa/auth/me"],
+  });
+
+  // Socket.IO - Conectar para receber atualizações em tempo real
+  const { isConnected, on } = useSocket({
+    companyId: companyData?.id,
+    autoConnect: !!companyData?.id,
+  });
+
+  // Listener de pagamento confirmado em tempo real
+  useEffect(() => {
+    if (!isConnected || !companyData?.id) return;
+
+    const handlePaymentConfirmed = (data: any) => {
+      console.log("💰 Pagamento confirmado em tempo real:", data);
+
+      // Atualizar saldo e transações
+      queryClient.invalidateQueries({ queryKey: ["/api/financial/company/balance"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/financial/company/transactions"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/financial/company/charges"] });
+
+      // Fechar modal de QR Code se estiver aberto
+      setQrCodeData(null);
+      setRechargeDialogOpen(false);
+
+      // Notificar usuário
+      toast({
+        title: "Pagamento Confirmado!",
+        description: `Recarga de R$ ${data.value?.toFixed(2)} confirmada. Novo saldo: R$ ${data.newBalance?.toFixed(2)}`,
+      });
+    };
+
+    on(`payment:confirmed:${companyData.id}`, handlePaymentConfirmed);
+
+    return () => {
+      // Cleanup será feito pelo hook useSocket
+    };
+  }, [isConnected, companyData?.id, on, queryClient, toast]);
 
   // Buscar saldo
   const { data: balanceData, isLoading: loadingBalance, refetch: refetchBalance } = useQuery({
@@ -141,9 +183,24 @@ export default function Carteira() {
   };
 
   const getTransactionIcon = (type: string) => {
-    if (type.includes('charge') || type === 'balance_unblock') return <TrendingUp className="h-4 w-4 text-green-600" />;
+    if (type.includes('recarga') || type.includes('pagamento') || type === 'balance_unblock') return <TrendingUp className="h-4 w-4 text-green-600" />;
     if (type.includes('transfer') || type === 'balance_block') return <TrendingDown className="h-4 w-4 text-red-600" />;
     return <Clock className="h-4 w-4" />;
+  };
+
+  const formatTransactionType = (type: string) => {
+    const typeLabels: Record<string, string> = {
+      'recarga_criada': 'Recarga Criada',
+      'pagamento_confirmado': 'Pagamento Confirmado',
+      'charge_created': 'Recarga Criada', // Compatibilidade com dados antigos
+      'payment_confirmed': 'Pagamento Confirmado', // Compatibilidade com dados antigos
+      'transfer_delivery': 'Transferência Entrega',
+      'transfer_cancellation': 'Estorno',
+      'withdrawal': 'Saque',
+      'balance_block': 'Bloqueio de Saldo',
+      'balance_unblock': 'Desbloqueio de Saldo',
+    };
+    return typeLabels[type] || type;
   };
 
   const getStatusBadge = (status: string) => {
@@ -152,7 +209,12 @@ export default function Carteira() {
       pending: "secondary",
       failed: "destructive",
     };
-    return <Badge variant={variants[status] || "outline"}>{status}</Badge>;
+    const statusLabels: Record<string, string> = {
+      completed: "Concluído",
+      pending: "Pendente",
+      failed: "Falhou",
+    };
+    return <Badge variant={variants[status] || "outline"}>{statusLabels[status] || status}</Badge>;
   };
 
   return (
@@ -236,7 +298,7 @@ export default function Carteira() {
                       <TableCell>
                         <div className="flex items-center gap-2">
                           {getTransactionIcon(transaction.type)}
-                          {transaction.type}
+                          {formatTransactionType(transaction.type)}
                         </div>
                       </TableCell>
                       <TableCell className="max-w-xs truncate">{transaction.description}</TableCell>
