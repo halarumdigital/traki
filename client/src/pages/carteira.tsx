@@ -79,7 +79,7 @@ export default function Carteira() {
     };
   }, [isConnected, companyData?.id, on, queryClient, toast]);
 
-  // Buscar saldo
+  // Buscar saldo (atualiza a cada 30 segundos como fallback)
   const { data: balanceData, isLoading: loadingBalance, refetch: refetchBalance } = useQuery({
     queryKey: ["/api/financial/company/balance"],
     queryFn: async () => {
@@ -89,9 +89,10 @@ export default function Carteira() {
       if (!response.ok) throw new Error("Erro ao buscar saldo");
       return response.json();
     },
+    refetchInterval: 30000, // Atualiza a cada 30 segundos
   });
 
-  // Buscar transações
+  // Buscar transações (atualiza a cada 30 segundos como fallback)
   const { data: transactionsData, isLoading: loadingTransactions } = useQuery({
     queryKey: ["/api/financial/company/transactions"],
     queryFn: async () => {
@@ -101,9 +102,10 @@ export default function Carteira() {
       if (!response.ok) return { transactions: [] };
       return response.json();
     },
+    refetchInterval: 30000, // Atualiza a cada 30 segundos
   });
 
-  // Buscar cobranças PIX
+  // Buscar cobranças PIX (atualiza a cada 30 segundos como fallback)
   const { data: chargesData } = useQuery({
     queryKey: ["/api/financial/company/charges"],
     queryFn: async () => {
@@ -113,6 +115,7 @@ export default function Carteira() {
       if (!response.ok) return { charges: [] };
       return response.json();
     },
+    refetchInterval: 30000, // Atualiza a cada 30 segundos
   });
 
   // Mutation para criar recarga

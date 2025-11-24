@@ -19,7 +19,7 @@ const httpServer = createServer(app);
 // Configurar Socket.IO
 export const io = new SocketIOServer(httpServer, {
   cors: {
-    origin: process.env.CORS_ORIGIN || "http://localhost:5173",
+    origin: process.env.CORS_ORIGIN || ["http://localhost:5173", "http://localhost:5010", "https://dev.fretus.com.br"],
     credentials: true,
   },
 });
