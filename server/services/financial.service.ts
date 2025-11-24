@@ -164,14 +164,15 @@ class FinancialService {
       // Consultar saldo na Woovi
       const balanceResponse = await wooviService.getSubaccountBalance(subaccount.pixKey);
 
-      // Verificar se a resposta é válida
-      if (!balanceResponse || !balanceResponse.SubAccount) {
+      // Verificar se a resposta é válida (API pode retornar "SubAccount" ou "subAccount")
+      const subAccountData = balanceResponse?.SubAccount || balanceResponse?.subAccount;
+      if (!balanceResponse || !subAccountData) {
         console.warn(`Resposta inválida da Woovi para subconta ${subaccount.pixKey}`);
         // Retornar o saldo em cache se não conseguir atualizar
         return parseInt(subaccount.balanceCache || '0');
       }
 
-      const balance = balanceResponse.SubAccount.balance || 0;
+      const balance = subAccountData.balance || 0;
 
       // Atualizar cache no banco
       await db

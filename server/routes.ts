@@ -15138,20 +15138,23 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       const lastUpdate = subconta.lastBalanceUpdate ? new Date(subconta.lastBalanceUpdate) : null;
       const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
 
-      let balance = parseFloat(subconta.balanceCache || '0');
+      let balanceInCents = parseFloat(subconta.balanceCache || '0');
 
       if (!lastUpdate || lastUpdate < fiveMinutesAgo) {
         // Atualizar saldo via API Woovi
         try {
-          balance = await financialService.updateSubaccountBalance(subconta.id);
+          balanceInCents = await financialService.updateSubaccountBalance(subconta.id);
         } catch (error) {
           console.error("Erro ao atualizar saldo:", error);
           // Usar cache mesmo se falhar
         }
       }
 
+      // Converter de centavos para reais
+      const balanceInReais = balanceInCents / 100;
+
       return res.json({
-        balance,
+        balance: balanceInReais,
         hasSubaccount: true,
         lastUpdate: subconta.lastBalanceUpdate
       });
@@ -15382,11 +15385,11 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         });
       }
 
-      // Atualizar saldo consultando a Woovi
-      const balance = await financialService.updateSubaccountBalance(subaccount.id);
+      // Atualizar saldo consultando a Woovi (retorna em centavos)
+      const balanceInCents = await financialService.updateSubaccountBalance(subaccount.id);
 
       return res.json({
-        balance,
+        balance: balanceInCents / 100, // Converter para reais
         balanceCache: subaccount.balanceCache,
         lastUpdate: subaccount.lastBalanceUpdate,
         pixKey: subaccount.pixKey,
@@ -15489,11 +15492,11 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         });
       }
 
-      // Atualizar saldo consultando a Woovi
-      const balance = await financialService.updateSubaccountBalance(subaccount.id);
+      // Atualizar saldo consultando a Woovi (retorna em centavos)
+      const balanceInCents = await financialService.updateSubaccountBalance(subaccount.id);
 
       return res.json({
-        balance,
+        balance: balanceInCents / 100, // Converter para reais
         balanceCache: subaccount.balanceCache,
         lastUpdate: subaccount.lastBalanceUpdate,
         pixKey: subaccount.pixKey,
