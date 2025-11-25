@@ -83,9 +83,7 @@
       "Bash(PATH=\"/home/gilliard/.nvm/versions/node/v22.21.1/bin:$PATH\" DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev npx tsx:*)",
       "Bash(PATH=\"/home/gilliard/.nvm/versions/node/v22.21.1/bin:$PATH\" DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@31.97.87.1:5432/fretus-dev npx tsx:*)",
       "Bash(PATH=\"/home/gilliard/.nvm/versions/node/v22.21.1/bin:$PATH\" DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@31.97.87.1:5432/fretus-dev npx drizzle-kit push --force)",
-      "Bash(PATH=\"/home/gilliard/.nvm/versions/node/v22.21.1/bin:$PATH\" DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@31.97.87.1:5432/fretus-dev npx tsx server/check-new-delivery.ts)",
-      "Bash(PATH=\"/home/gilliard/.nvm/versions/node/v22.21.1/bin:$PATH\" node ./node_modules/typescript/bin/tsc:*)",
-      "Bash(PATH=\"/home/gilliard/.nvm/versions/node/v22.21.1/bin:$PATH\" node:*)"
+      "Bash(PATH=\"/home/gilliard/.nvm/versions/node/v22.21.1/bin:$PATH\" DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@31.97.87.1:5432/fretus-dev npx tsx server/check-new-delivery.ts)"
     ],
     "deny": [],
     "ask": []

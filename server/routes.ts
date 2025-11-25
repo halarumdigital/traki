@@ -7517,6 +7517,102 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     }
   });
 
+  // GET /api/empresa/price-estimate - Estimar preço baseado em distância (para página de precificação)
+  app.get("/api/empresa/price-estimate", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const distance = parseFloat(req.query.distance as string);
+
+      if (isNaN(distance) || distance <= 0) {
+        return res.status(400).json({
+          message: "Distância inválida"
+        });
+      }
+
+      // Buscar dados da empresa para pegar cidade/estado
+      const [company] = await db
+        .select({
+          name: companies.name,
+          city: companies.city,
+          state: companies.state,
+        })
+        .from(companies)
+        .where(eq(companies.id, req.session.companyId))
+        .limit(1);
+
+      if (!company || !company.city || !company.state) {
+        return res.status(400).json({
+          message: "Empresa não possui cidade/estado cadastrado"
+        });
+      }
+
+      // Buscar serviceLocation correspondente à cidade/estado da empresa
+      const [serviceLocation] = await db
+        .select({ id: serviceLocations.id })
+        .from(serviceLocations)
+        .where(
+          and(
+            eq(serviceLocations.name, company.city),
+            eq(serviceLocations.state, company.state)
+          )
+        )
+        .limit(1);
+
+      if (!serviceLocation) {
+        return res.status(400).json({
+          message: `Cidade ${company.city}/${company.state} não está cadastrada no sistema`
+        });
+      }
+
+      // Buscar primeira configuração de preço ativa para esta cidade
+      const [pricing] = await db
+        .select()
+        .from(cityPrices)
+        .where(
+          and(
+            eq(cityPrices.serviceLocationId, serviceLocation.id),
+            eq(cityPrices.active, true)
+          )
+        )
+        .limit(1);
+
+      if (!pricing) {
+        return res.status(400).json({
+          message: "Não há configuração de preço para esta cidade"
+        });
+      }
+
+      // Converter para números
+      const basePrice = parseFloat(pricing.basePrice);
+      const pricePerDistance = parseFloat(pricing.pricePerDistance);
+      const baseDistance = parseFloat(pricing.baseDistance);
+
+      // Calcular preço base
+      let totalPrice = basePrice;
+
+      // Calcular preço por distância (apenas se exceder a distância base)
+      const extraDistance = Math.max(0, distance - baseDistance);
+      const distancePrice = extraDistance * pricePerDistance;
+      totalPrice += distancePrice;
+
+      return res.json({
+        basePrice: basePrice,
+        pricePerKm: pricePerDistance,
+        baseDistance: baseDistance,
+        distance: distance,
+        extraDistance: extraDistance,
+        distancePrice: distancePrice,
+        totalPrice: Math.round(totalPrice * 100) / 100,
+      });
+    } catch (error) {
+      console.error("Erro ao estimar preço:", error);
+      return res.status(500).json({ message: "Erro ao estimar preço" });
+    }
+  });
+
   // POST /api/empresa/deliveries - Criar nova entrega
   app.post("/api/empresa/deliveries", async (req, res) => {
     try {

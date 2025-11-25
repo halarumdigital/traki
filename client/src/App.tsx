@@ -39,6 +39,7 @@ import EmpresaEntregasEmAndamento from "@/pages/empresa-entregas-em-andamento";
 import EmpresaEntregasConcluidas from "@/pages/empresa-entregas-concluidas";
 import EmpresaEntregasCanceladas from "@/pages/empresa-entregas-canceladas";
 import EmpresaCarteira from "@/pages/carteira";
+import EmpresaPrecificacao from "@/pages/empresa-precificacao";
 import EntregasIntermunicipais from "@/pages/entregas-intermunicipais";
 import EntregasEmAndamento from "@/pages/entregas-em-andamento";
 import EntregasConcluidas from "@/pages/entregas-concluidas";
@@ -90,6 +91,7 @@ function Router() {
             <Switch>
               <Route path="/empresa/dashboard" component={EmpresaDashboard} />
               <Route path="/empresa/carteira" component={EmpresaCarteira} />
+              <Route path="/empresa/precificacao" component={EmpresaPrecificacao} />
               <Route path="/empresa/entregas/em-andamento" component={EmpresaEntregasEmAndamento} />
               <Route path="/empresa/entregas/concluidas" component={EmpresaEntregasConcluidas} />
               <Route path="/empresa/entregas/canceladas" component={EmpresaEntregasCanceladas} />
