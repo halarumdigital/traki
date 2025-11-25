@@ -37,7 +37,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Pencil, Trash2, Plus, Eye, Star, Search, DollarSign, TrendingUp, MapPin } from "lucide-react";
+import { Pencil, Trash2, Plus, Eye, Star, Search, DollarSign, TrendingUp, MapPin, Wallet, ArrowDownToLine, ArrowUpFromLine, CreditCard, Key } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { insertCompanySchema, type Company } from "@shared/schema";
@@ -109,6 +109,24 @@ export default function Empresas() {
     queryKey: ["/api/companies", viewingCompany?.id, "trips"],
     enabled: !!viewingCompany?.id,
   });
+
+  const { data: companyFinancial } = useQuery<{
+    subaccount: any;
+    pixKey: string | null;
+    pixKeyType: string | null;
+    wooviBalance: number;
+    recharges: any[];
+    payments: any[];
+    totals: {
+      totalRecharges: number;
+      totalPayments: number;
+    };
+  }>({
+    queryKey: ["/api/companies", viewingCompany?.id, "financial"],
+    enabled: !!viewingCompany?.id,
+  });
+
+  const [financialView, setFinancialView] = useState<"recargas" | "pagamentos">("recargas");
 
   // Filtrar empresas pela busca
   const filteredCompanies = companies.filter((company) => {
@@ -709,9 +727,10 @@ export default function Empresas() {
           </DialogHeader>
           {viewingCompany && (
             <Tabs defaultValue="cadastro" className="w-full">
-              <TabsList className="grid w-full grid-cols-2">
+              <TabsList className="grid w-full grid-cols-3">
                 <TabsTrigger value="cadastro">Cadastro</TabsTrigger>
                 <TabsTrigger value="corridas">Corridas</TabsTrigger>
+                <TabsTrigger value="financeiro">Financeiro</TabsTrigger>
               </TabsList>
 
               <TabsContent value="cadastro" className="space-y-6 mt-4">
@@ -932,6 +951,237 @@ export default function Empresas() {
                   )}
                 </div>
               </div>
+            </TabsContent>
+
+            <TabsContent value="financeiro" className="space-y-6 mt-4">
+              {/* Informações da Subconta */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <Card>
+                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                    <CardTitle className="text-sm font-medium">Subconta Woovi</CardTitle>
+                    <CreditCard className="h-4 w-4 text-muted-foreground" />
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-sm">
+                      {companyFinancial?.subaccount ? (
+                        <span className="text-green-600 font-medium">✓ Ativa</span>
+                      ) : (
+                        <span className="text-yellow-600 font-medium">✗ Não criada</span>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {companyFinancial?.subaccount?.wooviSubaccountId || "ID não disponível"}
+                    </p>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                    <CardTitle className="text-sm font-medium">Chave PIX</CardTitle>
+                    <Key className="h-4 w-4 text-muted-foreground" />
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-sm font-medium truncate" title={companyFinancial?.pixKey || "-"}>
+                      {companyFinancial?.pixKey || "-"}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Tipo: {companyFinancial?.pixKeyType || "-"}
+                    </p>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                    <CardTitle className="text-sm font-medium">Saldo na Conta Woovi</CardTitle>
+                    <Wallet className="h-4 w-4 text-green-600" />
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold text-green-600">
+                      {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                        (companyFinancial?.wooviBalance || 0) / 100
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Saldo disponível
+                    </p>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Seletor Recargas/Pagamentos */}
+              <div className="flex items-center gap-4 border-b pb-4">
+                <span className="text-sm font-medium">Visualizar:</span>
+                <div className="flex gap-2">
+                  <Button
+                    variant={financialView === "recargas" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setFinancialView("recargas")}
+                    className="gap-2"
+                  >
+                    <ArrowDownToLine className="h-4 w-4" />
+                    Recargas
+                  </Button>
+                  <Button
+                    variant={financialView === "pagamentos" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setFinancialView("pagamentos")}
+                    className="gap-2"
+                  >
+                    <ArrowUpFromLine className="h-4 w-4" />
+                    Pagamentos
+                  </Button>
+                </div>
+              </div>
+
+              {/* Lista de Recargas */}
+              {financialView === "recargas" && (
+                <div className="border rounded-lg">
+                  <div className="p-4 border-b bg-muted/50">
+                    <h3 className="font-semibold text-lg flex items-center gap-2">
+                      <ArrowDownToLine className="h-5 w-5" />
+                      Histórico de Recargas
+                    </h3>
+                  </div>
+                  <div className="max-h-[400px] overflow-y-auto">
+                    {!companyFinancial?.recharges || companyFinancial.recharges.length === 0 ? (
+                      <p className="text-muted-foreground text-center py-8">
+                        Nenhuma recarga realizada ainda
+                      </p>
+                    ) : (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Data/Hora</TableHead>
+                            <TableHead>Valor</TableHead>
+                            <TableHead>Descrição</TableHead>
+                            <TableHead>Status</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {companyFinancial.recharges.map((recharge: any) => (
+                            <TableRow key={recharge.id}>
+                              <TableCell className="font-medium">
+                                {new Date(recharge.createdAt).toLocaleString('pt-BR')}
+                              </TableCell>
+                              <TableCell className="text-green-600 font-medium">
+                                + {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                                  parseFloat(recharge.amount || 0)
+                                )}
+                              </TableCell>
+                              <TableCell className="max-w-[200px] truncate" title={recharge.description}>
+                                {recharge.description || "-"}
+                              </TableCell>
+                              <TableCell>
+                                <span className={`text-xs px-2 py-1 rounded ${
+                                  recharge.status === 'completed' ? 'bg-green-100 text-green-700' :
+                                  recharge.status === 'failed' ? 'bg-red-100 text-red-700' :
+                                  'bg-yellow-100 text-yellow-700'
+                                }`}>
+                                  {recharge.status === 'completed' ? 'Confirmada' :
+                                   recharge.status === 'failed' ? 'Falhou' :
+                                   'Pendente'}
+                                </span>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    )}
+                  </div>
+                  {companyFinancial?.recharges && companyFinancial.recharges.length > 0 && (
+                    <div className="p-4 border-t bg-muted/50">
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm text-muted-foreground">
+                          Total de recargas: {companyFinancial.recharges.length}
+                        </span>
+                        <span className="font-semibold text-green-600">
+                          Total: {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                            companyFinancial.totals?.totalRecharges || 0
+                          )}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Lista de Pagamentos para Entregadores */}
+              {financialView === "pagamentos" && (
+                <div className="border rounded-lg">
+                  <div className="p-4 border-b bg-muted/50">
+                    <h3 className="font-semibold text-lg flex items-center gap-2">
+                      <ArrowUpFromLine className="h-5 w-5" />
+                      Pagamentos para Entregadores
+                    </h3>
+                  </div>
+                  <div className="max-h-[400px] overflow-y-auto">
+                    {!companyFinancial?.payments || companyFinancial.payments.length === 0 ? (
+                      <p className="text-muted-foreground text-center py-8">
+                        Nenhum pagamento realizado ainda
+                      </p>
+                    ) : (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Data/Hora</TableHead>
+                            <TableHead>Valor</TableHead>
+                            <TableHead>Nº Entrega</TableHead>
+                            <TableHead>Entregador</TableHead>
+                            <TableHead>Status</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {companyFinancial.payments.map((payment: any) => (
+                            <TableRow key={payment.id}>
+                              <TableCell className="font-medium">
+                                {new Date(payment.createdAt).toLocaleString('pt-BR')}
+                              </TableCell>
+                              <TableCell className="text-red-600 font-medium">
+                                - {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                                  parseFloat(payment.amount || 0)
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <span className="font-mono text-xs bg-gray-100 px-2 py-1 rounded">
+                                  #{payment.entregaNumero || "-"}
+                                </span>
+                              </TableCell>
+                              <TableCell className="max-w-[150px] truncate" title={payment.driverName}>
+                                {payment.driverName || "-"}
+                              </TableCell>
+                              <TableCell>
+                                <span className={`text-xs px-2 py-1 rounded ${
+                                  payment.status === 'completed' ? 'bg-green-100 text-green-700' :
+                                  payment.status === 'failed' ? 'bg-red-100 text-red-700' :
+                                  'bg-yellow-100 text-yellow-700'
+                                }`}>
+                                  {payment.status === 'completed' ? 'Concluído' :
+                                   payment.status === 'failed' ? 'Falhou' :
+                                   'Pendente'}
+                                </span>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    )}
+                  </div>
+                  {companyFinancial?.payments && companyFinancial.payments.length > 0 && (
+                    <div className="p-4 border-t bg-muted/50">
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm text-muted-foreground">
+                          Total de pagamentos: {companyFinancial.payments.length}
+                        </span>
+                        <span className="font-semibold text-red-600">
+                          Total: {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                            companyFinancial.totals?.totalPayments || 0
+                          )}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </TabsContent>
           </Tabs>
           )}

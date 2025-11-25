@@ -73,7 +73,17 @@
       "Bash(DATABASE_URL=postgresql://fretus:@0dJ2m0q82320@31.97.87.1:5432/fretus-dev WOOVI_APP_ID=\"Q2xpZW50X0lkX2QwNDYzNzkyLTAwY2YtNGFhNi1hM2I0LWEyNjViMzQ5OGJmYzpDbGllbnRfU2VjcmV0XzRTUE03YWc2ay9zZkJ5cU1BWnBoU0ZleG1tZmF4T1lwdmxQMkQ0eHJnVG89\" WOOVI_API_URL=\"https://api.woovi-sandbox.com\" /home/gilliard/.nvm/versions/node/v22.21.1/bin/node:*)",
       "Bash(DATABASE_URL=postgresql://fretus:@0dJ2m0q82320@31.97.87.1:5432/fretus-dev WOOVI_APP_ID=\"Q2xpZW50X0lkX2QwNDYzNzkyLTAwY2YtNGFhNi1hM2I0LWEyNjViMzQ5OGJmYzpDbGllbnRfU2VjcmV0XzRTUE03YWc2ay9zZkJ5cU1BWnBoU0ZleG1tZmF4T1lwdmxQMkQ0eHJnVG89\" WOOVI_API_URL=\"https://api.woovi-sandbox.com\" /home/gilliard/.nvm/versions/node/v22.21.1/bin/node --import tsx server/sync-charges-status.ts)",
       "Bash(/home/gilliard/.nvm/versions/node/v22.21.1/bin/npx tsc --noEmit)",
-      "Bash(PATH=\"/home/gilliard/.nvm/versions/node/v22.21.1/bin:$PATH\" npx tsc:*)"
+      "Bash(PATH=\"/home/gilliard/.nvm/versions/node/v22.21.1/bin:$PATH\" npx tsc:*)",
+      "Bash(export PATH=\"/home/gilliard/.nvm/versions/node/v22.21.1/bin:$PATH\":*)",
+      "Bash(npx cross-env DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev npx tsx server/check-driver-subaccount.ts ze15@gmail.com)",
+      "Bash(npx cross-env DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev npx tsx server/check-company-subaccount.ts)",
+      "Bash(PATH=\"/home/gilliard/.nvm/versions/node/v22.21.1/bin:$PATH\" npx cross-env DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev npx tsx server/check-driver-subaccount.ts ze15@gmail.com)",
+      "Bash(PATH=\"/home/gilliard/.nvm/versions/node/v22.21.1/bin:$PATH\" npx cross-env DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev npx tsx server/check-company-subaccount.ts)",
+      "Bash(PATH=\"/home/gilliard/.nvm/versions/node/v22.21.1/bin:$PATH\" DATABASE_URL=postgresql://fretus:@0dJ2m0q82320@31.97.87.1:5432/fretus-dev npx tsx:*)",
+      "Bash(PATH=\"/home/gilliard/.nvm/versions/node/v22.21.1/bin:$PATH\" DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@206.183.129.145:5432/fretus-dev npx tsx:*)",
+      "Bash(PATH=\"/home/gilliard/.nvm/versions/node/v22.21.1/bin:$PATH\" DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@31.97.87.1:5432/fretus-dev npx tsx:*)",
+      "Bash(PATH=\"/home/gilliard/.nvm/versions/node/v22.21.1/bin:$PATH\" DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@31.97.87.1:5432/fretus-dev npx drizzle-kit push --force)",
+      "Bash(PATH=\"/home/gilliard/.nvm/versions/node/v22.21.1/bin:$PATH\" DATABASE_URL=postgresql://postgres:@0dJ2m0q82320@31.97.87.1:5432/fretus-dev npx tsx server/check-new-delivery.ts)"
     ],
     "deny": [],
     "ask": []

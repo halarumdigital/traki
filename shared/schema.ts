@@ -367,7 +367,7 @@ export const drivers = pgTable("drivers", {
   // Referral System (Sistema de Indicação)
   referralCode: varchar("referral_code", { length: 50 }).unique(), // Código único do entregador
   referredByCode: varchar("referred_by_code", { length: 50 }), // Código de quem indicou
-  referredById: varchar("referred_by_id").references(() => drivers.id), // ID de quem indicou
+  referredById: varchar("referred_by_id"), // ID de quem indicou (auto-referência para drivers)
   totalDeliveries: integer("total_deliveries").notNull().default(0), // Total de entregas completas
 
   // Criminal Background Check (Consulta de Antecedentes Criminais)
@@ -921,7 +921,18 @@ export const insertEntregadorRotaSchema = createInsertSchema(entregadorRotas, {
   horarioSaida: z.string().regex(/^\d{2}:\d{2}$/, "Formato inválido (HH:MM)"),
   horarioChegada: z.string().regex(/^\d{2}:\d{2}$/, "Formato inválido (HH:MM)").optional(),
   capacidadePacotes: z.number().min(1, "Capacidade deve ser maior que 0"),
-  capacidadePesoKg: z.number().min(0.1, "Peso deve ser maior que 0"),
+  capacidadePesoKg: z.union([
+    z.number().min(0.1, "Peso deve ser maior que 0").transform(v => v.toString()),
+    z.string()
+  ]),
+  capacidadeVolumeM3: z.union([
+    z.number().min(0).transform(v => v.toString()),
+    z.string()
+  ]).optional(),
+  raioColetaKm: z.union([
+    z.number().min(0).transform(v => v.toString()),
+    z.string()
+  ]).optional(),
 }).omit({
   id: true,
   createdAt: true,
@@ -1856,7 +1867,8 @@ export const financialTransactions = pgTable("financial_transactions", {
   // Relacionamentos
   companyId: varchar("company_id").references(() => companies.id),
   driverId: varchar("driver_id").references(() => drivers.id),
-  entregaId: varchar("entrega_id").references(() => entregasIntermunicipais.id),
+  entregaId: varchar("entrega_id").references(() => entregasIntermunicipais.id), // Para entregas intermunicipais
+  requestId: varchar("request_id").references(() => requests.id), // Para entregas rápidas (requests)
   chargeId: varchar("charge_id").references(() => wooviCharges.id),
   fromSubaccountId: varchar("from_subaccount_id").references(() => wooviSubaccounts.id),
   toSubaccountId: varchar("to_subaccount_id").references(() => wooviSubaccounts.id),
@@ -1891,6 +1903,9 @@ export const insertFinancialTransactionSchema = createInsertSchema(financialTran
     "withdrawal",
     "balance_block",
     "balance_unblock",
+    "commission_debit", // Débito de comissão da subconta do entregador
+    "withdrawal_fee", // Taxa de saque cobrada do entregador
+    "charge_paid", // Cobrança paga (webhook)
   ]),
   amount: z.union([z.string(), z.number()]).transform(val => String(val)),
   status: z.enum(["pending", "completed", "failed"]).default("pending"),

@@ -63,7 +63,17 @@
       "Bash(.env)",
       "Bash(WOOVI_APP_ID='Q2xpZW50X0lkXzk3ODRlNzM3LTlkZGUtNGZkNS05MWVlLTVkMzQ3N2M0Y2NjODpDbGllbnRfU2VjcmV0XzJJSVozUXlGaTZXVWQyU2IrQTVDc0dsUTFYbTVRZmtWdncwMTBCdUZvaVE=' WOOVI_PRODUCTION=true /home/gilliard/.nvm/versions/node/v22.21.1/bin/node:*)",
       "Bash(timeout 5 curl -X POST http://fretus.ddnsking.com:5010/api/webhooks/woovi )",
-      "Bash(WOOVI_APP_ID='Q2xpZW50X0lkXzk3ODRlNzM3LTlkZGUtNGZkNS05MWVlLTVkMzQ3N2M0Y2NjODpDbGllbnRfU2VjcmV0XzJJSVozUXlGaTZXVWQyU2IrQTVDc0dsUTFYbTVRZmtWdncwMTBCdUZvaVE9' /home/gilliard/.nvm/versions/node/v22.21.1/bin/node:*)"
+      "Bash(WOOVI_APP_ID='Q2xpZW50X0lkXzk3ODRlNzM3LTlkZGUtNGZkNS05MWVlLTVkMzQ3N2M0Y2NjODpDbGllbnRfU2VjcmV0XzJJSVozUXlGaTZXVWQyU2IrQTVDc0dsUTFYbTVRZmtWdncwMTBCdUZvaVE9' /home/gilliard/.nvm/versions/node/v22.21.1/bin/node:*)",
+      "Bash(source .env)",
+      "Bash(/home/gilliard/.nvm/versions/node/v22.21.1/bin/npx tsx server/debug-balance-api.ts)",
+      "Bash(cat:*)",
+      "Bash(DATABASE_URL=postgresql://fretus:@0dJ2m0q82320@31.97.87.1:5432/fretus-dev /home/gilliard/.nvm/versions/node/v22.21.1/bin/node:*)",
+      "Bash(source:*)",
+      "Bash(DATABASE_URL=postgresql://fretus:@0dJ2m0q82320@31.97.87.1:5432/fretus-dev WOOVI_APP_ID=\"Q2xpZW50X0lkX2QwNDYzNzkyLTAwY2YtNGFhNi1hM2I0LWEyNjViMzQ5OGJmYzpDbGllbnRfU2VjcmV0XzRTUE03YWc2ay9zZkJ5cU1BWnBoU0ZleG1tZmF4T1lwdmxQMkQ0eHJnVG89\" WOOVI_API_URL=\"https://api.woovi-sandbox.com\" /home/gilliard/.nvm/versions/node/v22.21.1/bin/node --import tsx server/force-update-balance.ts)",
+      "Bash(DATABASE_URL=postgresql://fretus:@0dJ2m0q82320@31.97.87.1:5432/fretus-dev WOOVI_APP_ID=\"Q2xpZW50X0lkX2QwNDYzNzkyLTAwY2YtNGFhNi1hM2I0LWEyNjViMzQ5OGJmYzpDbGllbnRfU2VjcmV0XzRTUE03YWc2ay9zZkJ5cU1BWnBoU0ZleG1tZmF4T1lwdmxQMkQ0eHJnVG89\" WOOVI_API_URL=\"https://api.woovi-sandbox.com\" /home/gilliard/.nvm/versions/node/v22.21.1/bin/node:*)",
+      "Bash(DATABASE_URL=postgresql://fretus:@0dJ2m0q82320@31.97.87.1:5432/fretus-dev WOOVI_APP_ID=\"Q2xpZW50X0lkX2QwNDYzNzkyLTAwY2YtNGFhNi1hM2I0LWEyNjViMzQ5OGJmYzpDbGllbnRfU2VjcmV0XzRTUE03YWc2ay9zZkJ5cU1BWnBoU0ZleG1tZmF4T1lwdmxQMkQ0eHJnVG89\" WOOVI_API_URL=\"https://api.woovi-sandbox.com\" /home/gilliard/.nvm/versions/node/v22.21.1/bin/node --import tsx server/sync-charges-status.ts)",
+      "Bash(/home/gilliard/.nvm/versions/node/v22.21.1/bin/npx tsc --noEmit)",
+      "Bash(PATH=\"/home/gilliard/.nvm/versions/node/v22.21.1/bin:$PATH\" npx tsc:*)"
     ],
     "deny": [],
     "ask": []

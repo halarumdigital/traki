@@ -917,6 +917,8 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       console.log(`✅ ${notificationPromises.length} notificações registradas`);
 
       // 12. Enviar notificações push para todos os motoristas
+      // NOTA: Cada motorista pode ter uma comissão diferente, então enviamos o valor total
+      // e o app deve consultar /api/v1/driver/deliveries/available para obter o valor correto
       if (fcmTokens.length > 0) {
         // Firebase requer que todos os valores sejam strings
         const notificationData = {
@@ -929,12 +931,15 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
           dropoffAddress: deliveryAddress,
           totalDistance: distance.toFixed(1),
           totalTime: Math.ceil(estimatedTime).toString(),
-          estimatedAmount: driverAmount.toFixed(2), // VALOR DO MOTORISTA (o que ele receberá) - app lê este campo
-          totalAmount: totalAmount.toFixed(2), // Valor total da entrega (para referência)
-          driverAmount: driverAmount.toFixed(2), // Mantido por compatibilidade
+          // IMPORTANTE: Enviar valor total bruto - o app deve recalcular com a comissão do motorista
+          estimatedAmount: totalAmount.toFixed(2), // Valor bruto - app deve descontar comissão
+          totalAmount: totalAmount.toFixed(2), // Valor total da entrega
+          driverAmount: driverAmount.toFixed(2), // Valor com comissão padrão (20%) - apenas referência
+          defaultCommissionPercentage: adminCommissionPercentage.toString(), // % para o app recalcular
           acceptanceTimeout: driverAcceptanceTimeout.toString(),
           searchTimeout: minTimeToFindDriver.toString(),
           expiresAt: expiresAt.toISOString(),
+          requiresRecalculation: "true", // Flag indicando que o app deve recalcular com comissão do motorista
         };
 
         console.log("🔔 Preparando envio de notificações FCM:");
@@ -945,7 +950,7 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         await sendPushToMultipleDevices(
           fcmTokens,
           "🚚 Nova Solicitação de Entrega!",
-          `${company?.name || "Empresa"} - ${distance.toFixed(1)}km - R$ ${totalAmount.toFixed(2)}`,
+          `${company?.name || "Empresa"} - ${distance.toFixed(1)}km`,
           notificationData
         );
 
@@ -2442,6 +2447,141 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     }
   });
 
+  // GET /api/companies/:id/financial - Buscar dados financeiros da empresa
+  app.get("/api/companies/:id/financial", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+
+      // Buscar subconta Woovi da empresa
+      const [subaccount] = await db
+        .select()
+        .from(wooviSubaccounts)
+        .where(and(
+          eq(wooviSubaccounts.companyId, id),
+          eq(wooviSubaccounts.accountType, "company")
+        ))
+        .limit(1);
+
+      // Buscar empresa para pegar pixKey e pixKeyType
+      const company = await storage.getCompany(id);
+
+      // Buscar saldo atualizado da subconta Woovi
+      let wooviBalance = 0;
+      if (subaccount) {
+        try {
+          wooviBalance = await financialService.updateSubaccountBalance(subaccount.id);
+        } catch (balanceError) {
+          console.error("Erro ao buscar saldo da subconta:", balanceError);
+          // Usar o saldo em cache se falhar
+          wooviBalance = parseFloat(subaccount.balanceCache || "0");
+        }
+      }
+
+      // Buscar todas as transações da empresa
+      const transactions = await db
+        .select()
+        .from(financialTransactions)
+        .where(eq(financialTransactions.companyId, id))
+        .orderBy(desc(financialTransactions.createdAt));
+
+      // Separar recargas e pagamentos para entregadores
+      const recharges = transactions.filter(t =>
+        t.type === "recarga_criada" ||
+        t.type === "pagamento_confirmado"
+      );
+
+      const payments = transactions.filter(t =>
+        t.type === "transfer_delivery" ||
+        t.type === "transfer_cancellation"
+      );
+
+      // Buscar detalhes das entregas para os pagamentos
+      const paymentsWithDetails = await Promise.all(
+        payments.map(async (payment) => {
+          let entregaNumero = null;
+          let driverName = null;
+
+          // Buscar para entregas intermunicipais (entregaId)
+          if (payment.entregaId) {
+            const [entrega] = await db
+              .select({
+                id: entregasIntermunicipais.id,
+                driverId: entregasIntermunicipais.driverId
+              })
+              .from(entregasIntermunicipais)
+              .where(eq(entregasIntermunicipais.id, payment.entregaId))
+              .limit(1);
+            if (entrega) {
+              entregaNumero = entrega.id.slice(-8).toUpperCase();
+              // Buscar nome do motorista
+              if (entrega.driverId) {
+                const driver = await storage.getDriver(entrega.driverId);
+                driverName = driver?.name || null;
+              }
+            }
+          }
+
+          // Buscar para entregas rápidas (requestId)
+          if (payment.requestId) {
+            const [request] = await db
+              .select({
+                id: requests.id,
+                requestNumber: requests.requestNumber,
+                driverId: requests.driverId
+              })
+              .from(requests)
+              .where(eq(requests.id, payment.requestId))
+              .limit(1);
+            if (request) {
+              entregaNumero = request.requestNumber || request.id.slice(-8).toUpperCase();
+              // Buscar nome do motorista
+              if (request.driverId) {
+                const driver = await storage.getDriver(request.driverId);
+                driverName = driver?.name || null;
+              }
+            }
+          }
+
+          // Fallback: buscar motorista pelo driverId da transação
+          if (!driverName && payment.driverId) {
+            const driver = await storage.getDriver(payment.driverId);
+            driverName = driver?.name || null;
+          }
+
+          return {
+            ...payment,
+            entregaNumero,
+            driverName,
+          };
+        })
+      );
+
+      return res.json({
+        subaccount: subaccount || null,
+        pixKey: company?.pixKey || subaccount?.pixKey || null,
+        pixKeyType: company?.pixKeyType || subaccount?.pixKeyType || null,
+        wooviBalance,
+        recharges,
+        payments: paymentsWithDetails,
+        totals: {
+          totalRecharges: recharges
+            .filter(r => r.status === "completed")
+            .reduce((sum, r) => sum + parseFloat(r.amount), 0),
+          totalPayments: payments
+            .filter(p => p.status === "completed")
+            .reduce((sum, p) => sum + parseFloat(p.amount), 0),
+        }
+      });
+    } catch (error) {
+      console.error("Erro ao buscar dados financeiros da empresa:", error);
+      return res.status(500).json({ message: "Erro ao buscar dados financeiros" });
+    }
+  });
+
   // ========================================
   // CITY PRICES (PREÇOS) ROUTES
   // ========================================
@@ -3729,7 +3869,7 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         return res.status(400).json({ message: "Status inválido" });
       }
 
-      // Se estiver concluindo, registrar horário de chegada
+      // Se estiver concluindo, registrar horário de chegada e processar pagamentos
       const updateData: any = { status };
       if (status === "concluida") {
         updateData.horarioChegadaReal = new Date();
@@ -3743,6 +3883,63 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
             });
           }
         }
+
+        // ==========================================
+        // PROCESSAR PAGAMENTOS AO CONCLUIR VIAGEM
+        // ==========================================
+        try {
+          // Buscar a comissão atual do entregador baseado nas entregas do mês
+          const commissionPercentage = await storage.getDriverCommissionPercentage(driverId);
+
+          // Calcular valor total da viagem (soma das entregas)
+          let valorTotalViagem = 0;
+          for (const entrega of entregas) {
+            if (entrega.entrega_id) {
+              const entregaDetalhes = await storage.getEntregaIntermunicipal(entrega.entrega_id);
+              if (entregaDetalhes) {
+                valorTotalViagem += parseFloat(entregaDetalhes.valorFrete || '0');
+              }
+            }
+          }
+
+          // Para cada entrega, processar pagamento individual
+          for (const entrega of entregas) {
+            if (entrega.entrega_id) {
+              const entregaDetalhes = await storage.getEntregaIntermunicipal(entrega.entrega_id);
+              if (entregaDetalhes && entregaDetalhes.empresaId) {
+                const valorEntrega = parseFloat(entregaDetalhes.valorFrete || '0');
+
+                if (valorEntrega > 0) {
+                  console.log(`💰 Processando pagamento da entrega ${entrega.entrega_id}...`);
+
+                  const paymentResult = await financialService.processDeliveryPayment(
+                    entregaDetalhes.empresaId,
+                    driverId,
+                    valorEntrega,
+                    commissionPercentage,
+                    entrega.entrega_id
+                  );
+
+                  if (paymentResult.success) {
+                    console.log(`✅ Pagamento processado: Entregador recebe R$ ${paymentResult.driverReceives.toFixed(2)}`);
+
+                    // Liberar o bloqueio de saldo após pagamento bem-sucedido
+                    await financialService.releaseBalance(entrega.entrega_id, 'released');
+
+                    // Incrementar contador de entregas mensais do entregador
+                    await storage.incrementDriverMonthlyDeliveries(driverId);
+                  } else {
+                    console.error(`❌ Falha no pagamento da entrega ${entrega.entrega_id}: ${paymentResult.error}`);
+                  }
+                }
+              }
+            }
+          }
+        } catch (paymentError) {
+          console.error("Erro ao processar pagamentos da viagem:", paymentError);
+          // Não falhar a conclusão da viagem se o pagamento falhar
+          // O pagamento pode ser processado manualmente depois
+        }
       }
 
       const viagemAtualizada = await storage.updateViagemIntermunicipal(id, updateData);
@@ -3750,6 +3947,78 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     } catch (error) {
       console.error("Erro ao atualizar status da viagem:", error);
       return res.status(500).json({ message: "Erro ao atualizar status" });
+    }
+  });
+
+  // GET /api/viagens-intermunicipais/:id/calculo-pagamento - Calcular valores de pagamento de uma viagem
+  // Útil para o app do entregador mostrar quanto vai receber
+  app.get("/api/viagens-intermunicipais/:id/calculo-pagamento", async (req, res) => {
+    try {
+      const driverId = getDriverIdFromRequest(req);
+      if (!driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+
+      const viagem = await storage.getViagemIntermunicipal(id);
+      if (!viagem) {
+        return res.status(404).json({ message: "Viagem não encontrada" });
+      }
+
+      // Verificar se a viagem pertence ao motorista
+      if (viagem.entregadorId !== driverId) {
+        return res.status(403).json({ message: "Acesso negado" });
+      }
+
+      // Buscar a comissão atual do entregador
+      const commissionPercentage = await storage.getDriverCommissionPercentage(driverId);
+
+      // Buscar entregas da viagem
+      const entregas = await storage.getViagemEntregas(id);
+
+      // Calcular valor total da viagem
+      let valorTotalViagem = 0;
+      const detalhesEntregas = [];
+
+      for (const entrega of entregas) {
+        if (entrega.entrega_id) {
+          const entregaDetalhes = await storage.getEntregaIntermunicipal(entrega.entrega_id);
+          if (entregaDetalhes) {
+            const valorEntrega = parseFloat(entregaDetalhes.valorFrete || '0');
+            valorTotalViagem += valorEntrega;
+
+            // Calcular valores individuais
+            const calculo = financialService.calculateDeliveryPayment(valorEntrega, commissionPercentage);
+            detalhesEntregas.push({
+              entregaId: entrega.entrega_id,
+              ...calculo,
+            });
+          }
+        }
+      }
+
+      // Calcular total da viagem
+      const calculoTotal = financialService.calculateDeliveryPayment(valorTotalViagem, commissionPercentage);
+      const WITHDRAWAL_FEE = 1.50; // Taxa cobrada apenas no momento do saque
+
+      return res.json({
+        viagemId: id,
+        commissionPercentage,
+        totalEntregas: entregas.length,
+        resumo: {
+          valorBrutoTotal: calculoTotal.deliveryAmount,
+          comissaoAppTotal: calculoTotal.appCommission,
+          totalDescontosTotal: calculoTotal.totalDeducted,
+          valorNaCarteiraTotal: calculoTotal.driverReceivesInWallet,
+          taxaSaqueNoMomentoDoSaque: WITHDRAWAL_FEE,
+          observacao: `Taxa de saque de R$ ${WITHDRAWAL_FEE.toFixed(2)} será cobrada quando você sacar.`,
+        },
+        detalhesEntregas,
+      });
+    } catch (error) {
+      console.error("Erro ao calcular pagamento da viagem:", error);
+      return res.status(500).json({ message: "Erro ao calcular pagamento" });
     }
   });
 
@@ -6277,6 +6546,115 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     } catch (error) {
       console.error("Erro ao buscar corridas do motorista:", error);
       return res.status(500).json({ message: "Erro ao buscar corridas" });
+    }
+  });
+
+  // GET /api/drivers/:id/financial - Buscar dados financeiros do motorista
+  app.get("/api/drivers/:id/financial", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+
+      // Buscar subconta Woovi do motorista
+      const [subaccount] = await db
+        .select()
+        .from(wooviSubaccounts)
+        .where(and(
+          eq(wooviSubaccounts.driverId, id),
+          eq(wooviSubaccounts.accountType, "driver")
+        ))
+        .limit(1);
+
+      // Buscar motorista para pegar pixKey e pixKeyType
+      const driver = await storage.getDriver(id);
+
+      // Buscar saldo atualizado da subconta Woovi
+      let wooviBalance = 0;
+      if (subaccount) {
+        try {
+          wooviBalance = await financialService.updateSubaccountBalance(subaccount.id);
+        } catch (balanceError) {
+          console.error("Erro ao buscar saldo da subconta:", balanceError);
+          // Usar o saldo em cache se falhar
+          wooviBalance = parseFloat(subaccount.balanceCache || "0");
+        }
+      }
+
+      // Buscar todas as transações do motorista
+      const transactions = await db
+        .select()
+        .from(financialTransactions)
+        .where(eq(financialTransactions.driverId, id))
+        .orderBy(desc(financialTransactions.createdAt));
+
+      // Separar saques e repasses
+      const withdrawals = transactions.filter(t => t.type === "withdrawal");
+      const splits = transactions.filter(t =>
+        t.type === "transfer_delivery" ||
+        t.type === "transfer_cancellation"
+      );
+
+      // Buscar detalhes das entregas para os splits
+      const splitsWithDetails = await Promise.all(
+        splits.map(async (split) => {
+          let entregaNumero = null;
+
+          // Buscar para entregas intermunicipais (entregaId)
+          if (split.entregaId) {
+            const [entrega] = await db
+              .select({ id: entregasIntermunicipais.id })
+              .from(entregasIntermunicipais)
+              .where(eq(entregasIntermunicipais.id, split.entregaId))
+              .limit(1);
+            if (entrega) {
+              entregaNumero = entrega.id.slice(-8).toUpperCase(); // Últimos 8 caracteres do ID
+            }
+          }
+
+          // Buscar para entregas rápidas (requestId)
+          if (!entregaNumero && split.requestId) {
+            const [request] = await db
+              .select({
+                id: requests.id,
+                requestNumber: requests.requestNumber
+              })
+              .from(requests)
+              .where(eq(requests.id, split.requestId))
+              .limit(1);
+            if (request) {
+              entregaNumero = request.requestNumber || request.id.slice(-8).toUpperCase();
+            }
+          }
+
+          return {
+            ...split,
+            entregaNumero,
+          };
+        })
+      );
+
+      return res.json({
+        subaccount: subaccount || null,
+        pixKey: driver?.pixKey || subaccount?.pixKey || null,
+        pixKeyType: driver?.pixKeyType || subaccount?.pixKeyType || null,
+        wooviBalance, // Saldo atual na subconta Woovi (em centavos)
+        withdrawals,
+        splits: splitsWithDetails,
+        totals: {
+          totalWithdrawals: withdrawals
+            .filter(w => w.status === "completed")
+            .reduce((sum, w) => sum + parseFloat(w.amount), 0),
+          totalSplits: splits
+            .filter(s => s.status === "completed")
+            .reduce((sum, s) => sum + parseFloat(s.amount), 0),
+        }
+      });
+    } catch (error) {
+      console.error("Erro ao buscar dados financeiros do motorista:", error);
+      return res.status(500).json({ message: "Erro ao buscar dados financeiros" });
     }
   });
 
@@ -8889,7 +9267,9 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         carYear,
         deviceToken,
         loginBy,
-        referralCode // Código de indicação (opcional)
+        referralCode, // Código de indicação (opcional)
+        pixKey, // Chave PIX para receber pagamentos
+        pixKeyType // Tipo da chave PIX (EMAIL, CPF, CNPJ, PHONE, EVP)
       } = req.body;
 
       // Log dos dados recebidos
@@ -8906,10 +9286,13 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       console.log("   Cor:", carColor || "FALTANDO");
       console.log("   Ano:", carYear || "FALTANDO");
       console.log("   Código Indicação:", referralCode || "NÃO FORNECIDO");
+      console.log("   Chave PIX:", pixKey || "NÃO FORNECIDA");
+      console.log("   Tipo Chave PIX:", pixKeyType || "NÃO FORNECIDO");
 
       // Validação completa - todos os campos são obrigatórios
       if (!name || !mobile || !password || !cpf || !email || !serviceLocationId ||
-          !vehicleTypeId || !carMake || !carModel || !carNumber || !carColor || !carYear) {
+          !vehicleTypeId || !carMake || !carModel || !carNumber || !carColor || !carYear ||
+          !pixKey || !pixKeyType) {
         const missingFields = [];
         if (!name) missingFields.push("nome");
         if (!cpf) missingFields.push("CPF");
@@ -8923,6 +9306,8 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         if (!carNumber) missingFields.push("placa");
         if (!carColor) missingFields.push("cor");
         if (!carYear) missingFields.push("ano");
+        if (!pixKey) missingFields.push("chave PIX");
+        if (!pixKeyType) missingFields.push("tipo da chave PIX");
 
         console.log("❌ Campos faltando:", missingFields.join(", "));
 
@@ -8930,6 +9315,15 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
           success: false,
           message: `Campos obrigatórios faltando: ${missingFields.join(", ")}`,
           missingFields: missingFields
+        });
+      }
+
+      // Validação do tipo de chave PIX
+      const validPixKeyTypes = ['EMAIL', 'CPF', 'CNPJ', 'PHONE', 'EVP'];
+      if (!validPixKeyTypes.includes(pixKeyType)) {
+        return res.status(400).json({
+          success: false,
+          message: `Tipo de chave PIX inválido. Valores aceitos: ${validPixKeyTypes.join(", ")}`
         });
       }
 
@@ -9009,6 +9403,8 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         referralCode: newDriverReferralCode, // Código único do novo motorista
         referredByCode: referrerDriver ? referralCode : null, // Código de quem indicou
         referredById: referrerDriver ? referrerDriver.id : null, // ID de quem indicou
+        pixKey, // Chave PIX para receber pagamentos
+        pixKeyType, // Tipo da chave PIX
       });
 
       // Se foi indicado por alguém, criar registro na tabela de indicações
@@ -9046,6 +9442,22 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
           console.error("❌ Erro ao registrar indicação:", error);
           // Não bloqueia o cadastro, apenas loga o erro
         }
+      }
+
+      // Criar subconta Woovi para o entregador receber pagamentos
+      try {
+        console.log("💳 Criando subconta Woovi para o entregador...");
+        await financialService.createDriverSubaccount(
+          driver.id,
+          pixKey,
+          pixKeyType as 'EMAIL' | 'CPF' | 'CNPJ' | 'PHONE' | 'EVP',
+          driver.name
+        );
+        console.log("✅ Subconta Woovi criada com sucesso para o entregador!");
+      } catch (subaccountError) {
+        console.error("⚠️ Erro ao criar subconta Woovi:", subaccountError);
+        // Não falha o registro do entregador se a subconta falhar
+        // A subconta pode ser criada posteriormente pelo admin
       }
 
       // Consultar processos criminais automaticamente se o CPF foi fornecido
@@ -9541,6 +9953,273 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     } catch (error) {
       console.error("Erro ao buscar estatísticas de comissão:", error);
       return res.status(500).json({ message: "Erro ao buscar estatísticas de comissão" });
+    }
+  });
+
+  // POST /api/v1/driver/calculate-payment - Calcular quanto o motorista vai receber por uma entrega
+  // Útil para mostrar antes de aceitar uma entrega
+  app.post("/api/v1/driver/calculate-payment", async (req, res) => {
+    try {
+      let driverId = req.session.driverId;
+
+      // Se não tiver sessão, tenta obter do token Bearer
+      if (!driverId) {
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          const token = authHeader.substring(7);
+          try {
+            const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf8'));
+            if (decoded.type === 'driver' && decoded.id) {
+              driverId = decoded.id;
+            }
+          } catch (e) {
+            console.error("Token inválido:", e);
+          }
+        }
+      }
+
+      if (!driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { deliveryAmount } = req.body;
+
+      if (!deliveryAmount || typeof deliveryAmount !== 'number' || deliveryAmount <= 0) {
+        return res.status(400).json({
+          message: "Valor da entrega é obrigatório e deve ser um número maior que zero"
+        });
+      }
+
+      // Buscar a comissão atual do entregador
+      const commissionPercentage = await storage.getDriverCommissionPercentage(driverId);
+
+      // Calcular valores
+      const calculo = financialService.calculateDeliveryPayment(deliveryAmount, commissionPercentage);
+      const WITHDRAWAL_FEE = 1.50; // Taxa cobrada apenas no momento do saque
+
+      return res.json({
+        success: true,
+        data: {
+          valorBruto: calculo.deliveryAmount,
+          comissaoApp: {
+            percentual: commissionPercentage,
+            valor: calculo.appCommission,
+          },
+          totalDescontos: calculo.totalDeducted,
+          valorNaCarteira: calculo.driverReceivesInWallet,
+          taxaSaqueNoMomentoDoSaque: WITHDRAWAL_FEE,
+          descricao: `Você receberá R$ ${calculo.driverReceivesInWallet.toFixed(2)} na carteira (Comissão ${commissionPercentage}%: -R$ ${calculo.appCommission.toFixed(2)}). Taxa de saque de R$ ${WITHDRAWAL_FEE.toFixed(2)} será cobrada quando você sacar.`
+        }
+      });
+    } catch (error) {
+      console.error("Erro ao calcular pagamento:", error);
+      return res.status(500).json({ message: "Erro ao calcular pagamento" });
+    }
+  });
+
+  // GET /api/v1/driver/balance - Obter saldo disponível para saque
+  app.get("/api/v1/driver/balance", async (req, res) => {
+    try {
+      let driverId = req.session.driverId;
+
+      // Se não tiver sessão, tenta obter do token Bearer
+      if (!driverId) {
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          const token = authHeader.substring(7);
+          try {
+            const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf8'));
+            if (decoded.type === 'driver' && decoded.id) {
+              driverId = decoded.id;
+            }
+          } catch (e) {
+            console.error("Token inválido:", e);
+          }
+        }
+      }
+
+      if (!driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const result = await financialService.getDriverBalance(driverId);
+
+      if (!result.success) {
+        return res.status(400).json({
+          success: false,
+          message: result.error,
+        });
+      }
+
+      // Verificar se pode sacar hoje (limite de 1 saque por dia)
+      const jaSacouHoje = await financialService.hasWithdrawnToday(driverId);
+      const ultimoSaque = await financialService.getLastWithdrawal(driverId);
+
+      // Calcular valor disponível para saque (saldo - taxa)
+      const WITHDRAWAL_FEE = 1.50;
+      const availableForWithdrawal = Math.max(0, result.balance - WITHDRAWAL_FEE);
+
+      return res.json({
+        success: true,
+        data: {
+          saldoDisponivel: result.balance,
+          saldoEmCentavos: result.balanceInCents,
+          subcontaPixKey: result.subaccountPixKey,
+          ultimaAtualizacao: result.lastUpdate,
+          formatado: `R$ ${result.balance.toFixed(2)}`,
+          saque: {
+            podeSacarHoje: !jaSacouHoje && result.balance > WITHDRAWAL_FEE,
+            jaSacouHoje,
+            ultimoSaque,
+            limiteDiario: 1,
+            taxaSaque: WITHDRAWAL_FEE,
+            valorDisponivelParaSaque: availableForWithdrawal,
+            valorDisponivelFormatado: `R$ ${availableForWithdrawal.toFixed(2)}`,
+            mensagem: jaSacouHoje
+              ? 'Você já realizou um saque hoje. Tente novamente amanhã.'
+              : result.balance < WITHDRAWAL_FEE
+                ? `Saldo insuficiente para saque. Mínimo necessário: R$ ${WITHDRAWAL_FEE.toFixed(2)}`
+                : `Você pode sacar até R$ ${availableForWithdrawal.toFixed(2)} (taxa de R$ ${WITHDRAWAL_FEE.toFixed(2)} será cobrada).`,
+          }
+        }
+      });
+    } catch (error) {
+      console.error("Erro ao obter saldo:", error);
+      return res.status(500).json({ message: "Erro ao obter saldo" });
+    }
+  });
+
+  // GET /api/v1/driver/withdraw-history - Histórico de saques do motorista
+  app.get("/api/v1/driver/withdraw-history", async (req, res) => {
+    try {
+      let driverId = req.session.driverId;
+
+      // Se não tiver sessão, tenta obter do token Bearer
+      if (!driverId) {
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          const token = authHeader.substring(7);
+          try {
+            const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf8'));
+            if (decoded.type === 'driver' && decoded.id) {
+              driverId = decoded.id;
+            }
+          } catch (e) {
+            console.error("Token inválido:", e);
+          }
+        }
+      }
+
+      if (!driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      // Buscar histórico de saques do motorista
+      const withdrawals = await db
+        .select()
+        .from(financialTransactions)
+        .where(and(
+          eq(financialTransactions.driverId, driverId),
+          eq(financialTransactions.type, 'withdrawal')
+        ))
+        .orderBy(desc(financialTransactions.createdAt))
+        .limit(50);
+
+      return res.json({
+        success: true,
+        data: withdrawals.map(w => ({
+          id: w.id,
+          amount: parseFloat(w.amount || '0'),
+          status: w.status,
+          description: w.description,
+          createdAt: w.createdAt,
+          errorMessage: w.errorMessage,
+        }))
+      });
+    } catch (error) {
+      console.error("Erro ao obter histórico de saques:", error);
+      return res.status(500).json({ message: "Erro ao obter histórico de saques" });
+    }
+  });
+
+  // POST /api/v1/driver/withdraw - Realizar saque para chave PIX
+  app.post("/api/v1/driver/withdraw", async (req, res) => {
+    try {
+      let driverId = req.session.driverId;
+
+      // Se não tiver sessão, tenta obter do token Bearer
+      if (!driverId) {
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          const token = authHeader.substring(7);
+          try {
+            const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf8'));
+            if (decoded.type === 'driver' && decoded.id) {
+              driverId = decoded.id;
+            }
+          } catch (e) {
+            console.error("Token inválido:", e);
+          }
+        }
+      }
+
+      if (!driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { pixKey, pixKeyType, amount } = req.body;
+
+      // Validar campos obrigatórios
+      if (!pixKey || typeof pixKey !== 'string') {
+        return res.status(400).json({
+          message: "Chave PIX é obrigatória"
+        });
+      }
+
+      const validPixKeyTypes = ['EMAIL', 'CPF', 'CNPJ', 'PHONE', 'EVP'];
+      if (!pixKeyType || !validPixKeyTypes.includes(pixKeyType)) {
+        return res.status(400).json({
+          message: `Tipo de chave PIX inválido. Valores válidos: ${validPixKeyTypes.join(', ')}`
+        });
+      }
+
+      // Validar valor se informado
+      if (amount !== undefined && (typeof amount !== 'number' || amount <= 0)) {
+        return res.status(400).json({
+          message: "Valor do saque deve ser um número maior que zero"
+        });
+      }
+
+      const result = await financialService.processDriverWithdrawal(
+        driverId,
+        pixKey,
+        pixKeyType as 'EMAIL' | 'CPF' | 'CNPJ' | 'PHONE' | 'EVP',
+        amount
+      );
+
+      if (!result.success) {
+        return res.status(400).json({
+          success: false,
+          message: result.error,
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: `Saque de R$ ${result.withdrawnAmount.toFixed(2)} realizado com sucesso!`,
+        data: {
+          valorSacado: result.withdrawnAmount,
+          taxaSaque: result.withdrawalFee,
+          totalDebitado: result.withdrawnAmount + result.withdrawalFee,
+          valorRecebido: result.netAmount,
+          transacaoId: result.transactionId,
+          pixKeyDestino: pixKey,
+          pixKeyTipo: pixKeyType,
+        }
+      });
+    } catch (error) {
+      console.error("Erro ao processar saque:", error);
+      return res.status(500).json({ message: "Erro ao processar saque" });
     }
   });
 
@@ -11520,17 +12199,21 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         LIMIT 50
       `);
 
-      // Formatar dados para incluir valor total da entrega
+      // Buscar a comissão do motorista logado
+      const driverCommissionPercentage = await storage.getDriverCommissionPercentage(req.session.driverId);
+
+      // Formatar dados para incluir valor que o motorista vai receber (já com desconto da comissão)
       const formattedDeliveries = deliveries.rows.map(delivery => {
         const totalAmount = delivery.total_amount ? parseFloat(delivery.total_amount) : 0;
-        const adminCommission = delivery.admin_commision ? parseFloat(delivery.admin_commision) : 0;
-        const driverAmount = totalAmount - adminCommission;
+        // Calcular valor que o motorista vai receber (valor total - comissão do app)
+        const appCommission = totalAmount * (driverCommissionPercentage / 100);
+        const driverAmount = totalAmount - appCommission;
 
-        console.log(`[DEBUG] Delivery ${delivery.id}: total=${totalAmount}, commission=${adminCommission}, driver_will_receive=${driverAmount}`);
+        console.log(`[DEBUG] Delivery ${delivery.id}: total=${totalAmount}, commission=${driverCommissionPercentage}% (R$${appCommission.toFixed(2)}), driver_will_receive=${driverAmount.toFixed(2)}`);
 
         return {
           ...delivery,
-          request_eta_amount: totalAmount.toFixed(2) // Enviar valor total, não o valor após comissão
+          request_eta_amount: driverAmount.toFixed(2) // Enviar valor que o motorista vai receber
         };
       });
 
@@ -12066,6 +12749,49 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
               completedAt: new Date(),
             });
 
+            // ==========================================
+            // PROCESSAR PAGAMENTO DA ENTREGA RÁPIDA (múltiplos stops)
+            // ==========================================
+            try {
+              if (request.companyId && driverId) {
+                const [bill] = await db
+                  .select()
+                  .from(requestBills)
+                  .where(eq(requestBills.requestId, deliveryId))
+                  .limit(1);
+
+                const deliveryAmount = bill?.totalAmount
+                  ? parseFloat(bill.totalAmount)
+                  : (request.requestEtaAmount ? parseFloat(request.requestEtaAmount) : 0);
+
+                if (deliveryAmount > 0) {
+                  console.log(`💰 Processando pagamento da entrega rápida ${deliveryId} (múltiplos stops)...`);
+                  console.log(`   Valor da entrega: R$ ${deliveryAmount.toFixed(2)}`);
+
+                  const commissionPercentage = await storage.getDriverCommissionPercentage(driverId);
+
+                  const paymentResult = await financialService.processDeliveryPayment(
+                    request.companyId,
+                    driverId,
+                    deliveryAmount,
+                    commissionPercentage,
+                    deliveryId,
+                    'request'
+                  );
+
+                  if (paymentResult.success) {
+                    console.log(`✅ Pagamento processado: Entregador recebe R$ ${paymentResult.driverReceives.toFixed(2)}`);
+                  } else {
+                    console.error(`❌ Falha no pagamento da entrega ${deliveryId}: ${paymentResult.error}`);
+                  }
+                } else {
+                  console.log(`⚠️ Entrega ${deliveryId} não possui valor definido, pagamento não processado`);
+                }
+              }
+            } catch (paymentError) {
+              console.error("Erro ao processar pagamento da entrega rápida (múltiplos stops):", paymentError);
+            }
+
             // Verificar e atualizar indicações de empresas (se aplicável)
             if (request.companyId) {
               const { updateCompanyReferralProgress } = await import("./utils/referralUtils.js");
@@ -12254,6 +12980,49 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
           isCompleted: true,
           completedAt: new Date(),
         });
+
+        // ==========================================
+        // PROCESSAR PAGAMENTO DA ENTREGA RÁPIDA
+        // ==========================================
+        try {
+          if (request.companyId && driverId) {
+            const [bill] = await db
+              .select()
+              .from(requestBills)
+              .where(eq(requestBills.requestId, deliveryId))
+              .limit(1);
+
+            const deliveryAmount = bill?.totalAmount
+              ? parseFloat(bill.totalAmount)
+              : (request.requestEtaAmount ? parseFloat(request.requestEtaAmount) : 0);
+
+            if (deliveryAmount > 0) {
+              console.log(`💰 Processando pagamento da entrega rápida ${deliveryId}...`);
+              console.log(`   Valor da entrega: R$ ${deliveryAmount.toFixed(2)}`);
+
+              const commissionPercentage = await storage.getDriverCommissionPercentage(driverId);
+
+              const paymentResult = await financialService.processDeliveryPayment(
+                request.companyId,
+                driverId,
+                deliveryAmount,
+                commissionPercentage,
+                deliveryId,
+                'request'
+              );
+
+              if (paymentResult.success) {
+                console.log(`✅ Pagamento processado: Entregador recebe R$ ${paymentResult.driverReceives.toFixed(2)}`);
+              } else {
+                console.error(`❌ Falha no pagamento da entrega ${deliveryId}: ${paymentResult.error}`);
+              }
+            } else {
+              console.log(`⚠️ Entrega ${deliveryId} não possui valor definido, pagamento não processado`);
+            }
+          }
+        } catch (paymentError) {
+          console.error("Erro ao processar pagamento da entrega rápida:", paymentError);
+        }
 
         // Verificar e atualizar indicações de empresas (se aplicável)
         if (request.companyId) {
@@ -12647,6 +13416,55 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
 
       // Incrementar contador APENAS se não estava completada antes
       if (!wasAlreadyCompleted) {
+        // ==========================================
+        // PROCESSAR PAGAMENTO DA ENTREGA RÁPIDA
+        // ==========================================
+        try {
+          // Verificar se a entrega pertence a uma empresa (para processar pagamento)
+          if (request.companyId && driverId) {
+            // Buscar o valor da entrega na tabela request_bills
+            const [bill] = await db
+              .select()
+              .from(requestBills)
+              .where(eq(requestBills.requestId, deliveryId))
+              .limit(1);
+
+            // Usar requestEtaAmount ou totalAmount do bill
+            const deliveryAmount = bill?.totalAmount
+              ? parseFloat(bill.totalAmount)
+              : (request.requestEtaAmount ? parseFloat(request.requestEtaAmount) : 0);
+
+            if (deliveryAmount > 0) {
+              console.log(`💰 Processando pagamento da entrega rápida ${deliveryId}...`);
+              console.log(`   Valor da entrega: R$ ${deliveryAmount.toFixed(2)}`);
+
+              // Buscar a comissão atual do entregador baseado nas entregas do mês
+              const commissionPercentage = await storage.getDriverCommissionPercentage(driverId);
+
+              const paymentResult = await financialService.processDeliveryPayment(
+                request.companyId,
+                driverId,
+                deliveryAmount,
+                commissionPercentage,
+                deliveryId,
+                'request' // Tipo de entrega: entregas rápidas (requests)
+              );
+
+              if (paymentResult.success) {
+                console.log(`✅ Pagamento processado: Entregador recebe R$ ${paymentResult.driverReceives.toFixed(2)}`);
+              } else {
+                console.error(`❌ Falha no pagamento da entrega ${deliveryId}: ${paymentResult.error}`);
+              }
+            } else {
+              console.log(`⚠️ Entrega ${deliveryId} não possui valor definido, pagamento não processado`);
+            }
+          }
+        } catch (paymentError) {
+          console.error("Erro ao processar pagamento da entrega rápida:", paymentError);
+          // Não falhar a conclusão da entrega se o pagamento falhar
+          // O pagamento pode ser processado manualmente depois
+        }
+
         // Verificar e atualizar indicações de empresas (se aplicável)
         if (request.companyId) {
           const { updateCompanyReferralProgress } = await import("./utils/referralUtils.js");

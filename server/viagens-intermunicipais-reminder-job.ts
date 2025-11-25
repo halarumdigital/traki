@@ -71,9 +71,9 @@ export async function sendTodayTripReminders() {
         console.log(`📤 Enviando lembrete para ${driver.name} sobre viagem ${rotaNome}...`);
 
         await sendPushNotification(
-          driver.fcmToken,
+          driver.fcmToken!,
           "🚚 Lembrete: Você tem uma viagem hoje!",
-          `${rotaNome} • ${viagem.pacotesAceitos} pacote(s) • Saída prevista: ${viagem.horarioSaidaPlanejado}`,
+          `${rotaNome} • ${viagem.pacotesAceitos ?? 0} pacote(s) • Saída prevista: ${viagem.horarioSaidaPlanejado}`,
           {
             type: "lembrete_viagem_intermunicipal",
             viagemId: viagem.id,
@@ -81,7 +81,7 @@ export async function sendTodayTripReminders() {
             rotaNome: rotaNome,
             dataViagem: todayBrazil,
             horarioSaida: viagem.horarioSaidaPlanejado,
-            pacotesAceitos: viagem.pacotesAceitos.toString(),
+            pacotesAceitos: (viagem.pacotesAceitos ?? 0).toString(),
           }
         );
 

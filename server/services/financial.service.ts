@@ -18,7 +18,7 @@ import {
   type WooviCharge,
   type FinancialTransaction,
 } from '@shared/schema';
-import { eq, and, desc, sql } from 'drizzle-orm';
+import { eq, and, desc, sql, gte } from 'drizzle-orm';
 import wooviService from './woovi.service';
 
 class FinancialService {
@@ -44,7 +44,6 @@ class FinancialService {
         companyId,
         pixKey,
         pixKeyType,
-        name: `Empresa: ${companyName}`,
         wooviSubaccountId: wooviResponse.subAccount.pixKey, // Woovi usa pixKey como ID
         balanceCache: '0',
         active: true,
@@ -467,6 +466,497 @@ class FinancialService {
     } catch (error) {
       console.error('Erro ao registrar log de transação:', error);
       // Não lançar erro para não interromper o fluxo principal
+    }
+  }
+
+  /**
+   * Processa o pagamento de uma entrega
+   *
+   * Este método executa duas operações:
+   * 1. Transferência entre subcontas (empresa → entregador): valor total da entrega
+   * 2. Débito da subconta do entregador: comissão do app + R$1 taxa de saque
+   *
+   * @param companyId - ID da empresa que paga
+   * @param driverId - ID do entregador que recebe
+   * @param deliveryAmount - Valor total da entrega em reais
+   * @param commissionPercentage - Percentual de comissão do app (baseado nas entregas do motorista)
+   * @param deliveryId - ID da entrega (opcional, para referência)
+   * @param deliveryType - Tipo de entrega: 'intermunicipal' ou 'request' (entregas rápidas)
+   * @returns Objeto com detalhes das transações realizadas
+   */
+  async processDeliveryPayment(
+    companyId: string,
+    driverId: string,
+    deliveryAmount: number,
+    commissionPercentage: number,
+    deliveryId?: string,
+    deliveryType: 'intermunicipal' | 'request' = 'intermunicipal'
+  ): Promise<{
+    success: boolean;
+    transferResult?: any;
+    debitResult?: any;
+    driverReceives: number;
+    appCommission: number;
+    totalDeducted: number;
+    error?: string;
+  }> {
+    try {
+      console.log(`💰 Processando pagamento de entrega:`);
+      console.log(`   Empresa: ${companyId}`);
+      console.log(`   Entregador: ${driverId}`);
+      console.log(`   Valor da entrega: R$ ${deliveryAmount.toFixed(2)}`);
+      console.log(`   Comissão do app: ${commissionPercentage}%`);
+
+      // Buscar subcontas
+      const companySubaccount = await this.getCompanySubaccount(companyId);
+      const driverSubaccount = await this.getDriverSubaccount(driverId);
+
+      if (!companySubaccount) {
+        throw new Error('Empresa não possui subconta configurada');
+      }
+
+      if (!driverSubaccount) {
+        throw new Error('Entregador não possui subconta configurada');
+      }
+
+      // Calcular valores - apenas comissão do app (taxa de saque é cobrada no momento do saque)
+      const appCommission = (deliveryAmount * commissionPercentage) / 100;
+      const totalDeducted = appCommission;
+      const driverReceives = deliveryAmount - totalDeducted;
+
+      console.log(`   📊 Cálculos:`);
+      console.log(`      Comissão do app (${commissionPercentage}%): R$ ${appCommission.toFixed(2)}`);
+      console.log(`      Total deduzido: R$ ${totalDeducted.toFixed(2)}`);
+      console.log(`      Entregador recebe na carteira: R$ ${driverReceives.toFixed(2)}`);
+
+      // ==========================================
+      // OPERAÇÃO 1: Transferência entre subcontas
+      // Empresa → Entregador (valor total da entrega)
+      // ==========================================
+      console.log(`\n🔄 [1/2] Transferindo R$ ${deliveryAmount.toFixed(2)} da empresa para o entregador...`);
+
+      const transferCorrelationId = wooviService.generateCorrelationId('TRANSFER');
+      const transferResult = await wooviService.transferBetweenSubaccounts({
+        value: wooviService.toCents(deliveryAmount),
+        fromPixKey: companySubaccount.pixKey,
+        fromPixKeyType: (companySubaccount.pixKeyType || 'EMAIL') as 'EMAIL' | 'CPF' | 'CNPJ' | 'PHONE' | 'EVP',
+        toPixKey: driverSubaccount.pixKey,
+        toPixKeyType: (driverSubaccount.pixKeyType || 'EMAIL') as 'EMAIL' | 'CPF' | 'CNPJ' | 'PHONE' | 'EVP',
+        correlationID: transferCorrelationId,
+      });
+
+      console.log(`   ✅ Transferência realizada com sucesso`);
+
+      // Registrar log da transferência - usar o campo correto baseado no tipo de entrega
+      await this.logTransaction({
+        type: 'transfer_delivery',
+        companyId,
+        driverId,
+        ...(deliveryType === 'request' ? { requestId: deliveryId } : { entregaId: deliveryId }),
+        fromSubaccountId: companySubaccount.id,
+        toSubaccountId: driverSubaccount.id,
+        amount: deliveryAmount.toString(),
+        status: 'completed',
+        description: `Pagamento de entrega - Transferência de R$ ${deliveryAmount.toFixed(2)} da empresa para entregador`,
+        wooviTransactionId: transferCorrelationId,
+        wooviResponse: JSON.parse(JSON.stringify(transferResult)),
+        metadata: JSON.parse(JSON.stringify({
+          correlationId: transferCorrelationId,
+          fromPixKey: companySubaccount.pixKey,
+          toPixKey: driverSubaccount.pixKey,
+          deliveryType,
+        })),
+      });
+
+      // ==========================================
+      // OPERAÇÃO 2: Débito da subconta do entregador
+      // Cobra apenas a comissão do app
+      // (Taxa de saque é cobrada no momento do saque)
+      // ==========================================
+      console.log(`\n💸 [2/2] Debitando R$ ${appCommission.toFixed(2)} de comissão da subconta do entregador...`);
+
+      const debitResult = await wooviService.debitFromSubaccount(driverSubaccount.pixKey, {
+        value: wooviService.toCents(appCommission),
+        description: `Comissão Fretus (${commissionPercentage}%): R$ ${appCommission.toFixed(2)}`,
+      });
+
+      console.log(`   ✅ Débito realizado com sucesso`);
+
+      // Registrar log do débito de comissão - usar o campo correto baseado no tipo de entrega
+      await this.logTransaction({
+        type: 'commission_debit',
+        driverId,
+        ...(deliveryType === 'request' ? { requestId: deliveryId } : { entregaId: deliveryId }),
+        fromSubaccountId: driverSubaccount.id,
+        amount: appCommission.toString(),
+        status: 'completed',
+        description: `Comissão do app (${commissionPercentage}%): R$ ${appCommission.toFixed(2)}`,
+        wooviResponse: JSON.parse(JSON.stringify(debitResult)),
+        metadata: JSON.parse(JSON.stringify({
+          commissionPercentage,
+          deliveryAmount,
+          deliveryType,
+        })),
+      });
+
+      // Atualizar saldos em cache
+      await Promise.all([
+        this.updateSubaccountBalance(companySubaccount.id),
+        this.updateSubaccountBalance(driverSubaccount.id),
+      ]);
+
+      console.log(`\n✅ Pagamento processado com sucesso!`);
+      console.log(`   Entregador recebeu na carteira: R$ ${driverReceives.toFixed(2)}`);
+
+      return {
+        success: true,
+        transferResult,
+        debitResult,
+        driverReceives,
+        appCommission,
+        totalDeducted,
+      };
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Erro desconhecido';
+      console.error('❌ Erro ao processar pagamento de entrega:', errorMessage);
+
+      // Registrar erro no log - usar o campo correto baseado no tipo de entrega
+      await this.logTransaction({
+        type: 'transfer_delivery',
+        companyId,
+        driverId,
+        ...(deliveryType === 'request' ? { requestId: deliveryId } : { entregaId: deliveryId }),
+        amount: deliveryAmount.toString(),
+        status: 'failed',
+        description: `Falha no pagamento de entrega`,
+        errorMessage,
+      });
+
+      return {
+        success: false,
+        driverReceives: 0,
+        appCommission: 0,
+        totalDeducted: 0,
+        error: errorMessage,
+      };
+    }
+  }
+
+  /**
+   * Calcula os valores de uma entrega antes de processar o pagamento
+   * Útil para mostrar ao entregador quanto ele vai receber na carteira
+   * NOTA: A taxa de saque (R$1,50) é cobrada apenas no momento do saque
+   *
+   * @param deliveryAmount - Valor total da entrega em reais
+   * @param commissionPercentage - Percentual de comissão do app
+   * @returns Objeto com os valores calculados
+   */
+  calculateDeliveryPayment(
+    deliveryAmount: number,
+    commissionPercentage: number
+  ): {
+    deliveryAmount: number;
+    appCommission: number;
+    totalDeducted: number;
+    driverReceivesInWallet: number;
+  } {
+    const appCommission = (deliveryAmount * commissionPercentage) / 100;
+    const totalDeducted = appCommission;
+    const driverReceivesInWallet = deliveryAmount - totalDeducted;
+
+    return {
+      deliveryAmount,
+      appCommission,
+      totalDeducted,
+      driverReceivesInWallet,
+    };
+  }
+
+  /**
+   * Obtém o saldo disponível para saque de um entregador
+   * @param driverId - ID do entregador
+   * @returns Saldo disponível em reais e informações da subconta
+   */
+  async getDriverBalance(driverId: string): Promise<{
+    success: boolean;
+    balance: number;
+    balanceInCents: number;
+    subaccountPixKey: string | null;
+    lastUpdate: Date | null;
+    error?: string;
+  }> {
+    try {
+      const driverSubaccount = await this.getDriverSubaccount(driverId);
+
+      if (!driverSubaccount) {
+        return {
+          success: false,
+          balance: 0,
+          balanceInCents: 0,
+          subaccountPixKey: null,
+          lastUpdate: null,
+          error: 'Entregador não possui subconta configurada. Configure sua chave PIX para receber pagamentos.',
+        };
+      }
+
+      // Atualizar saldo consultando a Woovi
+      const balanceInCents = await this.updateSubaccountBalance(driverSubaccount.id);
+      const balance = wooviService.toReais(balanceInCents);
+
+      return {
+        success: true,
+        balance,
+        balanceInCents,
+        subaccountPixKey: driverSubaccount.pixKey,
+        lastUpdate: new Date(),
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Erro desconhecido';
+      console.error('Erro ao obter saldo do entregador:', errorMessage);
+
+      return {
+        success: false,
+        balance: 0,
+        balanceInCents: 0,
+        subaccountPixKey: null,
+        lastUpdate: null,
+        error: errorMessage,
+      };
+    }
+  }
+
+  /**
+   * Verifica se o entregador já realizou saque hoje
+   * @param driverId - ID do entregador
+   * @returns true se já sacou hoje, false caso contrário
+   */
+  async hasWithdrawnToday(driverId: string): Promise<boolean> {
+    // Início do dia atual (meia-noite)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const withdrawalsToday = await db
+      .select()
+      .from(financialTransactions)
+      .where(and(
+        eq(financialTransactions.driverId, driverId),
+        eq(financialTransactions.type, 'withdrawal'),
+        eq(financialTransactions.status, 'completed'),
+        gte(financialTransactions.createdAt, today)
+      ))
+      .limit(1);
+
+    return withdrawalsToday.length > 0;
+  }
+
+  /**
+   * Obtém informações do último saque do entregador
+   * @param driverId - ID do entregador
+   * @returns Data do último saque ou null
+   */
+  async getLastWithdrawal(driverId: string): Promise<Date | null> {
+    const lastWithdrawal = await db
+      .select()
+      .from(financialTransactions)
+      .where(and(
+        eq(financialTransactions.driverId, driverId),
+        eq(financialTransactions.type, 'withdrawal'),
+        eq(financialTransactions.status, 'completed')
+      ))
+      .orderBy(desc(financialTransactions.createdAt))
+      .limit(1);
+
+    return lastWithdrawal.length > 0 ? lastWithdrawal[0].createdAt : null;
+  }
+
+  /**
+   * Realiza saque do saldo do entregador para uma chave PIX
+   * LIMITE: 1 saque por dia
+   * TAXA: R$1,50 cobrada via débito da subconta para a conta principal
+   * @param driverId - ID do entregador
+   * @param amount - Valor do saque em reais (se não informado, saca todo o saldo menos a taxa)
+   * @param destinationPixKey - Chave PIX de destino
+   * @param destinationPixKeyType - Tipo da chave PIX (EMAIL, CPF, CNPJ, PHONE, EVP)
+   * @returns Resultado do saque
+   */
+  async processDriverWithdrawal(
+    driverId: string,
+    destinationPixKey: string,
+    destinationPixKeyType: 'EMAIL' | 'CPF' | 'CNPJ' | 'PHONE' | 'EVP',
+    amount?: number
+  ): Promise<{
+    success: boolean;
+    withdrawnAmount: number;
+    withdrawalFee: number;
+    netAmount: number;
+    transactionId?: string;
+    error?: string;
+  }> {
+    const WITHDRAWAL_FEE = 1.50; // Taxa de saque fixa de R$1,50
+
+    try {
+      console.log(`💰 Processando saque do entregador ${driverId}...`);
+
+      // ==========================================
+      // REGRA: Limite de 1 saque por dia
+      // ==========================================
+      const alreadyWithdrewToday = await this.hasWithdrawnToday(driverId);
+      if (alreadyWithdrewToday) {
+        throw new Error('Limite de saque atingido. Você já realizou um saque hoje. Tente novamente amanhã.');
+      }
+
+      // Buscar subconta do entregador
+      const driverSubaccount = await this.getDriverSubaccount(driverId);
+
+      if (!driverSubaccount) {
+        throw new Error('Entregador não possui subconta configurada');
+      }
+
+      // Obter saldo atual
+      const balanceInCents = await this.updateSubaccountBalance(driverSubaccount.id);
+      const currentBalance = wooviService.toReais(balanceInCents);
+
+      console.log(`   Saldo atual: R$ ${currentBalance.toFixed(2)}`);
+      console.log(`   Taxa de saque: R$ ${WITHDRAWAL_FEE.toFixed(2)}`);
+
+      // Verificar se tem saldo suficiente para a taxa
+      if (currentBalance < WITHDRAWAL_FEE) {
+        throw new Error(`Saldo insuficiente para cobrir a taxa de saque de R$ ${WITHDRAWAL_FEE.toFixed(2)}. Saldo: R$ ${currentBalance.toFixed(2)}`);
+      }
+
+      // Calcular valor disponível para saque (saldo - taxa)
+      const availableForWithdrawal = currentBalance - WITHDRAWAL_FEE;
+
+      // Determinar valor do saque
+      let withdrawAmount: number;
+      if (amount !== undefined) {
+        withdrawAmount = amount;
+      } else {
+        // Se não informou valor, saca tudo menos a taxa
+        withdrawAmount = availableForWithdrawal;
+      }
+
+      if (withdrawAmount <= 0) {
+        throw new Error('Valor do saque deve ser maior que zero');
+      }
+
+      if (withdrawAmount > availableForWithdrawal) {
+        throw new Error(`Valor máximo para saque: R$ ${availableForWithdrawal.toFixed(2)} (saldo R$ ${currentBalance.toFixed(2)} - taxa R$ ${WITHDRAWAL_FEE.toFixed(2)})`);
+      }
+
+      // Valor mínimo para saque
+      const MIN_WITHDRAWAL = 1.00;
+      if (withdrawAmount < MIN_WITHDRAWAL) {
+        throw new Error(`Valor mínimo para saque é R$ ${MIN_WITHDRAWAL.toFixed(2)}`);
+      }
+
+      console.log(`   Valor do saque: R$ ${withdrawAmount.toFixed(2)}`);
+      console.log(`   Chave PIX destino: ${destinationPixKey} (${destinationPixKeyType})`);
+
+      // ==========================================
+      // OPERAÇÃO 1: Cobrar taxa de saque via débito
+      // Débito da subconta para a conta principal Woovi
+      // ==========================================
+      console.log(`\n💸 [1/2] Cobrando taxa de saque de R$ ${WITHDRAWAL_FEE.toFixed(2)}...`);
+
+      const debitResult = await wooviService.debitFromSubaccount(driverSubaccount.pixKey, {
+        value: wooviService.toCents(WITHDRAWAL_FEE),
+        description: `Taxa de saque Fretus`,
+      });
+
+      console.log(`   ✅ Taxa de saque cobrada com sucesso`);
+
+      // Registrar log da taxa de saque
+      await this.logTransaction({
+        type: 'withdrawal_fee',
+        driverId,
+        fromSubaccountId: driverSubaccount.id,
+        amount: WITHDRAWAL_FEE.toString(),
+        status: 'completed',
+        description: `Taxa de saque: R$ ${WITHDRAWAL_FEE.toFixed(2)}`,
+        wooviResponse: JSON.parse(JSON.stringify(debitResult)),
+        metadata: JSON.parse(JSON.stringify({
+          feeType: 'withdrawal_fee',
+          fixedAmount: WITHDRAWAL_FEE,
+        })),
+      });
+
+      // ==========================================
+      // OPERAÇÃO 2: Realizar transferência PIX para a chave de destino
+      // ==========================================
+      console.log(`\n🔄 [2/2] Transferindo R$ ${withdrawAmount.toFixed(2)} para ${destinationPixKey}...`);
+
+      const correlationId = wooviService.generateCorrelationId('WITHDRAW');
+
+      const withdrawResult = await wooviService.withdrawToPixKey(
+        driverSubaccount.pixKey,
+        {
+          value: wooviService.toCents(withdrawAmount),
+          destinationPixKey,
+          destinationPixKeyType,
+          correlationID: correlationId,
+        }
+      );
+
+      console.log(`   ✅ Saque realizado com sucesso!`);
+
+      // Registrar log do saque
+      await this.logTransaction({
+        type: 'withdrawal',
+        driverId,
+        fromSubaccountId: driverSubaccount.id,
+        amount: withdrawAmount.toString(),
+        status: 'completed',
+        description: `Saque de R$ ${withdrawAmount.toFixed(2)} para ${destinationPixKey}`,
+        wooviTransactionId: correlationId,
+        wooviResponse: JSON.parse(JSON.stringify(withdrawResult)),
+        metadata: JSON.parse(JSON.stringify({
+          destinationPixKey,
+          destinationPixKeyType,
+          correlationId,
+          withdrawalFee: WITHDRAWAL_FEE,
+        })),
+      });
+
+      // Atualizar saldo em cache
+      await this.updateSubaccountBalance(driverSubaccount.id);
+
+      const totalDeducted = withdrawAmount + WITHDRAWAL_FEE;
+      console.log(`\n✅ Saque processado com sucesso!`);
+      console.log(`   Valor transferido: R$ ${withdrawAmount.toFixed(2)}`);
+      console.log(`   Taxa cobrada: R$ ${WITHDRAWAL_FEE.toFixed(2)}`);
+      console.log(`   Total debitado: R$ ${totalDeducted.toFixed(2)}`);
+
+      return {
+        success: true,
+        withdrawnAmount: withdrawAmount,
+        withdrawalFee: WITHDRAWAL_FEE,
+        netAmount: withdrawAmount, // Valor que o entregador recebe na conta
+        transactionId: correlationId,
+      };
+
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Erro desconhecido';
+      console.error('❌ Erro ao processar saque:', errorMessage);
+
+      // Registrar erro no log
+      await this.logTransaction({
+        type: 'withdrawal',
+        driverId,
+        amount: (amount ?? 0).toString(),
+        status: 'failed',
+        description: `Falha no saque`,
+        errorMessage,
+      });
+
+      return {
+        success: false,
+        withdrawnAmount: 0,
+        withdrawalFee: WITHDRAWAL_FEE,
+        netAmount: 0,
+        error: errorMessage,
+      };
     }
   }
 }

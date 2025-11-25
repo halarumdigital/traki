@@ -45,7 +45,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Pencil, Trash2, Plus, Eye, Ban, MessageSquare, Search, Users, UserCheck, Star, Circle, DollarSign, TrendingUp, MapPin, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
+import { Pencil, Trash2, Plus, Eye, Ban, MessageSquare, Search, Users, UserCheck, Star, Circle, DollarSign, TrendingUp, MapPin, ArrowUpDown, ArrowUp, ArrowDown, Wallet, ArrowDownToLine, ArrowUpFromLine, CreditCard, Key } from "lucide-react";
 import { useForm } from "react-hook-form";
 import type { VehicleType, Brand, VehicleModel } from "@shared/schema";
 
@@ -209,21 +209,38 @@ export default function MotoristasAtivos() {
   });
 
   const { data: driverDocuments = [] } = useQuery<any>({
-    queryKey: [`/api/drivers/${viewingDriver?.id}/documents`],
+    queryKey: ["/api/drivers", viewingDriver?.id, "documents"],
     enabled: !!viewingDriver?.id,
     select: (data) => data?.documents || [],
   });
 
   const { data: driverNotes = [] } = useQuery<any[]>({
-    queryKey: [`/api/drivers/${viewingDriver?.id}/notes`],
+    queryKey: ["/api/drivers", viewingDriver?.id, "notes"],
     enabled: !!viewingDriver?.id,
   });
 
   const { data: driverTrips = [] } = useQuery<any[]>({
-    queryKey: [`/api/drivers/${viewingDriver?.id}/trips`],
+    queryKey: ["/api/drivers", viewingDriver?.id, "trips"],
     enabled: !!viewingDriver?.id,
   });
 
+  const { data: driverFinancial } = useQuery<{
+    subaccount: any;
+    pixKey: string | null;
+    pixKeyType: string | null;
+    wooviBalance: number;
+    withdrawals: any[];
+    splits: any[];
+    totals: {
+      totalWithdrawals: number;
+      totalSplits: number;
+    };
+  }>({
+    queryKey: ["/api/drivers", viewingDriver?.id, "financial"],
+    enabled: !!viewingDriver?.id,
+  });
+
+  const [financialView, setFinancialView] = useState<"saques" | "repasses">("repasses");
   const [newComment, setNewComment] = useState("");
   const [blockReason, setBlockReason] = useState("");
   const [showBlockDialog, setShowBlockDialog] = useState(false);
@@ -1013,9 +1030,10 @@ export default function MotoristasAtivos() {
           </DialogHeader>
           {viewingDriver && (
             <Tabs defaultValue="cadastro" className="w-full">
-              <TabsList className="grid w-full grid-cols-2">
+              <TabsList className="grid w-full grid-cols-3">
                 <TabsTrigger value="cadastro">Cadastro</TabsTrigger>
                 <TabsTrigger value="corridas">Corridas</TabsTrigger>
+                <TabsTrigger value="financeiro">Financeiro</TabsTrigger>
               </TabsList>
 
               <TabsContent value="cadastro" className="space-y-6 mt-4">
@@ -1347,6 +1365,237 @@ export default function MotoristasAtivos() {
                     )}
                   </div>
                 </div>
+              </TabsContent>
+
+              <TabsContent value="financeiro" className="space-y-6 mt-4">
+                {/* Informações da Subconta */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <Card>
+                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                      <CardTitle className="text-sm font-medium">Subconta Woovi</CardTitle>
+                      <CreditCard className="h-4 w-4 text-muted-foreground" />
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-sm">
+                        {driverFinancial?.subaccount ? (
+                          <span className="text-green-600 font-medium">✓ Ativa</span>
+                        ) : (
+                          <span className="text-yellow-600 font-medium">✗ Não criada</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {driverFinancial?.subaccount?.wooviSubaccountId || "ID não disponível"}
+                      </p>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                      <CardTitle className="text-sm font-medium">Chave PIX</CardTitle>
+                      <Key className="h-4 w-4 text-muted-foreground" />
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-sm font-medium truncate" title={driverFinancial?.pixKey || "-"}>
+                        {driverFinancial?.pixKey || "-"}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Tipo: {driverFinancial?.pixKeyType || "-"}
+                      </p>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                      <CardTitle className="text-sm font-medium">Saldo na Conta Woovi</CardTitle>
+                      <Wallet className="h-4 w-4 text-green-600" />
+                    </CardHeader>
+                    <CardContent>
+                      <div className="text-2xl font-bold text-green-600">
+                        {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                          (driverFinancial?.wooviBalance || 0) / 100
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Saldo disponível para saque
+                      </p>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                {/* Seletor Saques/Repasses */}
+                <div className="flex items-center gap-4 border-b pb-4">
+                  <span className="text-sm font-medium">Visualizar:</span>
+                  <div className="flex gap-2">
+                    <Button
+                      variant={financialView === "repasses" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setFinancialView("repasses")}
+                      className="gap-2"
+                    >
+                      <ArrowDownToLine className="h-4 w-4" />
+                      Repasses
+                    </Button>
+                    <Button
+                      variant={financialView === "saques" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setFinancialView("saques")}
+                      className="gap-2"
+                    >
+                      <ArrowUpFromLine className="h-4 w-4" />
+                      Saques
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Lista de Saques */}
+                {financialView === "saques" && (
+                  <div className="border rounded-lg">
+                    <div className="p-4 border-b bg-muted/50">
+                      <h3 className="font-semibold text-lg flex items-center gap-2">
+                        <ArrowUpFromLine className="h-5 w-5" />
+                        Histórico de Saques
+                      </h3>
+                    </div>
+                    <div className="max-h-[400px] overflow-y-auto">
+                      {!driverFinancial?.withdrawals || driverFinancial.withdrawals.length === 0 ? (
+                        <p className="text-muted-foreground text-center py-8">
+                          Nenhum saque realizado ainda
+                        </p>
+                      ) : (
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Data/Hora</TableHead>
+                              <TableHead>Valor</TableHead>
+                              <TableHead>Chave PIX</TableHead>
+                              <TableHead>Status</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {driverFinancial.withdrawals.map((withdrawal: any) => (
+                              <TableRow key={withdrawal.id}>
+                                <TableCell className="font-medium">
+                                  {new Date(withdrawal.createdAt).toLocaleString('pt-BR')}
+                                </TableCell>
+                                <TableCell className="text-red-600 font-medium">
+                                  - {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                                    parseFloat(withdrawal.amount || 0)
+                                  )}
+                                </TableCell>
+                                <TableCell className="max-w-[200px] truncate" title={driverFinancial?.pixKey || "-"}>
+                                  {driverFinancial?.pixKey || "-"}
+                                </TableCell>
+                                <TableCell>
+                                  <span className={`text-xs px-2 py-1 rounded ${
+                                    withdrawal.status === 'completed' ? 'bg-green-100 text-green-700' :
+                                    withdrawal.status === 'failed' ? 'bg-red-100 text-red-700' :
+                                    'bg-yellow-100 text-yellow-700'
+                                  }`}>
+                                    {withdrawal.status === 'completed' ? 'Concluído' :
+                                     withdrawal.status === 'failed' ? 'Falhou' :
+                                     'Pendente'}
+                                  </span>
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      )}
+                    </div>
+                    {driverFinancial?.withdrawals && driverFinancial.withdrawals.length > 0 && (
+                      <div className="p-4 border-t bg-muted/50">
+                        <div className="flex justify-between items-center">
+                          <span className="text-sm text-muted-foreground">
+                            Total de saques: {driverFinancial.withdrawals.length}
+                          </span>
+                          <span className="font-semibold text-red-600">
+                            Total: {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                              driverFinancial.totals?.totalWithdrawals || 0
+                            )}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Lista de Repasses (Splits) */}
+                {financialView === "repasses" && (
+                  <div className="border rounded-lg">
+                    <div className="p-4 border-b bg-muted/50">
+                      <h3 className="font-semibold text-lg flex items-center gap-2">
+                        <ArrowDownToLine className="h-5 w-5" />
+                        Histórico de Repasses
+                      </h3>
+                    </div>
+                    <div className="max-h-[400px] overflow-y-auto">
+                      {!driverFinancial?.splits || driverFinancial.splits.length === 0 ? (
+                        <p className="text-muted-foreground text-center py-8">
+                          Nenhum repasse recebido ainda
+                        </p>
+                      ) : (
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Data/Hora</TableHead>
+                              <TableHead>Valor</TableHead>
+                              <TableHead>Nº Entrega</TableHead>
+                              <TableHead>Descrição</TableHead>
+                              <TableHead>Status</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {driverFinancial.splits.map((split: any) => (
+                              <TableRow key={split.id}>
+                                <TableCell className="font-medium">
+                                  {new Date(split.createdAt).toLocaleString('pt-BR')}
+                                </TableCell>
+                                <TableCell className="text-green-600 font-medium">
+                                  + {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                                    parseFloat(split.amount || 0)
+                                  )}
+                                </TableCell>
+                                <TableCell>
+                                  <span className="font-mono text-xs bg-gray-100 px-2 py-1 rounded">
+                                    #{split.entregaNumero || "-"}
+                                  </span>
+                                </TableCell>
+                                <TableCell className="max-w-[200px] truncate" title={split.description}>
+                                  {split.description || "-"}
+                                </TableCell>
+                                <TableCell>
+                                  <span className={`text-xs px-2 py-1 rounded ${
+                                    split.status === 'completed' ? 'bg-green-100 text-green-700' :
+                                    split.status === 'failed' ? 'bg-red-100 text-red-700' :
+                                    'bg-yellow-100 text-yellow-700'
+                                  }`}>
+                                    {split.status === 'completed' ? 'Concluído' :
+                                     split.status === 'failed' ? 'Falhou' :
+                                     'Pendente'}
+                                  </span>
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      )}
+                    </div>
+                    {driverFinancial?.splits && driverFinancial.splits.length > 0 && (
+                      <div className="p-4 border-t bg-muted/50">
+                        <div className="flex justify-between items-center">
+                          <span className="text-sm text-muted-foreground">
+                            Total de repasses: {driverFinancial.splits.length}
+                          </span>
+                          <span className="font-semibold text-green-600">
+                            Total: {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                              driverFinancial.totals?.totalSplits || 0
+                            )}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </TabsContent>
             </Tabs>
           )}

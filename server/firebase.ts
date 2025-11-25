@@ -99,8 +99,20 @@ export async function sendPushNotification(
     const response = await admin.messaging().send(message);
     console.log("✓ Notificação push enviada com notification + data:", response);
     return response;
-  } catch (error) {
-    console.error("Erro ao enviar notificação push:", error);
+  } catch (error: any) {
+    // Tratar token inválido - limpar do banco de dados
+    if (error?.errorInfo?.code === 'messaging/registration-token-not-registered' ||
+        error?.errorInfo?.code === 'messaging/invalid-registration-token') {
+      console.warn(`⚠️ Token FCM inválido, removendo do banco: ${fcmToken.substring(0, 20)}...`);
+      try {
+        // Limpar token de motoristas
+        await storage.clearInvalidFcmToken(fcmToken);
+      } catch (clearError) {
+        console.error("Erro ao limpar token inválido:", clearError);
+      }
+    } else {
+      console.error("Erro ao enviar notificação push:", error);
+    }
     return null;
   }
 }

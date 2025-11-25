@@ -1732,8 +1732,8 @@ export class DatabaseStorage implements IStorage {
         rotaNome: rotasIntermunicipais.nomeRota,
         capacidadePacotes: entregadorRotas.capacidadePacotes,
         capacidadePesoKg: entregadorRotas.capacidadePesoKg,
-        horarioSaidaPadrao: entregadorRotas.horarioSaidaPadrao,
-        ativo: entregadorRotas.ativo,
+        horarioSaidaPadrao: entregadorRotas.horarioSaida,
+        ativa: entregadorRotas.ativa,
         createdAt: entregadorRotas.createdAt,
         updatedAt: entregadorRotas.updatedAt,
       })
@@ -1763,7 +1763,7 @@ export class DatabaseStorage implements IStorage {
         diasSemana: entregadorRotas.diasSemana, // ✅ Campo adicionado
         horarioSaidaPadrao: entregadorRotas.horarioSaida,
         horarioChegada: entregadorRotas.horarioChegada,
-        ativo: entregadorRotas.ativa,
+        ativa: entregadorRotas.ativa,
       })
       .from(entregadorRotas)
       .leftJoin(rotasIntermunicipais, eq(entregadorRotas.rotaId, rotasIntermunicipais.id))
@@ -1812,7 +1812,7 @@ export class DatabaseStorage implements IStorage {
       .where(
         and(
           eq(entregadorRotas.entregadorId, entregadorId),
-          eq(entregadorRotas.ativo, true)
+          eq(entregadorRotas.ativa, true)
         )
       );
 
@@ -1828,7 +1828,7 @@ export class DatabaseStorage implements IStorage {
         id: entregasIntermunicipais.id,
         numeroPedido: entregasIntermunicipais.numeroPedido,
         empresaId: entregasIntermunicipais.empresaId,
-        empresaNome: companies.companyName,
+        empresaNome: companies.name,
         rotaId: entregasIntermunicipais.rotaId,
         rotaNome: rotasIntermunicipais.nomeRota,
         dataAgendada: entregasIntermunicipais.dataAgendada,
@@ -1856,6 +1856,21 @@ export class DatabaseStorage implements IStorage {
       .orderBy(entregasIntermunicipais.createdAt);
 
     return result;
+  }
+
+  // Limpar token FCM inválido de motoristas e usuários
+  async clearInvalidFcmToken(fcmToken: string): Promise<void> {
+    // Limpar de motoristas
+    await db
+      .update(drivers)
+      .set({ fcmToken: null })
+      .where(eq(drivers.fcmToken, fcmToken));
+
+    // Limpar de usuários
+    await db
+      .update(users)
+      .set({ fcmToken: null })
+      .where(eq(users.fcmToken, fcmToken));
   }
 }
 

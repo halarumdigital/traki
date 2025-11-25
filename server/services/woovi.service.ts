@@ -78,6 +78,35 @@ interface WithdrawFromSubaccountResponse {
   };
 }
 
+interface DebitFromSubaccountParams {
+  value: number; // Valor em centavos
+  description?: string;
+}
+
+interface DebitFromSubaccountResponse {
+  pixKey: string;
+  value: number;
+  description: string;
+  success: string;
+}
+
+interface WithdrawToPixKeyParams {
+  value: number; // Valor em centavos
+  destinationPixKey: string;
+  destinationPixKeyType: 'EMAIL' | 'CPF' | 'CNPJ' | 'PHONE' | 'EVP';
+  correlationID?: string;
+}
+
+interface WithdrawToPixKeyResponse {
+  transaction: {
+    status: string;
+    value: number;
+    correlationID: string;
+    destinationAlias: string;
+    comment: string;
+  };
+}
+
 interface ListSubaccountsResponse {
   subAccounts: Array<{
     name: string;
@@ -276,6 +305,48 @@ class WooviService {
   }
 
   /**
+   * Debita valor de uma subconta e envia para a conta principal
+   * Usado para cobrar comissão do app da subconta do entregador
+   * Conforme documentação: POST /api/v1/subaccount/{id}/debit
+   * @param pixKey - Chave PIX da subconta (ID da subconta)
+   * @param params - Parâmetros do débito (valor em centavos e descrição)
+   */
+  async debitFromSubaccount(pixKey: string, params: DebitFromSubaccountParams): Promise<DebitFromSubaccountResponse> {
+    return this.request<DebitFromSubaccountResponse>(
+      `/api/v1/subaccount/${encodeURIComponent(pixKey)}/debit`,
+      'POST',
+      params
+    );
+  }
+
+  /**
+   * Realiza saque/transferência de uma subconta para uma chave PIX externa
+   * Usado para o entregador sacar seu saldo para sua conta pessoal
+   * Utiliza transferência PIX da subconta para a chave destino
+   * @param fromPixKey - Chave PIX da subconta de origem
+   * @param params - Parâmetros do saque (valor, chave destino)
+   */
+  async withdrawToPixKey(
+    fromPixKey: string,
+    params: WithdrawToPixKeyParams
+  ): Promise<WithdrawToPixKeyResponse> {
+    // Usar endpoint de transferência para enviar para chave PIX externa
+    // A transferência PIX para chave externa funciona como um saque
+    const payload = {
+      value: params.value,
+      destinationAlias: params.destinationPixKey,
+      destinationAliasType: params.destinationPixKeyType,
+      correlationID: params.correlationID || this.generateCorrelationId('WITHDRAW'),
+    };
+
+    return this.request<WithdrawToPixKeyResponse>(
+      `/api/v1/subaccount/${encodeURIComponent(fromPixKey)}/pixTransfer`,
+      'POST',
+      payload
+    );
+  }
+
+  /**
    * Converte reais para centavos
    */
   toCents(valueInReais: number): number {
@@ -296,17 +367,6 @@ class WooviService {
     const timestamp = Date.now();
     const random = Math.random().toString(36).substring(2, 15);
     return prefix ? `${prefix}_${timestamp}_${random}` : `${timestamp}_${random}`;
-  }
-
-  /**
-   * Lista todas as subcontas
-   * Conforme documentação: https://developers.woovi.com/docs/subaccount/how-to-list-subaccounts-of-a-company-using-api
-   */
-  async listSubaccounts(skip: number = 0, limit: number = 100): Promise<ListSubaccountsResponse> {
-    return this.request<ListSubaccountsResponse>(
-      `/api/v1/subaccount/list?skip=${skip}&limit=${limit}`,
-      'GET'
-    );
   }
 
   /**
