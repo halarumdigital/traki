@@ -8753,6 +8753,7 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
           vt.name AS "vehicleTypeName",
           c.name AS "companyName",
           d.name AS "driverName",
+          sl.name AS "serviceLocationName",
           CASE
             WHEN r.is_driver_arrived = true AND r.is_trip_start = false THEN 'arrived_pickup'
             WHEN r.is_trip_start = true AND r.is_completed = false THEN 'in_progress'
@@ -8765,6 +8766,7 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         LEFT JOIN vehicle_types vt ON r.zone_type_id = vt.id
         LEFT JOIN companies c ON r.company_id = c.id
         LEFT JOIN drivers d ON r.driver_id = d.id
+        LEFT JOIN service_locations sl ON r.service_location_id = sl.id
         WHERE r.is_cancelled = false
           AND r.is_completed = false
         ORDER BY r.created_at DESC
@@ -8807,6 +8809,7 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
           d.rating AS "driverRating",
           d.no_of_ratings AS "driverRatingCount",
           r.company_rated AS "companyRated",
+          sl.name AS "serviceLocationName",
           'completed' AS status
         FROM requests r
         LEFT JOIN request_places rp ON r.id = rp.request_id
@@ -8814,6 +8817,7 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         LEFT JOIN vehicle_types vt ON r.zone_type_id = vt.id
         LEFT JOIN companies c ON r.company_id = c.id
         LEFT JOIN drivers d ON r.driver_id = d.id
+        LEFT JOIN service_locations sl ON r.service_location_id = sl.id
         WHERE r.is_completed = true
           AND r.is_cancelled = false
         ORDER BY r.completed_at DESC NULLS LAST, r.created_at DESC
@@ -8858,12 +8862,14 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
           rb.total_amount AS "totalPrice",
           vt.name AS "vehicleTypeName",
           c.name AS "companyName",
+          sl.name AS "serviceLocationName",
           'cancelled' AS status
         FROM requests r
         LEFT JOIN request_places rp ON r.id = rp.request_id
         LEFT JOIN request_bills rb ON r.id = rb.request_id
         LEFT JOIN vehicle_types vt ON r.zone_type_id = vt.id
         LEFT JOIN companies c ON r.company_id = c.id
+        LEFT JOIN service_locations sl ON r.service_location_id = sl.id
         WHERE r.is_cancelled = true
         ORDER BY r.cancelled_at DESC NULLS LAST, r.created_at DESC
       `);

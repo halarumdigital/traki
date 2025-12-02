@@ -15,7 +15,14 @@ import { Label } from "@/components/ui/label";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { Eye, MapPin, CheckCircle2, Loader2, CalendarIcon, Search, X, ChevronLeft, ChevronRight, RefreshCw, Star, User, Phone, Info } from "lucide-react";
+import { Eye, MapPin, CheckCircle2, Loader2, CalendarIcon, Search, X, ChevronLeft, ChevronRight, RefreshCw, Star, User, Phone, Info, MapPinned } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useState, useMemo, useEffect } from "react";
 import {
   Dialog,
@@ -28,6 +35,13 @@ import { ptBR } from "date-fns/locale";
 import { cn } from "@/lib/utils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+
+interface ServiceLocation {
+  id: string;
+  name: string;
+  state: string;
+  active: boolean;
+}
 
 interface Delivery {
   id: string;
@@ -52,6 +66,7 @@ interface Delivery {
   driverRatingCount: number | null;
   needsReturn: boolean | null;
   companyRated: boolean | null;
+  serviceLocationName: string | null;
 }
 
 // Função helper para formatar datas no horário de Brasília
@@ -99,6 +114,7 @@ export default function EntregasConcluidas() {
   // Filtros
   const [searchCompany, setSearchCompany] = useState("");
   const [searchOrderNumber, setSearchOrderNumber] = useState("");
+  const [selectedCity, setSelectedCity] = useState<string>("all");
   const [dateFrom, setDateFrom] = useState<Date | undefined>(undefined);
   const [dateTo, setDateTo] = useState<Date | undefined>(undefined);
 
@@ -117,6 +133,11 @@ export default function EntregasConcluidas() {
   const { data: deliveries = [], isLoading } = useQuery<Delivery[]>({
     queryKey: ["/api/admin/deliveries/completed"],
     refetchInterval: 10000, // Atualiza a cada 10 segundos
+  });
+
+  // Buscar cidades cadastradas
+  const { data: serviceLocations = [] } = useQuery<ServiceLocation[]>({
+    queryKey: ["/api/service-locations"],
   });
 
   // Mutation para enviar avaliação
@@ -148,6 +169,13 @@ export default function EntregasConcluidas() {
     },
   });
 
+  // Filtrar apenas cidades ativas e ordenar por nome
+  const availableCities = useMemo(() => {
+    return serviceLocations
+      .filter((loc) => loc.active)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [serviceLocations]);
+
   // Filtrar entregas
   const filteredDeliveries = useMemo(() => {
     return deliveries.filter((delivery) => {
@@ -158,6 +186,11 @@ export default function EntregasConcluidas() {
 
       // Filtro por número do pedido
       if (searchOrderNumber && !delivery.requestNumber?.toLowerCase().includes(searchOrderNumber.toLowerCase())) {
+        return false;
+      }
+
+      // Filtro por cidade
+      if (selectedCity && selectedCity !== "all" && delivery.serviceLocationName !== selectedCity) {
         return false;
       }
 
@@ -191,12 +224,12 @@ export default function EntregasConcluidas() {
 
       return true;
     });
-  }, [deliveries, searchCompany, searchOrderNumber, dateFrom, dateTo]);
+  }, [deliveries, searchCompany, searchOrderNumber, selectedCity, dateFrom, dateTo]);
 
   // Resetar para página 1 quando os filtros mudarem
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchCompany, searchOrderNumber, dateFrom, dateTo]);
+  }, [searchCompany, searchOrderNumber, selectedCity, dateFrom, dateTo]);
 
   // Calcular dados paginados
   const totalPages = Math.ceil(filteredDeliveries.length / ITEMS_PER_PAGE);
@@ -236,6 +269,7 @@ export default function EntregasConcluidas() {
   const clearFilters = () => {
     setSearchCompany("");
     setSearchOrderNumber("");
+    setSelectedCity("all");
     setDateFrom(undefined);
     setDateTo(undefined);
   };
@@ -252,7 +286,26 @@ export default function EntregasConcluidas() {
         <CardContent>
           {/* Filtros */}
           <div className="mb-6 space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+              {/* Filtro por Cidade */}
+              <div className="space-y-2">
+                <Label>Cidade</Label>
+                <Select value={selectedCity} onValueChange={setSelectedCity}>
+                  <SelectTrigger>
+                    <MapPinned className="mr-2 h-4 w-4 text-muted-foreground" />
+                    <SelectValue placeholder="Todas as cidades" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todas as cidades</SelectItem>
+                    {availableCities.map((city) => (
+                      <SelectItem key={city.id} value={city.name}>
+                        {city.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
               {/* Filtro por Empresa */}
               <div className="space-y-2">
                 <Label htmlFor="search-company">Empresa</Label>
@@ -343,7 +396,7 @@ export default function EntregasConcluidas() {
             </div>
 
             {/* Botão Limpar Filtros */}
-            {(searchCompany || searchOrderNumber || dateFrom || dateTo) && (
+            {(searchCompany || searchOrderNumber || (selectedCity && selectedCity !== "all") || dateFrom || dateTo) && (
               <div className="flex justify-end">
                 <Button
                   variant="outline"
