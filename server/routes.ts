@@ -9290,6 +9290,313 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     }
   });
 
+  // ========================================
+  // DASHBOARD OPERACIONAL
+  // ========================================
+
+  // GET /api/admin/dashboard/operational - Dashboard de métricas operacionais
+  app.get("/api/admin/dashboard/operational", async (req, res) => {
+    try {
+      // TODO: Reativar autenticação quando necessário
+      // if (!req.session.userId) {
+      //   return res.status(401).json({ message: "Não autenticado" });
+      // }
+
+      const { month, city } = req.query;
+
+      // Determinar o período (mês atual se não especificado)
+      let startDate: string;
+      let endDate: string;
+
+      if (month) {
+        // Formato esperado: YYYY-MM
+        const [year, monthNum] = (month as string).split('-');
+        const firstDay = new Date(parseInt(year), parseInt(monthNum) - 1, 1);
+        const lastDay = new Date(parseInt(year), parseInt(monthNum), 0);
+        startDate = firstDay.toISOString().split('T')[0];
+        endDate = lastDay.toISOString().split('T')[0];
+      } else {
+        // Mês atual
+        const now = new Date();
+        const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+        const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        startDate = firstDay.toISOString().split('T')[0];
+        endDate = lastDay.toISOString().split('T')[0];
+      }
+
+      // Filtro de cidade (service_location_id)
+      const cityFilter = city ? city as string : null;
+
+      // 1. Tempo Médio de Aceite (segundos entre created_at e accepted_at)
+      const tempoMedioAceiteResult = await pool.query(`
+        SELECT
+          COALESCE(AVG(EXTRACT(EPOCH FROM (accepted_at - created_at))), 0) as tempo_medio_aceite
+        FROM requests
+        WHERE accepted_at IS NOT NULL
+          AND created_at >= $1::date
+          AND created_at <= $2::date + interval '1 day'
+          ${cityFilter ? 'AND service_location_id = $3' : ''}
+      `, cityFilter ? [startDate, endDate, cityFilter] : [startDate, endDate]);
+
+      // 2. Tempo até Coleta (minutos entre accepted_at e trip_started_at)
+      const tempoAteColetaResult = await pool.query(`
+        SELECT
+          COALESCE(AVG(EXTRACT(EPOCH FROM (trip_started_at - accepted_at)) / 60), 0) as tempo_ate_coleta
+        FROM requests
+        WHERE trip_started_at IS NOT NULL
+          AND accepted_at IS NOT NULL
+          AND created_at >= $1::date
+          AND created_at <= $2::date + interval '1 day'
+          ${cityFilter ? 'AND service_location_id = $3' : ''}
+      `, cityFilter ? [startDate, endDate, cityFilter] : [startDate, endDate]);
+
+      // 3. Tempo Total de Entrega (minutos entre accepted_at e completed_at)
+      const tempoTotalEntregaResult = await pool.query(`
+        SELECT
+          COALESCE(AVG(EXTRACT(EPOCH FROM (completed_at - accepted_at)) / 60), 0) as tempo_total_entrega
+        FROM requests
+        WHERE completed_at IS NOT NULL
+          AND accepted_at IS NOT NULL
+          AND created_at >= $1::date
+          AND created_at <= $2::date + interval '1 day'
+          ${cityFilter ? 'AND service_location_id = $3' : ''}
+      `, cityFilter ? [startDate, endDate, cityFilter] : [startDate, endDate]);
+
+      // 4. Entregadores Ativos (online = available=true, last_heartbeat nos últimos 5 minutos)
+      const entregadoresAtivosResult = await pool.query(`
+        SELECT COUNT(*) as total
+        FROM drivers
+        WHERE active = true
+          AND approve = true
+          AND available = true
+          AND last_heartbeat > NOW() - INTERVAL '5 minutes'
+          ${cityFilter ? 'AND service_location_id = $1' : ''}
+      `, cityFilter ? [cityFilter] : []);
+
+      // 5. Entregadores Offline (aprovados mas não ativos)
+      const entregadoresOfflineResult = await pool.query(`
+        SELECT COUNT(*) as total
+        FROM drivers
+        WHERE active = true
+          AND approve = true
+          AND (available = false OR last_heartbeat IS NULL OR last_heartbeat <= NOW() - INTERVAL '5 minutes')
+          ${cityFilter ? 'AND service_location_id = $1' : ''}
+      `, cityFilter ? [cityFilter] : []);
+
+      // 6. Demanda vs. Disponibilidade por hora (últimas 24 horas)
+      const demandaDisponibilidadeResult = await pool.query(`
+        WITH hours AS (
+          SELECT generate_series(
+            date_trunc('hour', NOW() - INTERVAL '15 hours'),
+            date_trunc('hour', NOW()),
+            INTERVAL '1 hour'
+          ) AS hour
+        ),
+        pedidos_por_hora AS (
+          SELECT
+            date_trunc('hour', created_at AT TIME ZONE 'America/Sao_Paulo') as hora,
+            COUNT(*) as pedidos
+          FROM requests
+          WHERE created_at >= NOW() - INTERVAL '24 hours'
+            AND is_cancelled = false
+            ${cityFilter ? 'AND service_location_id = $1' : ''}
+          GROUP BY date_trunc('hour', created_at AT TIME ZONE 'America/Sao_Paulo')
+        )
+        SELECT
+          to_char(h.hour AT TIME ZONE 'America/Sao_Paulo', 'HH24:00') as hora,
+          COALESCE(p.pedidos, 0) as pedidos_em_aberto
+        FROM hours h
+        LEFT JOIN pedidos_por_hora p ON date_trunc('hour', h.hour) = date_trunc('hour', p.hora)
+        ORDER BY h.hour
+      `, cityFilter ? [cityFilter] : []);
+
+      // 7. Status das Entregas (totais do período)
+      const statusEntregasResult = await pool.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE is_completed = false AND is_cancelled = false AND driver_id IS NULL) as em_aberto,
+          COUNT(*) FILTER (WHERE is_completed = false AND is_cancelled = false AND driver_id IS NOT NULL) as em_andamento,
+          COUNT(*) FILTER (WHERE is_cancelled = true) as canceladas,
+          COUNT(*) FILTER (WHERE is_completed = true) as concluidas,
+          COUNT(*) as total
+        FROM requests
+        WHERE created_at >= $1::date
+          AND created_at <= $2::date + interval '1 day'
+          ${cityFilter ? 'AND service_location_id = $3' : ''}
+      `, cityFilter ? [startDate, endDate, cityFilter] : [startDate, endDate]);
+
+      // 8. Empresas Ativas & Volume de Entregas (por dia da semana)
+      const empresasVolumeResult = await pool.query(`
+        WITH dias AS (
+          SELECT generate_series(
+            $1::date,
+            $2::date,
+            '1 day'::interval
+          )::date AS dia
+        ),
+        entregas_por_dia AS (
+          SELECT
+            date_trunc('day', created_at AT TIME ZONE 'America/Sao_Paulo')::date as dia,
+            COUNT(*) as total_entregas,
+            COUNT(DISTINCT company_id) as empresas_ativas
+          FROM requests
+          WHERE created_at >= $1::date
+            AND created_at <= $2::date + interval '1 day'
+            AND company_id IS NOT NULL
+            ${cityFilter ? 'AND service_location_id = $3' : ''}
+          GROUP BY date_trunc('day', created_at AT TIME ZONE 'America/Sao_Paulo')::date
+        )
+        SELECT
+          CASE EXTRACT(DOW FROM d.dia)
+            WHEN 0 THEN 'Dom'
+            WHEN 1 THEN 'Seg'
+            WHEN 2 THEN 'Ter'
+            WHEN 3 THEN 'Qua'
+            WHEN 4 THEN 'Qui'
+            WHEN 5 THEN 'Sex'
+            WHEN 6 THEN 'Sáb'
+          END as dia_semana,
+          d.dia,
+          COALESCE(e.empresas_ativas, 0) as empresas_ativas,
+          COALESCE(e.total_entregas, 0) as total_entregas
+        FROM dias d
+        LEFT JOIN entregas_por_dia e ON d.dia = e.dia
+        ORDER BY d.dia
+      `, cityFilter ? [startDate, endDate, cityFilter] : [startDate, endDate]);
+
+      // Agrupar por dia da semana para o gráfico semanal
+      const volumePorDiaSemana: Record<string, { empresasAtivas: number; totalEntregas: number; count: number }> = {};
+      for (const row of empresasVolumeResult.rows) {
+        const diaSemana = row.dia_semana;
+        if (!volumePorDiaSemana[diaSemana]) {
+          volumePorDiaSemana[diaSemana] = { empresasAtivas: 0, totalEntregas: 0, count: 0 };
+        }
+        volumePorDiaSemana[diaSemana].empresasAtivas += parseInt(row.empresas_ativas);
+        volumePorDiaSemana[diaSemana].totalEntregas += parseInt(row.total_entregas);
+        volumePorDiaSemana[diaSemana].count += 1;
+      }
+
+      // Calcular médias por dia da semana
+      const diasOrdem = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
+      const empresasVolumeSemanal = diasOrdem.map(dia => ({
+        diaSemana: dia,
+        empresasAtivas: volumePorDiaSemana[dia] ? Math.round(volumePorDiaSemana[dia].empresasAtivas / volumePorDiaSemana[dia].count) : 0,
+        totalEntregas: volumePorDiaSemana[dia] ? Math.round(volumePorDiaSemana[dia].totalEntregas / volumePorDiaSemana[dia].count) : 0
+      }));
+
+      // 9. Calcular variação vs mês anterior
+      const mesAnteriorStart = new Date(startDate);
+      mesAnteriorStart.setMonth(mesAnteriorStart.getMonth() - 1);
+      const mesAnteriorEnd = new Date(endDate);
+      mesAnteriorEnd.setMonth(mesAnteriorEnd.getMonth() - 1);
+
+      const comparacaoResult = await pool.query(`
+        SELECT
+          COALESCE(AVG(EXTRACT(EPOCH FROM (accepted_at - created_at))), 0) as tempo_medio_aceite,
+          COALESCE(AVG(EXTRACT(EPOCH FROM (trip_started_at - accepted_at)) / 60), 0) as tempo_ate_coleta,
+          COALESCE(AVG(EXTRACT(EPOCH FROM (completed_at - accepted_at)) / 60), 0) as tempo_total_entrega
+        FROM requests
+        WHERE created_at >= $1::date
+          AND created_at <= $2::date + interval '1 day'
+          ${cityFilter ? 'AND service_location_id = $3' : ''}
+      `, cityFilter
+        ? [mesAnteriorStart.toISOString().split('T')[0], mesAnteriorEnd.toISOString().split('T')[0], cityFilter]
+        : [mesAnteriorStart.toISOString().split('T')[0], mesAnteriorEnd.toISOString().split('T')[0]]
+      );
+
+      // Calcular variações percentuais
+      const tempoMedioAceiteAtual = parseFloat(tempoMedioAceiteResult.rows[0]?.tempo_medio_aceite || 0);
+      const tempoMedioAceiteAnterior = parseFloat(comparacaoResult.rows[0]?.tempo_medio_aceite || 0);
+      const variacaoTempoAceite = tempoMedioAceiteAnterior > 0
+        ? Math.round(((tempoMedioAceiteAtual - tempoMedioAceiteAnterior) / tempoMedioAceiteAnterior) * 100)
+        : 0;
+
+      const tempoAteColetaAtual = parseFloat(tempoAteColetaResult.rows[0]?.tempo_ate_coleta || 0);
+      const tempoAteColetaAnterior = parseFloat(comparacaoResult.rows[0]?.tempo_ate_coleta || 0);
+      const variacaoTempoColeta = tempoAteColetaAnterior > 0
+        ? Math.round(((tempoAteColetaAtual - tempoAteColetaAnterior) / tempoAteColetaAnterior) * 100)
+        : 0;
+
+      const tempoTotalEntregaAtual = parseFloat(tempoTotalEntregaResult.rows[0]?.tempo_total_entrega || 0);
+      const tempoTotalEntregaAnterior = parseFloat(comparacaoResult.rows[0]?.tempo_total_entrega || 0);
+      const variacaoTempoTotal = tempoTotalEntregaAnterior > 0
+        ? Math.round(((tempoTotalEntregaAtual - tempoTotalEntregaAnterior) / tempoTotalEntregaAnterior) * 100)
+        : 0;
+
+      // Calcular taxa de cancelamento
+      const statusEntregas = statusEntregasResult.rows[0];
+      const totalEntregas = parseInt(statusEntregas?.total || 0);
+      const canceladas = parseInt(statusEntregas?.canceladas || 0);
+      const taxaCancelamento = totalEntregas > 0 ? ((canceladas / totalEntregas) * 100).toFixed(1) : '0';
+
+      // Resposta final
+      return res.json({
+        periodo: {
+          inicio: startDate,
+          fim: endDate,
+          cidade: cityFilter
+        },
+        metricas: {
+          tempoMedioAceite: {
+            valor: Math.round(tempoMedioAceiteAtual),
+            unidade: 'segundos',
+            variacao: variacaoTempoAceite
+          },
+          tempoAteColeta: {
+            valor: Math.round(tempoAteColetaAtual),
+            unidade: 'minutos',
+            variacao: variacaoTempoColeta
+          },
+          tempoTotalEntrega: {
+            valor: Math.round(tempoTotalEntregaAtual),
+            unidade: 'minutos',
+            variacao: variacaoTempoTotal
+          },
+          entregadoresAtivos: {
+            valor: parseInt(entregadoresAtivosResult.rows[0]?.total || 0),
+            descricao: 'agora online'
+          },
+          entregadoresOffline: {
+            valor: parseInt(entregadoresOfflineResult.rows[0]?.total || 0),
+            descricao: 'indisponíveis'
+          }
+        },
+        demandaDisponibilidade: demandaDisponibilidadeResult.rows.map(row => ({
+          hora: row.hora,
+          pedidosEmAberto: parseInt(row.pedidos_em_aberto)
+        })),
+        statusEntregas: {
+          emAberto: parseInt(statusEntregas?.em_aberto || 0),
+          emAndamento: parseInt(statusEntregas?.em_andamento || 0),
+          canceladas: canceladas,
+          concluidas: parseInt(statusEntregas?.concluidas || 0),
+          total: totalEntregas,
+          taxaCancelamento: parseFloat(taxaCancelamento)
+        },
+        empresasVolume: empresasVolumeSemanal
+      });
+    } catch (error) {
+      console.error("Erro ao buscar dados do dashboard operacional:", error);
+      return res.status(500).json({ message: "Erro ao buscar dados do dashboard operacional" });
+    }
+  });
+
+  // GET /api/admin/dashboard/cities - Listar cidades disponíveis para o dashboard
+  app.get("/api/admin/dashboard/cities", async (req, res) => {
+    try {
+      const { rows } = await pool.query(`
+        SELECT id, name, state
+        FROM service_locations
+        WHERE active = true
+        ORDER BY name
+      `);
+
+      return res.json(rows);
+    } catch (error) {
+      console.error("Erro ao buscar cidades do dashboard:", error);
+      return res.status(500).json({ message: "Erro ao buscar cidades" });
+    }
+  });
+
   // GET /api/v1/driver/vehicle-types - Listar tipos de veículos
   app.get("/api/v1/driver/vehicle-types", async (req, res) => {
     try {
