@@ -17008,6 +17008,346 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     }
   });
 
+  // ========================================
+  // NPS SURVEYS (Pesquisas de Satisfação)
+  // ========================================
+
+  // GET /api/nps-surveys - Listar todas as pesquisas (admin)
+  app.get("/api/nps-surveys", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(403).json({ message: "Acesso negado" });
+      }
+
+      const surveys = await storage.getAllNpsSurveys();
+
+      // Adicionar contagem de respostas para cada pesquisa
+      const surveysWithCount = await Promise.all(
+        surveys.map(async (survey) => {
+          const responses = await storage.getNpsResponsesBySurvey(survey.id);
+          return {
+            ...survey,
+            responseCount: responses.length,
+          };
+        })
+      );
+
+      return res.json(surveysWithCount);
+    } catch (error) {
+      console.error("Erro ao buscar pesquisas:", error);
+      return res.status(500).json({ message: "Erro ao buscar pesquisas" });
+    }
+  });
+
+  // POST /api/nps-surveys - Criar pesquisa
+  app.post("/api/nps-surveys", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(403).json({ message: "Acesso negado" });
+      }
+
+      const { title, description, items } = req.body;
+
+      if (!title) {
+        return res.status(400).json({ message: "Título é obrigatório" });
+      }
+
+      // Gerar slug único
+      const baseSlug = title
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)/g, "");
+      const timestamp = Date.now().toString(36);
+      const publicSlug = `${baseSlug}-${timestamp}`;
+
+      const survey = await storage.createNpsSurvey({
+        title,
+        description: description || null,
+        publicSlug,
+        active: true,
+      });
+
+      // Criar itens da pesquisa, se fornecidos
+      if (items && Array.isArray(items)) {
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          await storage.createNpsSurveyItem({
+            surveyId: survey.id,
+            label: item.label,
+            type: item.type || "nps",
+            displayOrder: i,
+            required: item.required !== false,
+          });
+        }
+      }
+
+      return res.status(201).json(survey);
+    } catch (error) {
+      console.error("Erro ao criar pesquisa:", error);
+      return res.status(500).json({ message: "Erro ao criar pesquisa" });
+    }
+  });
+
+  // GET /api/nps-surveys/:id - Detalhes de uma pesquisa (admin)
+  app.get("/api/nps-surveys/:id", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(403).json({ message: "Acesso negado" });
+      }
+
+      const { id } = req.params;
+      const survey = await storage.getNpsSurvey(id);
+
+      if (!survey) {
+        return res.status(404).json({ message: "Pesquisa não encontrada" });
+      }
+
+      const items = await storage.getNpsSurveyItems(id);
+
+      return res.json({ ...survey, items });
+    } catch (error) {
+      console.error("Erro ao buscar pesquisa:", error);
+      return res.status(500).json({ message: "Erro ao buscar pesquisa" });
+    }
+  });
+
+  // PUT /api/nps-surveys/:id - Atualizar pesquisa
+  app.put("/api/nps-surveys/:id", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(403).json({ message: "Acesso negado" });
+      }
+
+      const { id } = req.params;
+      const { title, description, active, items } = req.body;
+
+      const survey = await storage.updateNpsSurvey(id, {
+        title,
+        description,
+        active,
+      });
+
+      if (!survey) {
+        return res.status(404).json({ message: "Pesquisa não encontrada" });
+      }
+
+      // Atualizar itens, se fornecidos
+      if (items && Array.isArray(items)) {
+        // Buscar itens existentes
+        const existingItems = await storage.getNpsSurveyItems(id);
+        const existingItemIds = existingItems.map(i => i.id);
+        const newItemIds = items.filter(i => i.id).map(i => i.id);
+
+        // Remover itens que não estão mais na lista
+        for (const existingItem of existingItems) {
+          if (!newItemIds.includes(existingItem.id)) {
+            await storage.deleteNpsSurveyItem(existingItem.id);
+          }
+        }
+
+        // Atualizar ou criar itens
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          if (item.id && existingItemIds.includes(item.id)) {
+            await storage.updateNpsSurveyItem(item.id, {
+              label: item.label,
+              type: item.type,
+              displayOrder: i,
+              required: item.required,
+            });
+          } else {
+            await storage.createNpsSurveyItem({
+              surveyId: id,
+              label: item.label,
+              type: item.type || "nps",
+              displayOrder: i,
+              required: item.required !== false,
+            });
+          }
+        }
+      }
+
+      return res.json(survey);
+    } catch (error) {
+      console.error("Erro ao atualizar pesquisa:", error);
+      return res.status(500).json({ message: "Erro ao atualizar pesquisa" });
+    }
+  });
+
+  // DELETE /api/nps-surveys/:id - Deletar pesquisa
+  app.delete("/api/nps-surveys/:id", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(403).json({ message: "Acesso negado" });
+      }
+
+      const { id } = req.params;
+      await storage.deleteNpsSurvey(id);
+
+      return res.json({ message: "Pesquisa deletada com sucesso" });
+    } catch (error) {
+      console.error("Erro ao deletar pesquisa:", error);
+      return res.status(500).json({ message: "Erro ao deletar pesquisa" });
+    }
+  });
+
+  // GET /api/nps-surveys/:id/stats - Estatísticas da pesquisa
+  app.get("/api/nps-surveys/:id/stats", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(403).json({ message: "Acesso negado" });
+      }
+
+      const { id } = req.params;
+      const survey = await storage.getNpsSurvey(id);
+
+      if (!survey) {
+        return res.status(404).json({ message: "Pesquisa não encontrada" });
+      }
+
+      const stats = await storage.getNpsSurveyStats(id);
+      return res.json({ survey, ...stats });
+    } catch (error) {
+      console.error("Erro ao buscar estatísticas:", error);
+      return res.status(500).json({ message: "Erro ao buscar estatísticas" });
+    }
+  });
+
+  // GET /api/nps-surveys/:id/responses - Listar respostas da pesquisa
+  app.get("/api/nps-surveys/:id/responses", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(403).json({ message: "Acesso negado" });
+      }
+
+      const { id } = req.params;
+      const responses = await storage.getNpsResponsesBySurvey(id);
+
+      // Buscar itens de cada resposta
+      const responsesWithItems = await Promise.all(
+        responses.map(async (response) => {
+          const items = await storage.getNpsResponseItems(response.id);
+          return { ...response, items };
+        })
+      );
+
+      return res.json(responsesWithItems);
+    } catch (error) {
+      console.error("Erro ao buscar respostas:", error);
+      return res.status(500).json({ message: "Erro ao buscar respostas" });
+    }
+  });
+
+  // ========================================
+  // NPS PUBLIC ROUTES (Rotas públicas para responder pesquisas)
+  // ========================================
+
+  // GET /api/pesquisa/:slug - Obter pesquisa pública pelo slug
+  app.get("/api/pesquisa/:slug", async (req, res) => {
+    try {
+      const { slug } = req.params;
+      const survey = await storage.getNpsSurveyBySlug(slug);
+
+      if (!survey) {
+        return res.status(404).json({ message: "Pesquisa não encontrada" });
+      }
+
+      if (!survey.active) {
+        return res.status(410).json({ message: "Esta pesquisa não está mais disponível" });
+      }
+
+      // Verificar datas
+      const now = new Date();
+      if (survey.startsAt && new Date(survey.startsAt) > now) {
+        return res.status(425).json({ message: "Esta pesquisa ainda não está disponível" });
+      }
+      if (survey.endsAt && new Date(survey.endsAt) < now) {
+        return res.status(410).json({ message: "Esta pesquisa já foi encerrada" });
+      }
+
+      const items = await storage.getNpsSurveyItems(survey.id);
+
+      return res.json({
+        id: survey.id,
+        title: survey.title,
+        description: survey.description,
+        items: items.map(item => ({
+          id: item.id,
+          label: item.label,
+          type: item.type,
+          required: item.required,
+        })),
+      });
+    } catch (error) {
+      console.error("Erro ao buscar pesquisa pública:", error);
+      return res.status(500).json({ message: "Erro ao buscar pesquisa" });
+    }
+  });
+
+  // POST /api/pesquisa/:slug/responder - Responder pesquisa
+  app.post("/api/pesquisa/:slug/responder", async (req, res) => {
+    try {
+      const { slug } = req.params;
+      const { respondentName, respondentEmail, respondentPhone, answers } = req.body;
+
+      const survey = await storage.getNpsSurveyBySlug(slug);
+
+      if (!survey) {
+        return res.status(404).json({ message: "Pesquisa não encontrada" });
+      }
+
+      if (!survey.active) {
+        return res.status(410).json({ message: "Esta pesquisa não está mais disponível" });
+      }
+
+      // Verificar datas
+      const now = new Date();
+      if (survey.startsAt && new Date(survey.startsAt) > now) {
+        return res.status(425).json({ message: "Esta pesquisa ainda não está disponível" });
+      }
+      if (survey.endsAt && new Date(survey.endsAt) < now) {
+        return res.status(410).json({ message: "Esta pesquisa já foi encerrada" });
+      }
+
+      if (!answers || !Array.isArray(answers) || answers.length === 0) {
+        return res.status(400).json({ message: "Respostas são obrigatórias" });
+      }
+
+      // Obter IP e User Agent
+      const ipAddress = req.ip || req.headers["x-forwarded-for"]?.toString() || "";
+      const userAgent = req.headers["user-agent"] || "";
+
+      // Criar resposta
+      const response = await storage.createNpsResponse(
+        {
+          surveyId: survey.id,
+          respondentName: respondentName || null,
+          respondentEmail: respondentEmail || null,
+          respondentPhone: respondentPhone || null,
+        },
+        ipAddress,
+        userAgent
+      );
+
+      // Criar itens de resposta
+      const responseItems = answers.map((answer: { itemId: string; scoreValue?: number; textValue?: string }) => ({
+        responseId: response.id,
+        surveyItemId: answer.itemId,
+        scoreValue: answer.scoreValue !== undefined ? answer.scoreValue : null,
+        textValue: answer.textValue || null,
+      }));
+
+      await storage.createNpsResponseItems(responseItems);
+
+      return res.status(201).json({ message: "Resposta registrada com sucesso", responseId: response.id });
+    } catch (error) {
+      console.error("Erro ao registrar resposta:", error);
+      return res.status(500).json({ message: "Erro ao registrar resposta" });
+    }
+  });
+
   // Configurar Socket.IO
   const io = new SocketIOServer(httpServer, {
     cors: {

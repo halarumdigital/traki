@@ -1971,3 +1971,147 @@ export const insertCompanyBalanceBlockSchema = createInsertSchema(companyBalance
 
 export type CompanyBalanceBlock = typeof companyBalanceBlocks.$inferSelect;
 export type InsertCompanyBalanceBlock = z.infer<typeof insertCompanyBalanceBlockSchema>;
+
+// ========================================
+// NPS SURVEYS (Pesquisas de Satisfação NPS)
+// ========================================
+export const npsSurveys = pgTable("nps_surveys", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Informações da pesquisa
+  title: varchar("title", { length: 255 }).notNull(),
+  description: text("description"),
+
+  // Link público único para compartilhar
+  publicSlug: varchar("public_slug", { length: 100 }).notNull().unique(),
+
+  // Status
+  active: boolean("active").notNull().default(true),
+
+  // Datas
+  startsAt: timestamp("starts_at"),
+  endsAt: timestamp("ends_at"),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertNpsSurveySchema = createInsertSchema(npsSurveys, {
+  title: z.string().min(1, "Título é obrigatório").max(255),
+  description: z.string().optional(),
+  publicSlug: z.string().min(1, "Slug público é obrigatório").max(100),
+  active: z.boolean().default(true),
+  startsAt: z.string().optional().transform(val => val ? new Date(val) : undefined),
+  endsAt: z.string().optional().transform(val => val ? new Date(val) : undefined),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type NpsSurvey = typeof npsSurveys.$inferSelect;
+export type InsertNpsSurvey = z.infer<typeof insertNpsSurveySchema>;
+
+// ========================================
+// NPS SURVEY ITEMS (Itens/Perguntas da Pesquisa)
+// ========================================
+export const npsSurveyItems = pgTable("nps_survey_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Relacionamento com a pesquisa
+  surveyId: varchar("survey_id").notNull().references(() => npsSurveys.id, { onDelete: "cascade" }),
+
+  // Configurações do item
+  label: varchar("label", { length: 255 }).notNull(), // Texto da pergunta
+  type: varchar("type", { length: 20 }).notNull().default("nps"), // nps (0-10), text (livre)
+
+  // Ordem de exibição
+  displayOrder: integer("display_order").notNull().default(0),
+
+  // Se é obrigatório
+  required: boolean("required").notNull().default(true),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertNpsSurveyItemSchema = createInsertSchema(npsSurveyItems, {
+  surveyId: z.string().min(1, "Pesquisa é obrigatória"),
+  label: z.string().min(1, "Texto da pergunta é obrigatório").max(255),
+  type: z.enum(["nps", "text"]).default("nps"),
+  displayOrder: z.number().int().min(0).default(0),
+  required: z.boolean().default(true),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type NpsSurveyItem = typeof npsSurveyItems.$inferSelect;
+export type InsertNpsSurveyItem = z.infer<typeof insertNpsSurveyItemSchema>;
+
+// ========================================
+// NPS RESPONSES (Respostas das Pesquisas)
+// ========================================
+export const npsResponses = pgTable("nps_responses", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Relacionamento com a pesquisa
+  surveyId: varchar("survey_id").notNull().references(() => npsSurveys.id, { onDelete: "cascade" }),
+
+  // Identificação opcional do respondente
+  respondentName: varchar("respondent_name", { length: 255 }),
+  respondentEmail: varchar("respondent_email", { length: 255 }),
+  respondentPhone: varchar("respondent_phone", { length: 20 }),
+
+  // IP e User Agent para evitar respostas duplicadas
+  ipAddress: varchar("ip_address", { length: 45 }),
+  userAgent: text("user_agent"),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertNpsResponseSchema = createInsertSchema(npsResponses, {
+  surveyId: z.string().min(1, "Pesquisa é obrigatória"),
+  respondentName: z.string().optional(),
+  respondentEmail: z.string().email().optional().or(z.literal("")),
+  respondentPhone: z.string().optional(),
+}).omit({
+  id: true,
+  ipAddress: true,
+  userAgent: true,
+  createdAt: true,
+});
+
+export type NpsResponse = typeof npsResponses.$inferSelect;
+export type InsertNpsResponse = z.infer<typeof insertNpsResponseSchema>;
+
+// ========================================
+// NPS RESPONSE ITEMS (Respostas de cada item)
+// ========================================
+export const npsResponseItems = pgTable("nps_response_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Relacionamentos
+  responseId: varchar("response_id").notNull().references(() => npsResponses.id, { onDelete: "cascade" }),
+  surveyItemId: varchar("survey_item_id").notNull().references(() => npsSurveyItems.id, { onDelete: "cascade" }),
+
+  // Valores das respostas
+  scoreValue: integer("score_value"), // Para perguntas NPS (0-10)
+  textValue: text("text_value"), // Para perguntas de texto livre
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertNpsResponseItemSchema = createInsertSchema(npsResponseItems, {
+  responseId: z.string().min(1, "Resposta é obrigatória"),
+  surveyItemId: z.string().min(1, "Item da pesquisa é obrigatório"),
+  scoreValue: z.number().int().min(0).max(10).optional(),
+  textValue: z.string().optional(),
+}).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type NpsResponseItem = typeof npsResponseItems.$inferSelect;
+export type InsertNpsResponseItem = z.infer<typeof insertNpsResponseItemSchema>;

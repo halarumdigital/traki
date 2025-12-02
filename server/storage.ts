@@ -72,9 +72,21 @@ import {
   entregadorRotas,
   type EntregadorRota,
   type InsertEntregadorRota,
+  npsSurveys,
+  npsSurveyItems,
+  npsResponses,
+  npsResponseItems,
+  type NpsSurvey,
+  type InsertNpsSurvey,
+  type NpsSurveyItem,
+  type InsertNpsSurveyItem,
+  type NpsResponse,
+  type InsertNpsResponse,
+  type NpsResponseItem,
+  type InsertNpsResponseItem,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, desc, sql } from "drizzle-orm";
+import { eq, and, desc, sql, inArray } from "drizzle-orm";
 
 export interface IStorage {
   // ===== USERS =====
@@ -231,6 +243,41 @@ export interface IStorage {
 
   // ===== VIAGEM ENTREGAS =====
   createViagemEntrega(data: InsertViagemEntrega): Promise<ViagemEntrega>;
+
+  // ===== NPS SURVEYS =====
+  getAllNpsSurveys(): Promise<NpsSurvey[]>;
+  getNpsSurvey(id: string): Promise<NpsSurvey | undefined>;
+  getNpsSurveyBySlug(slug: string): Promise<NpsSurvey | undefined>;
+  createNpsSurvey(data: InsertNpsSurvey): Promise<NpsSurvey>;
+  updateNpsSurvey(id: string, data: Partial<InsertNpsSurvey>): Promise<NpsSurvey | undefined>;
+  deleteNpsSurvey(id: string): Promise<void>;
+
+  // ===== NPS SURVEY ITEMS =====
+  getNpsSurveyItems(surveyId: string): Promise<NpsSurveyItem[]>;
+  getNpsSurveyItem(id: string): Promise<NpsSurveyItem | undefined>;
+  createNpsSurveyItem(data: InsertNpsSurveyItem): Promise<NpsSurveyItem>;
+  updateNpsSurveyItem(id: string, data: Partial<InsertNpsSurveyItem>): Promise<NpsSurveyItem | undefined>;
+  deleteNpsSurveyItem(id: string): Promise<void>;
+
+  // ===== NPS RESPONSES =====
+  getNpsResponsesBySurvey(surveyId: string): Promise<NpsResponse[]>;
+  createNpsResponse(data: InsertNpsResponse, ipAddress?: string, userAgent?: string): Promise<NpsResponse>;
+
+  // ===== NPS RESPONSE ITEMS =====
+  getNpsResponseItems(responseId: string): Promise<NpsResponseItem[]>;
+  createNpsResponseItem(data: InsertNpsResponseItem): Promise<NpsResponseItem>;
+  createNpsResponseItems(items: InsertNpsResponseItem[]): Promise<NpsResponseItem[]>;
+
+  // ===== NPS STATISTICS =====
+  getNpsSurveyStats(surveyId: string): Promise<{
+    totalResponses: number;
+    promoters: number;
+    passives: number;
+    detractors: number;
+    npsScore: number;
+    averageScores: { itemId: string; label: string; average: number }[];
+    textResponses: { itemId: string; label: string; responses: string[] }[];
+  }>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1871,6 +1918,219 @@ export class DatabaseStorage implements IStorage {
       .update(users)
       .set({ fcmToken: null })
       .where(eq(users.fcmToken, fcmToken));
+  }
+
+  // ========================================
+  // NPS SURVEYS
+  // ========================================
+  async getAllNpsSurveys(): Promise<NpsSurvey[]> {
+    return await db.select().from(npsSurveys).orderBy(desc(npsSurveys.createdAt));
+  }
+
+  async getNpsSurvey(id: string): Promise<NpsSurvey | undefined> {
+    const [survey] = await db.select().from(npsSurveys).where(eq(npsSurveys.id, id));
+    return survey || undefined;
+  }
+
+  async getNpsSurveyBySlug(slug: string): Promise<NpsSurvey | undefined> {
+    const [survey] = await db.select().from(npsSurveys).where(eq(npsSurveys.publicSlug, slug));
+    return survey || undefined;
+  }
+
+  async createNpsSurvey(data: InsertNpsSurvey): Promise<NpsSurvey> {
+    const [survey] = await db.insert(npsSurveys).values(data).returning();
+    return survey;
+  }
+
+  async updateNpsSurvey(id: string, data: Partial<InsertNpsSurvey>): Promise<NpsSurvey | undefined> {
+    const [survey] = await db
+      .update(npsSurveys)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(npsSurveys.id, id))
+      .returning();
+    return survey || undefined;
+  }
+
+  async deleteNpsSurvey(id: string): Promise<void> {
+    await db.delete(npsSurveys).where(eq(npsSurveys.id, id));
+  }
+
+  // ========================================
+  // NPS SURVEY ITEMS
+  // ========================================
+  async getNpsSurveyItems(surveyId: string): Promise<NpsSurveyItem[]> {
+    return await db
+      .select()
+      .from(npsSurveyItems)
+      .where(eq(npsSurveyItems.surveyId, surveyId))
+      .orderBy(npsSurveyItems.displayOrder);
+  }
+
+  async getNpsSurveyItem(id: string): Promise<NpsSurveyItem | undefined> {
+    const [item] = await db.select().from(npsSurveyItems).where(eq(npsSurveyItems.id, id));
+    return item || undefined;
+  }
+
+  async createNpsSurveyItem(data: InsertNpsSurveyItem): Promise<NpsSurveyItem> {
+    const [item] = await db.insert(npsSurveyItems).values(data).returning();
+    return item;
+  }
+
+  async updateNpsSurveyItem(id: string, data: Partial<InsertNpsSurveyItem>): Promise<NpsSurveyItem | undefined> {
+    const [item] = await db
+      .update(npsSurveyItems)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(npsSurveyItems.id, id))
+      .returning();
+    return item || undefined;
+  }
+
+  async deleteNpsSurveyItem(id: string): Promise<void> {
+    await db.delete(npsSurveyItems).where(eq(npsSurveyItems.id, id));
+  }
+
+  // ========================================
+  // NPS RESPONSES
+  // ========================================
+  async getNpsResponsesBySurvey(surveyId: string): Promise<NpsResponse[]> {
+    return await db
+      .select()
+      .from(npsResponses)
+      .where(eq(npsResponses.surveyId, surveyId))
+      .orderBy(desc(npsResponses.createdAt));
+  }
+
+  async createNpsResponse(data: InsertNpsResponse, ipAddress?: string, userAgent?: string): Promise<NpsResponse> {
+    const [response] = await db
+      .insert(npsResponses)
+      .values({
+        ...data,
+        ipAddress: ipAddress || null,
+        userAgent: userAgent || null,
+      })
+      .returning();
+    return response;
+  }
+
+  // ========================================
+  // NPS RESPONSE ITEMS
+  // ========================================
+  async getNpsResponseItems(responseId: string): Promise<NpsResponseItem[]> {
+    return await db
+      .select()
+      .from(npsResponseItems)
+      .where(eq(npsResponseItems.responseId, responseId));
+  }
+
+  async createNpsResponseItem(data: InsertNpsResponseItem): Promise<NpsResponseItem> {
+    const [item] = await db.insert(npsResponseItems).values(data).returning();
+    return item;
+  }
+
+  async createNpsResponseItems(items: InsertNpsResponseItem[]): Promise<NpsResponseItem[]> {
+    if (items.length === 0) return [];
+    return await db.insert(npsResponseItems).values(items).returning();
+  }
+
+  // ========================================
+  // NPS STATISTICS
+  // ========================================
+  async getNpsSurveyStats(surveyId: string): Promise<{
+    totalResponses: number;
+    promoters: number;
+    passives: number;
+    detractors: number;
+    npsScore: number;
+    averageScores: { itemId: string; label: string; average: number }[];
+    textResponses: { itemId: string; label: string; responses: string[] }[];
+  }> {
+    // Buscar todas as respostas da pesquisa
+    const responses = await db
+      .select()
+      .from(npsResponses)
+      .where(eq(npsResponses.surveyId, surveyId));
+
+    const totalResponses = responses.length;
+
+    // Buscar itens da pesquisa
+    const surveyItems = await db
+      .select()
+      .from(npsSurveyItems)
+      .where(eq(npsSurveyItems.surveyId, surveyId))
+      .orderBy(npsSurveyItems.displayOrder);
+
+    // Buscar todas as respostas de itens
+    const responseIds = responses.map(r => r.id);
+    let allResponseItems: NpsResponseItem[] = [];
+
+    if (responseIds.length > 0) {
+      allResponseItems = await db
+        .select()
+        .from(npsResponseItems)
+        .where(inArray(npsResponseItems.responseId, responseIds));
+    }
+
+    // Calcular promotores, passivos e detratores (baseado no primeiro item NPS)
+    let promoters = 0;
+    let passives = 0;
+    let detractors = 0;
+
+    const npsItems = surveyItems.filter(item => item.type === "nps");
+    if (npsItems.length > 0) {
+      const firstNpsItemId = npsItems[0].id;
+      const firstNpsResponses = allResponseItems.filter(ri => ri.surveyItemId === firstNpsItemId && ri.scoreValue !== null);
+
+      for (const ri of firstNpsResponses) {
+        const score = ri.scoreValue!;
+        if (score >= 9) promoters++;
+        else if (score >= 7) passives++;
+        else detractors++;
+      }
+    }
+
+    const npsScore = totalResponses > 0
+      ? Math.round(((promoters - detractors) / totalResponses) * 100)
+      : 0;
+
+    // Calcular médias por item NPS
+    const averageScores = surveyItems
+      .filter(item => item.type === "nps")
+      .map(item => {
+        const itemResponses = allResponseItems.filter(
+          ri => ri.surveyItemId === item.id && ri.scoreValue !== null
+        );
+        const sum = itemResponses.reduce((acc, ri) => acc + (ri.scoreValue || 0), 0);
+        const average = itemResponses.length > 0 ? sum / itemResponses.length : 0;
+        return {
+          itemId: item.id,
+          label: item.label,
+          average: Math.round(average * 10) / 10,
+        };
+      });
+
+    // Coletar respostas de texto
+    const textResponses = surveyItems
+      .filter(item => item.type === "text")
+      .map(item => {
+        const itemResponses = allResponseItems.filter(
+          ri => ri.surveyItemId === item.id && ri.textValue
+        );
+        return {
+          itemId: item.id,
+          label: item.label,
+          responses: itemResponses.map(ri => ri.textValue!).filter(Boolean),
+        };
+      });
+
+    return {
+      totalResponses,
+      promoters,
+      passives,
+      detractors,
+      npsScore,
+      averageScores,
+      textResponses,
+    };
   }
 }
 

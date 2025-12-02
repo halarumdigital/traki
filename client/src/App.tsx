@@ -30,6 +30,8 @@ import MotoristasAtivos from "@/pages/motoristas-ativos";
 import MotoristasBloqueados from "@/pages/motoristas-bloqueados";
 import MotoristasAguardando from "@/pages/motoristas-aguardando";
 import Configuracoes from "@/pages/configuracoes";
+import Pesquisas from "@/pages/pesquisas";
+import PesquisaPublica from "@/pages/pesquisa-publica";
 import Register from "@/pages/register";
 import EmpresaLogin from "@/pages/empresa-login";
 import EmpresaRegister from "@/pages/empresa-register";
@@ -51,8 +53,19 @@ import NotFound from "@/pages/not-found";
 function Router() {
   const [location] = useLocation();
   const isAuthPage = location === "/" || location === "/register" || location === "/forgot-password";
+  const isPesquisaPage = location.startsWith("/pesquisa/");
   const isEmpresaAuthPage = location === "/empresa" || location === "/empresa/register";
   const isEmpresaPage = location.startsWith("/empresa/") && !isEmpresaAuthPage;
+
+  // Pesquisa pública (sem autenticação)
+  if (isPesquisaPage) {
+    return (
+      <Switch>
+        <Route path="/pesquisa/:slug" component={PesquisaPublica} />
+        <Route component={NotFound} />
+      </Switch>
+    );
+  }
 
   // Auth pages (admin login and register)
   if (isAuthPage) {
@@ -143,6 +156,7 @@ function Router() {
               <Route path="/admin/entregas-intermunicipais" component={AdminEntregasIntermunicipais} />
               <Route path="/admin/viagens-intermunicipais" component={AdminViagensIntermunicipais} />
               <Route path="/configuracoes" component={Configuracoes} />
+              <Route path="/pesquisas" component={Pesquisas} />
               <Route component={NotFound} />
             </Switch>
           </main>
