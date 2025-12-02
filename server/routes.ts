@@ -2489,9 +2489,12 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         .orderBy(desc(financialTransactions.createdAt));
 
       // Separar recargas e pagamentos para entregadores
+      // Inclui tipos antigos (charge_created, payment_confirmed) para compatibilidade
       const recharges = transactions.filter(t =>
         t.type === "recarga_criada" ||
-        t.type === "pagamento_confirmado"
+        t.type === "pagamento_confirmado" ||
+        t.type === "charge_created" ||
+        t.type === "payment_confirmed"
       );
 
       const payments = transactions.filter(t =>
