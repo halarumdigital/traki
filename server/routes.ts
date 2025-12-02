@@ -3570,6 +3570,15 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         return res.status(403).json({ message: "Apenas motoristas podem aceitar entregas" });
       }
 
+      // Verificar se o motorista está bloqueado
+      if (driver.blocked) {
+        return res.status(403).json({
+          success: false,
+          blocked: true,
+          message: "Seu cadastro foi desativado por violações nos termos de uso da Traki, para saber mais entre em contato com o suporte."
+        });
+      }
+
       const { rotaId, entregadorRotaId, dataViagem, entregasIds } = req.body;
 
       console.log("🚗 Motorista aceitando entregas:", {
@@ -4394,6 +4403,16 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       const driverId = getDriverIdFromRequest(req);
       if (!driverId) {
         return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      // Verificar se o motorista está bloqueado
+      const motorista = await storage.getDriver(driverId);
+      if (motorista?.blocked) {
+        return res.status(403).json({
+          success: false,
+          blocked: true,
+          message: "Seu cadastro foi desativado por violações nos termos de uso da Traki, para saber mais entre em contato com o suporte."
+        });
       }
 
       const { id } = req.params;
@@ -6699,8 +6718,15 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       const { id } = req.params;
       const { reason } = req.body;
 
-      // Atualizar motorista para bloqueado
-      await storage.updateDriver(id, { active: false });
+      // Atualizar motorista para bloqueado com campos específicos
+      await storage.updateDriver(id, {
+        active: false,
+        available: false, // Fica offline imediatamente
+        blocked: true,
+        blockedAt: new Date(),
+        blockedReason: reason || "Violação dos termos de uso",
+        blockedByUserId: req.session.userId
+      });
 
       // Adicionar nota de bloqueio
       if (reason) {
@@ -6712,7 +6738,10 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         });
       }
 
-      return res.json({ message: "Motorista bloqueado com sucesso" });
+      return res.json({
+        success: true,
+        message: "Motorista bloqueado com sucesso"
+      });
     } catch (error) {
       console.error("Erro ao bloquear motorista:", error);
       return res.status(500).json({ message: "Erro ao bloquear motorista" });
@@ -6729,8 +6758,14 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       const { id } = req.params;
       const { reason } = req.body;
 
-      // Atualizar motorista para ativo
-      await storage.updateDriver(id, { active: true });
+      // Atualizar motorista para ativo e limpar campos de bloqueio
+      await storage.updateDriver(id, {
+        active: true,
+        blocked: false,
+        blockedAt: null,
+        blockedReason: null,
+        blockedByUserId: null
+      });
 
       // Adicionar nota de desbloqueio
       if (reason) {
@@ -6742,7 +6777,10 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         });
       }
 
-      return res.json({ message: "Motorista desbloqueado com sucesso" });
+      return res.json({
+        success: true,
+        message: "Motorista desbloqueado com sucesso"
+      });
     } catch (error) {
       console.error("Erro ao desbloquear motorista:", error);
       return res.status(500).json({ message: "Erro ao desbloquear motorista" });
@@ -7456,9 +7494,10 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       const baseDistance = parseFloat(pricing.baseDistance);
       const stopPrice = parseFloat(pricing.stopPrice || "0");
       const returnPrice = parseFloat(pricing.returnPrice || "0");
+      const dynamicPrice = parseFloat(pricing.dynamicPrice || "0");
 
-      // Calcular preço base
-      let totalPrice = basePrice;
+      // Calcular preço base (inclui tarifa base + dinâmica)
+      let totalPrice = basePrice + dynamicPrice;
 
       // Calcular preço por distância (apenas se exceder a distância base)
       const extraDistance = Math.max(0, distanceKm - baseDistance);
@@ -7495,6 +7534,7 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         adminCommission: adminCommission.toFixed(2),
         breakdown: {
           basePrice: basePrice.toFixed(2),
+          dynamicPrice: dynamicPrice.toFixed(2),
           baseDistance: baseDistance.toFixed(2),
           distancePrice: distancePrice.toFixed(2),
           pricePerKm: pricePerDistance.toFixed(2),
@@ -7509,6 +7549,7 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         pricing: {
           stopPrice: stopPrice.toFixed(2),
           returnPrice: returnPrice.toFixed(2),
+          dynamicPrice: dynamicPrice.toFixed(2),
           cancellationFee: pricing.cancellationFee,
           waitingChargePerMinute: pricing.waitingChargePerMinute,
           freeWaitingTimeMins: pricing.freeWaitingTimeMins,
@@ -7592,9 +7633,10 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       const basePrice = parseFloat(pricing.basePrice);
       const pricePerDistance = parseFloat(pricing.pricePerDistance);
       const baseDistance = parseFloat(pricing.baseDistance);
+      const dynamicPrice = parseFloat(pricing.dynamicPrice || "0");
 
-      // Calcular preço base
-      let totalPrice = basePrice;
+      // Calcular preço base (inclui tarifa base + dinâmica)
+      let totalPrice = basePrice + dynamicPrice;
 
       // Calcular preço por distância (apenas se exceder a distância base)
       const extraDistance = Math.max(0, distance - baseDistance);
@@ -7603,6 +7645,7 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
 
       return res.json({
         basePrice: basePrice,
+        dynamicPrice: dynamicPrice,
         pricePerKm: pricePerDistance,
         baseDistance: baseDistance,
         distance: distance,
@@ -7727,9 +7770,10 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       const pricePerTime = parseFloat(pricing.pricePerTime);
       const baseDistance = parseFloat(pricing.baseDistance);
       const returnPrice = parseFloat(pricing.returnPrice || "0");
+      const dynamicPrice = parseFloat(pricing.dynamicPrice || "0");
 
-      // Calcular preço base
-      let totalPrice = basePrice;
+      // Calcular preço base (inclui tarifa base + dinâmica)
+      let totalPrice = basePrice + dynamicPrice;
 
       // Calcular preço por distância (apenas se exceder a distância base)
       const distanceInKm = distance ? parseFloat(distance) : 0;
@@ -7758,6 +7802,7 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
 
       console.log(`💰 Cálculo do preço:
   - Preço base: R$ ${basePrice.toFixed(2)}
+  - Dinâmica: R$ ${dynamicPrice.toFixed(2)}
   - Distância: ${distanceInKm.toFixed(2)} km (extra: ${extraDistance.toFixed(2)} km)
   - Preço por distância: R$ ${distancePrice.toFixed(2)}
   - Tempo: ${timeInMinutes} min
@@ -9455,6 +9500,40 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         });
       }
 
+      // Verifica se existe motorista bloqueado com o mesmo CPF
+      if (cpf) {
+        const blockedByCpf = await db
+          .select()
+          .from(drivers)
+          .where(and(eq(drivers.cpf, cpf), eq(drivers.blocked, true)));
+
+        if (blockedByCpf.length > 0) {
+          console.log(`🚫 Tentativa de cadastro com CPF bloqueado: ${cpf}`);
+          return res.status(403).json({
+            success: false,
+            blocked: true,
+            message: "Seu cadastro foi desativado por violações nos termos de uso da Traki, para saber mais entre em contato com o suporte."
+          });
+        }
+      }
+
+      // Verifica se existe motorista bloqueado com o mesmo email
+      if (email) {
+        const blockedByEmail = await db
+          .select()
+          .from(drivers)
+          .where(and(eq(drivers.email, email), eq(drivers.blocked, true)));
+
+        if (blockedByEmail.length > 0) {
+          console.log(`🚫 Tentativa de cadastro com email bloqueado: ${email}`);
+          return res.status(403).json({
+            success: false,
+            blocked: true,
+            message: "Seu cadastro foi desativado por violações nos termos de uso da Traki, para saber mais entre em contato com o suporte."
+          });
+        }
+      }
+
       // Processar código de indicação (se fornecido)
       let referrerDriver = null;
       if (referralCode) {
@@ -9727,9 +9806,19 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         });
       }
 
+      // Verifica se está bloqueado (verificação específica de bloqueio)
+      if (driver.blocked) {
+        return res.status(403).json({
+          success: false,
+          blocked: true,
+          message: "Seu cadastro foi desativado por violações nos termos de uso da Traki, para saber mais entre em contato com o suporte."
+        });
+      }
+
       // Verifica se está ativo (mas permite login mesmo sem aprovação)
       if (!driver.active) {
         return res.status(403).json({
+          success: false,
           message: "Sua conta foi desativada. Entre em contato com o suporte."
         });
       }
@@ -9847,6 +9936,72 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     }
   });
 
+  // GET /api/v1/driver/block-status - Verificar se motorista está bloqueado (para o app Flutter)
+  // Este endpoint permite que o app verifique periodicamente se o motorista foi bloqueado
+  app.get("/api/v1/driver/block-status", async (req, res) => {
+    try {
+      let driverId = req.session.driverId;
+
+      // Se não tiver sessão, tenta obter do token Bearer
+      if (!driverId) {
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          const token = authHeader.substring(7);
+          try {
+            const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf8'));
+            if (decoded.type === 'driver' && decoded.id) {
+              driverId = decoded.id;
+            }
+          } catch (e) {
+            console.error("Token inválido:", e);
+          }
+        }
+      }
+
+      if (!driverId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const driver = await storage.getDriver(driverId);
+
+      if (!driver) {
+        return res.status(404).json({ message: "Motorista não encontrado" });
+      }
+
+      // Se está bloqueado, retorna informações do bloqueio
+      if (driver.blocked) {
+        return res.json({
+          success: true,
+          blocked: true,
+          active: driver.active,
+          message: "Seu cadastro foi desativado por violações nos termos de uso da Traki, para saber mais entre em contato com o suporte.",
+          blockedAt: driver.blockedAt
+        });
+      }
+
+      // Se não está ativo por outro motivo
+      if (!driver.active) {
+        return res.json({
+          success: true,
+          blocked: false,
+          active: false,
+          message: "Sua conta foi desativada. Entre em contato com o suporte."
+        });
+      }
+
+      // Motorista está OK
+      return res.json({
+        success: true,
+        blocked: false,
+        active: true,
+        approve: driver.approve
+      });
+    } catch (error) {
+      console.error("Erro ao verificar status de bloqueio:", error);
+      return res.status(500).json({ message: "Erro ao verificar status de bloqueio" });
+    }
+  });
+
   // GET /api/v1/driver/me - Buscar perfil completo do motorista (com nomes, não só IDs)
   app.get("/api/v1/driver/me", async (req, res) => {
     try {
@@ -9892,6 +10047,15 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
 
       if (!driver) {
         return res.status(404).json({ message: "Motorista não encontrado" });
+      }
+
+      // Verificar se o motorista está bloqueado
+      if (driver.blocked) {
+        return res.status(403).json({
+          success: false,
+          blocked: true,
+          message: "Seu cadastro foi desativado por violações nos termos de uso da Traki, para saber mais entre em contato com o suporte."
+        });
       }
 
       // Buscar documentos do motorista - query simplificada
@@ -10264,6 +10428,16 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
 
       if (!driverId) {
         return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      // Verificar se o motorista está bloqueado
+      const driver = await storage.getDriver(driverId);
+      if (driver?.blocked) {
+        return res.status(403).json({
+          success: false,
+          blocked: true,
+          message: "Seu cadastro foi desativado por violações nos termos de uso da Traki, para saber mais entre em contato com o suporte."
+        });
       }
 
       const { pixKey, pixKeyType, amount } = req.body;
@@ -12020,6 +12194,15 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         return res.status(404).json({ message: "Motorista não encontrado" });
       }
 
+      // Verifica se está bloqueado
+      if (driver.blocked) {
+        return res.status(403).json({
+          success: false,
+          blocked: true,
+          message: "Seu cadastro foi desativado por violações nos termos de uso da Traki, para saber mais entre em contato com o suporte."
+        });
+      }
+
       // Verifica se está aprovado
       if (!driver.approve) {
         return res.status(403).json({
@@ -12034,10 +12217,11 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
         });
       }
 
-      // Atualiza disponibilidade
+      // Atualiza disponibilidade e heartbeat
       const newAvailability = availability === 1 || availability === true;
       await storage.updateDriver(driverId, {
-        available: newAvailability
+        available: newAvailability,
+        lastHeartbeat: newAvailability ? new Date() : null // Atualiza heartbeat ao ficar online
       });
 
       // 🔴 Emitir evento Socket.IO para o painel em tempo real

@@ -12,6 +12,7 @@ import { startMonthlyResetJob } from "./monthly-reset-job";
 import { startScheduledDeliveriesJob } from "./scheduled-deliveries-job";
 import { startViagemRemindersJob } from "./viagens-intermunicipais-reminder-job";
 import { startPaymentSyncJob } from "./scheduled-payments-job";
+import { startHeartbeatJob } from "./driver-heartbeat-job";
 
 const app = express();
 const httpServer = createServer(app);
@@ -126,5 +127,6 @@ app.use((req, res, next) => {
     startScheduledDeliveriesJob();
     startViagemRemindersJob();
     startPaymentSyncJob(io);
+    startHeartbeatJob(io); // Verificar motoristas inativos a cada 30s
   });
 })();

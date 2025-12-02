@@ -888,7 +888,7 @@ export class DatabaseStorage implements IStorage {
   async updateDriverLocation(id: string, latitude: string, longitude: string): Promise<void> {
     await db
       .update(drivers)
-      .set({ latitude, longitude, updatedAt: new Date() })
+      .set({ latitude, longitude, lastHeartbeat: new Date(), updatedAt: new Date() })
       .where(eq(drivers.id, id));
   }
 

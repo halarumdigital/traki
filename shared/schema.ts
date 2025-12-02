@@ -298,6 +298,9 @@ export const cityPrices = pgTable("city_prices", {
   stopPrice: numeric("stop_price", { precision: 10, scale: 2 }).default("0"),
   returnPrice: numeric("return_price", { precision: 10, scale: 2 }).default("0"),
 
+  // Preço Dinâmica (surge pricing)
+  dynamicPrice: numeric("dynamic_price", { precision: 10, scale: 2 }).default("0"),
+
   // Tipo de preço: entrega_rapida ou rota_intermunicipal
   tipo: varchar("tipo", { length: 20 }).notNull().default("entrega_rapida"),
   rotaIntermunicipalId: varchar("rota_intermunicipal_id").references(() => rotasIntermunicipais.id),
@@ -340,6 +343,12 @@ export const drivers = pgTable("drivers", {
   available: boolean("available").notNull().default(false),
   onDelivery: boolean("on_delivery").notNull().default(false), // Marcador se está em uma entrega
 
+  // Bloqueio de Motorista (por violações dos termos de uso)
+  blocked: boolean("blocked").notNull().default(false), // Se está bloqueado
+  blockedAt: timestamp("blocked_at"), // Data do bloqueio
+  blockedReason: text("blocked_reason"), // Motivo do bloqueio
+  blockedByUserId: varchar("blocked_by_user_id").references(() => users.id), // Quem bloqueou
+
   // Documents
   uploadedDocuments: boolean("uploaded_documents").notNull().default(false),
 
@@ -363,6 +372,9 @@ export const drivers = pgTable("drivers", {
 
   // Device Info
   deviceId: varchar("device_id", { length: 255 }), // IMEI ou ID único do dispositivo
+
+  // Heartbeat - Última atividade do motorista (usado para verificar se está realmente online)
+  lastHeartbeat: timestamp("last_heartbeat"), // Atualizado a cada ping do app
 
   // Referral System (Sistema de Indicação)
   referralCode: varchar("referral_code", { length: 50 }).unique(), // Código único do entregador

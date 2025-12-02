@@ -94,6 +94,7 @@ const priceSchema = z.object({
   cancellationFee: z.string().default("0"),
   stopPrice: z.string().default("0"),
   returnPrice: z.string().default("0"),
+  dynamicPrice: z.string().default("0"),
   active: z.boolean().default(true),
 }).refine((data) => {
   // Se for rota intermunicipal, precisa ter rotaIntermunicipalId
@@ -208,6 +209,7 @@ export default function Precos() {
       cancellationFee: "0",
       stopPrice: "0",
       returnPrice: "0",
+      dynamicPrice: "0",
       active: true,
     },
   });
@@ -239,6 +241,7 @@ export default function Precos() {
       cancellationFee: preco.cancellationFee,
       stopPrice: preco.stopPrice || "0",
       returnPrice: preco.returnPrice || "0",
+      dynamicPrice: preco.dynamicPrice || "0",
       active: preco.active,
     });
     setIsDialogOpen(true);
@@ -260,6 +263,7 @@ export default function Precos() {
       cancellationFee: "0",
       stopPrice: "0",
       returnPrice: "0",
+      dynamicPrice: "0",
       active: true,
     });
     setIsDialogOpen(true);
@@ -554,6 +558,20 @@ export default function Precos() {
                           render={({ field }) => (
                             <FormItem>
                               <FormLabel>Valor Volta (R$)</FormLabel>
+                              <FormControl>
+                                <Input type="number" step="0.01" {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+
+                        <FormField
+                          control={form.control}
+                          name="dynamicPrice"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Dinâmica (R$)</FormLabel>
                               <FormControl>
                                 <Input type="number" step="0.01" {...field} />
                               </FormControl>
