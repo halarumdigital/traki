@@ -300,6 +300,7 @@ export const cityPrices = pgTable("city_prices", {
 
   // Preço Dinâmica (surge pricing)
   dynamicPrice: numeric("dynamic_price", { precision: 10, scale: 2 }).default("0"),
+  dynamicPriceActive: boolean("dynamic_price_active").notNull().default(false),
 
   // Tipo de preço: entrega_rapida ou rota_intermunicipal
   tipo: varchar("tipo", { length: 20 }).notNull().default("entrega_rapida"),

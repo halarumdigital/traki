@@ -767,6 +767,8 @@ export class DatabaseStorage implements IStorage {
         cancellationFee: cityPrices.cancellationFee,
         stopPrice: cityPrices.stopPrice,
         returnPrice: cityPrices.returnPrice,
+        dynamicPrice: cityPrices.dynamicPrice,
+        dynamicPriceActive: cityPrices.dynamicPriceActive,
         tipo: cityPrices.tipo,
         rotaIntermunicipalId: cityPrices.rotaIntermunicipalId,
         rotaIntermunicipalNome: rotasIntermunicipais.nomeRota,

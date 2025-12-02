@@ -95,6 +95,7 @@ const priceSchema = z.object({
   stopPrice: z.string().default("0"),
   returnPrice: z.string().default("0"),
   dynamicPrice: z.string().default("0"),
+  dynamicPriceActive: z.boolean().default(false),
   active: z.boolean().default(true),
 }).refine((data) => {
   // Se for rota intermunicipal, precisa ter rotaIntermunicipalId
@@ -210,6 +211,7 @@ export default function Precos() {
       stopPrice: "0",
       returnPrice: "0",
       dynamicPrice: "0",
+      dynamicPriceActive: false,
       active: true,
     },
   });
@@ -242,6 +244,7 @@ export default function Precos() {
       stopPrice: preco.stopPrice || "0",
       returnPrice: preco.returnPrice || "0",
       dynamicPrice: preco.dynamicPrice || "0",
+      dynamicPriceActive: preco.dynamicPriceActive ?? false,
       active: preco.active,
     });
     setIsDialogOpen(true);
@@ -264,6 +267,7 @@ export default function Precos() {
       stopPrice: "0",
       returnPrice: "0",
       dynamicPrice: "0",
+      dynamicPriceActive: false,
       active: true,
     });
     setIsDialogOpen(true);
@@ -566,15 +570,45 @@ export default function Precos() {
                           )}
                         />
 
+                      </div>
+                    </div>
+
+                    {/* Tarifa Dinâmica */}
+                    <div className="space-y-2">
+                      <h3 className="font-medium">Tarifa Dinâmica</h3>
+                      <div className="rounded-lg border p-4 space-y-4">
+                        <FormField
+                          control={form.control}
+                          name="dynamicPriceActive"
+                          render={({ field }) => (
+                            <FormItem className="flex flex-row items-center justify-between">
+                              <div className="space-y-0.5">
+                                <FormLabel className="text-base">Ativar Tarifa Dinâmica</FormLabel>
+                                <FormDescription>
+                                  Quando ativado, o valor abaixo será somado ao preço da entrega rápida
+                                </FormDescription>
+                              </div>
+                              <FormControl>
+                                <Switch
+                                  checked={field.value}
+                                  onCheckedChange={field.onChange}
+                                />
+                              </FormControl>
+                            </FormItem>
+                          )}
+                        />
                         <FormField
                           control={form.control}
                           name="dynamicPrice"
                           render={({ field }) => (
                             <FormItem>
-                              <FormLabel>Dinâmica (R$)</FormLabel>
+                              <FormLabel>Valor Dinâmica (R$)</FormLabel>
                               <FormControl>
                                 <Input type="number" step="0.01" {...field} />
                               </FormControl>
+                              <FormDescription>
+                                Este valor será adicionado ao total quando a tarifa dinâmica estiver ativa
+                              </FormDescription>
                               <FormMessage />
                             </FormItem>
                           )}
