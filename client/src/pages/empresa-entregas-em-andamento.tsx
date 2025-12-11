@@ -1,6 +1,6 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -23,7 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Eye, User, MapPin, Truck, Loader2, CalendarIcon, Search, X, ChevronLeft, ChevronRight, Plus, XCircle, Clock, Package, RefreshCw, Ban } from "lucide-react";
+import { Eye, User, MapPin, Truck, Loader2, CalendarIcon, Search, X, ChevronLeft, ChevronRight, Plus, XCircle, Clock, Package, RefreshCw, Ban, Star, AlertTriangle } from "lucide-react";
 import { useState, useMemo, useEffect, useRef } from "react";
 import {
   Dialog,
@@ -44,6 +44,8 @@ import { ptBR } from "date-fns/locale";
 import { cn } from "@/lib/utils";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import "@/styles/google-maps-fix.css";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Checkbox } from "@/components/ui/checkbox";
 
 interface CancellationType {
   id: string;
@@ -58,6 +60,8 @@ interface Delivery {
   customerName: string | null;
   createdAt: string;
   driverName: string | null;
+  driverAvatar: string | null;
+  driverRating: string | null;
   status: string;
   pickupAddress: string;
   dropoffAddress: string;
@@ -1223,201 +1227,226 @@ export default function EmpresaEntregasEmAndamento() {
   ]);
 
   return (
-    <div className="p-8">
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle className="flex items-center gap-2">
-              <Truck className="h-6 w-6" />
-              Entregas em Andamento
-            </CardTitle>
-            <Button className="gap-2" onClick={handleNewDelivery}>
-              <Plus className="h-4 w-4" />
-              Entrega Rápida
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {/* Filtros */}
-          <div className="mb-6 space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-              {/* Filtro por Número do Pedido */}
-              <div className="space-y-2">
-                <Label htmlFor="search-order">Número do Pedido</Label>
-                <div className="relative">
-                  <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    id="search-order"
-                    type="text"
-                    placeholder="Buscar por nº pedido..."
-                    value={searchOrderNumber}
-                    onChange={(e) => setSearchOrderNumber(e.target.value)}
-                    className="pl-9"
-                  />
-                </div>
-              </div>
+    <div className="space-y-6 pb-8">
+      {/* Header */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div className="flex flex-col gap-2">
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
+            <Clock className="h-6 w-6 text-slate-500" />
+            Entregas em Andamento
+          </h1>
+          <p className="text-slate-500">Gerencie todas as entregas ativas em tempo real.</p>
+        </div>
 
-              {/* Filtro por Nome do Cliente */}
-              <div className="space-y-2">
-                <Label htmlFor="search-customer">Nome do Cliente</Label>
-                <div className="relative">
-                  <User className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    id="search-customer"
-                    type="text"
-                    placeholder="Buscar por cliente..."
-                    value={searchCustomerName}
-                    onChange={(e) => setSearchCustomerName(e.target.value)}
-                    className="pl-9"
-                  />
-                </div>
-              </div>
+        <Button className="bg-blue-600 hover:bg-blue-700 text-white shadow-sm" onClick={handleNewDelivery}>
+          <Plus className="mr-2 h-4 w-4" />
+          Nova Entrega
+        </Button>
+      </div>
 
-              {/* Filtro por Nome do Motorista */}
-              <div className="space-y-2">
-                <Label htmlFor="search-driver">Nome do Motorista</Label>
-                <div className="relative">
-                  <Truck className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    id="search-driver"
-                    type="text"
-                    placeholder="Buscar por motorista..."
-                    value={searchDriverName}
-                    onChange={(e) => setSearchDriverName(e.target.value)}
-                    className="pl-9"
-                  />
-                </div>
-              </div>
-
-              {/* Filtro por Data - De */}
-              <div className="space-y-2">
-                <Label>Data Inicial</Label>
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className={cn(
-                        "w-full justify-start text-left font-normal",
-                        !dateFrom && "text-muted-foreground"
-                      )}
-                    >
-                      <CalendarIcon className="mr-2 h-4 w-4" />
-                      {dateFrom ? format(dateFrom, "PPP", { locale: ptBR }) : "Selecione..."}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-auto p-0" align="start">
-                    <Calendar
-                      mode="single"
-                      selected={dateFrom}
-                      onSelect={setDateFrom}
-                      initialFocus
-                      locale={ptBR}
-                    />
-                  </PopoverContent>
-                </Popover>
-              </div>
-
-              {/* Filtro por Data - Até */}
-              <div className="space-y-2">
-                <Label>Data Final</Label>
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className={cn(
-                        "w-full justify-start text-left font-normal",
-                        !dateTo && "text-muted-foreground"
-                      )}
-                    >
-                      <CalendarIcon className="mr-2 h-4 w-4" />
-                      {dateTo ? format(dateTo, "PPP", { locale: ptBR }) : "Selecione..."}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-auto p-0" align="start">
-                    <Calendar
-                      mode="single"
-                      selected={dateTo}
-                      onSelect={setDateTo}
-                      initialFocus
-                      locale={ptBR}
-                    />
-                  </PopoverContent>
-                </Popover>
+      {/* Filtros */}
+      <Card className="shadow-sm border-slate-200">
+        <CardContent className="p-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+            {/* Filtro por Número do Pedido */}
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-slate-500">Número do Pedido</label>
+              <div className="relative">
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
+                <Input
+                  type="text"
+                  placeholder="Buscar por nº pedido..."
+                  value={searchOrderNumber}
+                  onChange={(e) => setSearchOrderNumber(e.target.value)}
+                  className="pl-9 bg-slate-50"
+                />
               </div>
             </div>
 
-            {/* Botão Limpar Filtros */}
-            {(searchOrderNumber || searchCustomerName || searchDriverName || dateFrom || dateTo) && (
-              <div className="flex justify-end">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={clearFilters}
-                  className="gap-2"
-                >
-                  <X className="h-4 w-4" />
-                  Limpar Filtros
-                </Button>
+            {/* Filtro por Nome do Cliente */}
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-slate-500">Nome do Cliente</label>
+              <div className="relative">
+                <User className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
+                <Input
+                  type="text"
+                  placeholder="Buscar por cliente..."
+                  value={searchCustomerName}
+                  onChange={(e) => setSearchCustomerName(e.target.value)}
+                  className="pl-9 bg-slate-50"
+                />
               </div>
-            )}
+            </div>
+
+            {/* Filtro por Nome do Motorista */}
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-slate-500">Nome do Motorista</label>
+              <div className="relative">
+                <Truck className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
+                <Input
+                  type="text"
+                  placeholder="Buscar por motorista..."
+                  value={searchDriverName}
+                  onChange={(e) => setSearchDriverName(e.target.value)}
+                  className="pl-9 bg-slate-50"
+                />
+              </div>
+            </div>
+
+            {/* Filtro por Data - De */}
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-slate-500">Data Inicial</label>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    className={cn(
+                      "w-full justify-start text-left font-normal bg-slate-50",
+                      !dateFrom && "text-muted-foreground"
+                    )}
+                  >
+                    <CalendarIcon className="mr-2 h-4 w-4" />
+                    {dateFrom ? format(dateFrom, "dd/MM/yyyy", { locale: ptBR }) : "Selecione..."}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  <Calendar
+                    mode="single"
+                    selected={dateFrom}
+                    onSelect={setDateFrom}
+                    initialFocus
+                    locale={ptBR}
+                  />
+                </PopoverContent>
+              </Popover>
+            </div>
+
+            {/* Filtro por Data - Até */}
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-slate-500">Data Final</label>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    className={cn(
+                      "w-full justify-start text-left font-normal bg-slate-50",
+                      !dateTo && "text-muted-foreground"
+                    )}
+                  >
+                    <CalendarIcon className="mr-2 h-4 w-4" />
+                    {dateTo ? format(dateTo, "dd/MM/yyyy", { locale: ptBR }) : "Selecione..."}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  <Calendar
+                    mode="single"
+                    selected={dateTo}
+                    onSelect={setDateTo}
+                    initialFocus
+                    locale={ptBR}
+                  />
+                </PopoverContent>
+              </Popover>
+            </div>
           </div>
 
-          {/* Contador de resultados */}
-          <div className="mb-4 text-sm text-muted-foreground">
-            Mostrando {startIndex + 1}-{Math.min(endIndex, filteredDeliveries.length)} de {filteredDeliveries.length} entregas filtradas ({deliveries.length} total)
-          </div>
+          {/* Botão Limpar Filtros */}
+          {(searchOrderNumber || searchCustomerName || searchDriverName || dateFrom || dateTo) && (
+            <div className="mt-4 flex justify-end">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={clearFilters}
+                className="h-8"
+              >
+                <X className="mr-2 h-3 w-3" />
+                Limpar Filtros
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
+      {/* Lista de Entregas */}
+      <Card className="shadow-sm border-slate-200">
+        <CardHeader className="px-6 py-4 border-b border-slate-100 flex flex-row items-center justify-between bg-white rounded-t-lg">
+          <div className="space-y-1">
+            <CardTitle className="text-base font-medium">Lista de Entregas</CardTitle>
+            <CardDescription>
+              Mostrando {filteredDeliveries.length > 0 ? startIndex + 1 : 0}-{Math.min(endIndex, filteredDeliveries.length)} de {filteredDeliveries.length} entregas filtradas ({deliveries.length} total)
+            </CardDescription>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
           {isLoading ? (
-            <div className="flex items-center justify-center py-8">
+            <div className="flex items-center justify-center py-16">
               <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
             </div>
           ) : filteredDeliveries.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              {deliveries.length === 0 ? "Nenhuma entrega em andamento no momento" : "Nenhum resultado encontrado com os filtros aplicados"}
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <Clock className="h-12 w-12 text-slate-300 mb-4" />
+              <h3 className="text-lg font-medium text-slate-600 mb-1">
+                Nenhuma entrega em andamento
+              </h3>
+              <p className="text-sm text-slate-400 max-w-sm">
+                {deliveries.length === 0 ? "Não há entregas ativas no momento" : "Nenhum resultado encontrado com os filtros aplicados"}
+              </p>
             </div>
           ) : (
             <div>
               <Table>
-                <TableHeader>
+                <TableHeader className="bg-slate-50">
                   <TableRow>
-                    <TableHead>Nº Pedido</TableHead>
-                    <TableHead>Cliente</TableHead>
-                    <TableHead>Data/Hora</TableHead>
-                    <TableHead>Motorista</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Valor</TableHead>
-                    <TableHead className="text-right">Ações</TableHead>
+                    <TableHead className="w-[220px] font-semibold text-slate-600">Nº Pedido</TableHead>
+                    <TableHead className="font-semibold text-slate-600">Cliente</TableHead>
+                    <TableHead className="font-semibold text-slate-600">Motorista</TableHead>
+                    <TableHead className="font-semibold text-slate-600">Status</TableHead>
+                    <TableHead className="font-semibold text-slate-600">Início / Previsão</TableHead>
+                    <TableHead className="font-semibold text-slate-600 text-right">Valor</TableHead>
+                    <TableHead className="w-[100px] text-center font-semibold text-slate-600">Ações</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {paginatedDeliveries.map((delivery) => (
-                  <TableRow key={delivery.id}>
-                    <TableCell className="font-mono text-xs">
+                  <TableRow key={delivery.id} className="hover:bg-slate-50/50 transition-colors">
+                    <TableCell className="font-mono text-xs text-slate-500 font-medium">
                       {delivery.requestNumber || delivery.id.substring(0, 8)}
                     </TableCell>
                     <TableCell>
-                      {delivery.customerName || <span className="text-muted-foreground italic">-</span>}
-                    </TableCell>
-                    <TableCell>
-                      {formatBrazilianDateTime(delivery.createdAt)}
+                      <div className="font-medium text-slate-900">{delivery.customerName || "-"}</div>
+                      <div className="text-xs text-slate-500 truncate max-w-[200px]" title={delivery.pickupAddress}>
+                        {delivery.pickupAddress}
+                      </div>
                     </TableCell>
                     <TableCell>
                       {delivery.driverName ? (
-                        <div className="flex items-center gap-2">
-                          <User className="h-4 w-4 text-muted-foreground" />
-                          {delivery.driverName}
+                        <div className="flex items-center gap-3">
+                          <Avatar className="h-9 w-9 border border-slate-200 bg-white">
+                            <AvatarImage src={delivery.driverAvatar || undefined} />
+                            <AvatarFallback>{delivery.driverName.substring(0, 2).toUpperCase()}</AvatarFallback>
+                          </Avatar>
+                          <div>
+                            <div className="font-medium text-sm text-slate-900">{delivery.driverName}</div>
+                            {delivery.driverRating && (
+                              <div className="flex items-center gap-1">
+                                <Star className="h-3 w-3 text-amber-500 fill-amber-500" />
+                                <span className="text-xs text-slate-500 font-medium">{parseFloat(delivery.driverRating).toFixed(1)}</span>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       ) : (
-                        <span className="text-muted-foreground italic">Aguardando</span>
+                        <span className="text-sm text-slate-400">Aguardando...</span>
                       )}
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-col gap-1">
                         <Badge
-                          className={
-                            statusMap[delivery.status]?.color ||
-                            "bg-gray-100 text-gray-700"
-                          }
+                          variant="secondary"
+                          className={cn(
+                            "font-medium border",
+                            statusMap[delivery.status]?.color || "bg-gray-100 text-gray-700"
+                          )}
                         >
                           {statusMap[delivery.status]?.label || delivery.status}
                         </Badge>
@@ -1430,35 +1459,28 @@ export default function EmpresaEntregasEmAndamento() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      {delivery.totalPrice ? (
-                        <div className="font-semibold text-green-600">
-                          {new Intl.NumberFormat("pt-BR", {
-                            style: "currency",
-                            currency: "BRL",
-                          }).format(parseFloat(delivery.totalPrice))}
+                      <div className="text-sm text-slate-900">
+                        {formatBrazilianDateTime(delivery.createdAt)}
+                      </div>
+                      {delivery.totalTime && (
+                        <div className="text-xs text-slate-500 flex items-center gap-1 mt-0.5">
+                          <Clock className="h-3 w-3" />
+                          Chegada aprox: {delivery.totalTime} min
                         </div>
-                      ) : (
-                        <span className="text-muted-foreground">-</span>
                       )}
                     </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleViewDetails(delivery)}
-                        >
-                          <Eye className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleCancelClick(delivery)}
-                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                        >
-                          <XCircle className="h-4 w-4" />
-                        </Button>
-                      </div>
+                    <TableCell className="text-right font-medium text-green-600">
+                      {delivery.totalPrice ? formatCurrency(parseFloat(delivery.totalPrice)) : "-"}
+                    </TableCell>
+                    <TableCell className="text-center">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-slate-500 hover:text-blue-600"
+                        onClick={() => handleViewDetails(delivery)}
+                      >
+                        <Eye className="h-4 w-4" />
+                      </Button>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -1467,8 +1489,8 @@ export default function EmpresaEntregasEmAndamento() {
 
             {/* Controles de paginação */}
             {totalPages > 1 && (
-              <div className="flex items-center justify-between mt-4">
-                <div className="text-sm text-muted-foreground">
+              <div className="flex items-center justify-between p-4 border-t border-slate-100">
+                <div className="text-sm text-slate-500">
                   Página {currentPage} de {totalPages}
                 </div>
                 <div className="flex gap-2">
@@ -1817,7 +1839,7 @@ export default function EmpresaEntregasEmAndamento() {
       {/* Modal de Nova Entrega */}
       <Dialog open={newDeliveryOpen} onOpenChange={setNewDeliveryOpen}>
         <DialogContent
-          className="max-w-7xl max-h-[90vh] p-0"
+          className="max-w-5xl h-[90vh] p-0 overflow-hidden flex flex-col"
           onInteractOutside={(e) => {
             const target = e.target as HTMLElement;
             if (target.closest('.pac-container')) {
@@ -1825,25 +1847,25 @@ export default function EmpresaEntregasEmAndamento() {
             }
           }}
         >
-          <div className="grid grid-cols-[400px_1fr] h-[90vh]">
-            {/* Left Side - Form */}
-            <div className="border-r overflow-y-auto p-6 space-y-6">
-              <div>
-                <DialogHeader>
-                  <DialogTitle>Nova Entrega</DialogTitle>
-                </DialogHeader>
-              </div>
+          <DialogHeader className="px-6 py-4 border-b shrink-0">
+            <DialogTitle>Nova Entrega</DialogTitle>
+            <p className="text-sm text-slate-500">Preencha os dados da entrega para solicitar um motorista.</p>
+          </DialogHeader>
 
-              {/* Endereço de Retirada */}
-              <div className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <MapPin className="h-4 w-4 text-primary" />
-                  <h3 className="font-semibold">Endereço de Retirada</h3>
+          <div className="flex-1 overflow-hidden grid grid-cols-1 lg:grid-cols-2">
+            {/* Left Column - Form */}
+            <div className="overflow-y-auto p-6 space-y-8 bg-white border-r">
+
+              {/* Pickup Address */}
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 text-blue-600 font-medium">
+                  <MapPin className="h-4 w-4" />
+                  <h3 className="text-sm uppercase tracking-wide">Endereço de Retirada</h3>
                 </div>
 
                 <div className="space-y-3">
-                  <div>
-                    <Label htmlFor="pickupAddress" className="text-xs">Endereço</Label>
+                  <div className="space-y-1">
+                    <Label htmlFor="pickupAddress" className="text-xs text-slate-500">Endereço</Label>
                     <Input
                       id="pickupAddress"
                       value={deliveryForm.pickupAddress}
@@ -1851,13 +1873,13 @@ export default function EmpresaEntregasEmAndamento() {
                         setDeliveryForm({ ...deliveryForm, pickupAddress: e.target.value })
                       }
                       placeholder="Rua, Avenida..."
-                      className="h-9"
+                      className="bg-slate-50"
                     />
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <Label htmlFor="pickupNumber" className="text-xs">Número</Label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <Label htmlFor="pickupNumber" className="text-xs text-slate-500">Número</Label>
                       <Input
                         id="pickupNumber"
                         value={deliveryForm.pickupNumber}
@@ -1865,12 +1887,11 @@ export default function EmpresaEntregasEmAndamento() {
                           setDeliveryForm({ ...deliveryForm, pickupNumber: e.target.value })
                         }
                         placeholder="123"
-                        className="h-9"
+                        className="bg-slate-50"
                       />
                     </div>
-
-                    <div>
-                      <Label htmlFor="pickupNeighborhood" className="text-xs">Bairro</Label>
+                    <div className="space-y-1">
+                      <Label htmlFor="pickupNeighborhood" className="text-xs text-slate-500">Bairro</Label>
                       <Input
                         id="pickupNeighborhood"
                         value={deliveryForm.pickupNeighborhood}
@@ -1878,13 +1899,13 @@ export default function EmpresaEntregasEmAndamento() {
                           setDeliveryForm({ ...deliveryForm, pickupNeighborhood: e.target.value })
                         }
                         placeholder="Centro"
-                        className="h-9"
+                        className="bg-slate-50"
                       />
                     </div>
                   </div>
 
-                  <div>
-                    <Label htmlFor="pickupReference" className="text-xs">Referência</Label>
+                  <div className="space-y-1">
+                    <Label htmlFor="pickupReference" className="text-xs text-slate-500">Referência</Label>
                     <Input
                       id="pickupReference"
                       value={deliveryForm.pickupReference}
@@ -1892,178 +1913,160 @@ export default function EmpresaEntregasEmAndamento() {
                         setDeliveryForm({ ...deliveryForm, pickupReference: e.target.value })
                       }
                       placeholder="Próximo ao..."
-                      className="h-9"
+                      className="bg-slate-50"
                     />
                   </div>
                 </div>
               </div>
 
-              {/* Endereços de Entrega */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
+              <div className="h-px bg-slate-100" />
+
+              {/* Delivery Address */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between text-green-600 font-medium">
                   <div className="flex items-center gap-2">
-                    <MapPin className="h-4 w-4 text-green-600" />
-                    <h3 className="font-semibold">Endereços de Entrega</h3>
+                    <MapPin className="h-4 w-4" />
+                    <h3 className="text-sm uppercase tracking-wide">Endereços de Entrega</h3>
                   </div>
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
                     onClick={addDeliveryPoint}
-                    className="h-7"
+                    className="h-7 w-7 p-0 rounded-full border-green-200 text-green-600 hover:bg-green-50 hover:text-green-700"
                   >
-                    <Plus className="h-3 w-3" />
+                    <Plus className="h-4 w-4" />
                   </Button>
                 </div>
 
-                <Accordion
-                  type="single"
-                  collapsible
-                  value={openAccordionItem}
-                  onValueChange={setOpenAccordionItem}
-                >
-                  {deliveryPoints.map((point, index) => (
-                    <AccordionItem key={point.id} value={point.id.toString()} className="border rounded-lg px-3 mb-2">
-                      <AccordionTrigger className="hover:no-underline py-3">
-                        <div className="flex items-center justify-between w-full pr-2">
-                          <span className="text-sm font-medium">
-                            Ponto {index + 1}
-                            {point.address && ` - ${point.address.substring(0, 30)}${point.address.length > 30 ? '...' : ''}`}
-                          </span>
-                          {deliveryPoints.length > 1 && (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                removeDeliveryPoint(point.id);
-                              }}
-                              className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
-                            >
-                              <X className="h-4 w-4" />
-                            </Button>
-                          )}
-                        </div>
-                      </AccordionTrigger>
-                      <AccordionContent className="space-y-3 pb-4">
-                        <div>
-                          <Label htmlFor={`customerName-${point.id}`} className="text-xs">Nome do Cliente</Label>
-                          <Input
-                            id={`customerName-${point.id}`}
-                            value={point.customerName}
-                            onChange={(e) => updateDeliveryPoint(point.id, "customerName", e.target.value)}
-                            placeholder="Nome completo do cliente"
-                            className="h-9"
-                          />
-                        </div>
+                {/* Point Cards */}
+                {deliveryPoints.map((point, index) => (
+                  <div key={point.id} className="border rounded-lg p-4 bg-slate-50/50 space-y-3 relative group">
+                    {deliveryPoints.length > 1 && (
+                      <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => removeDeliveryPoint(point.id)}
+                          className="h-6 w-6 text-slate-400 hover:text-red-500"
+                        >
+                          <X className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    )}
 
-                        <div>
-                          <Label htmlFor={`customerWhatsapp-${point.id}`} className="text-xs">WhatsApp (opcional)</Label>
-                          <Input
-                            id={`customerWhatsapp-${point.id}`}
-                            value={point.customerWhatsapp}
-                            onChange={(e) => {
-                              const value = e.target.value.replace(/\D/g, "");
-                              updateDeliveryPoint(point.id, "customerWhatsapp", value);
-                            }}
-                            placeholder="11999999999"
-                            maxLength={11}
-                            className="h-9"
-                          />
-                        </div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-semibold text-slate-500 uppercase">Ponto {index + 1}</span>
+                    </div>
 
-                        <div>
-                          <Label htmlFor={`deliveryCep-${point.id}`} className="text-xs">CEP</Label>
-                          <div className="flex gap-2">
-                            <Input
-                              ref={(el) => deliveryCepInputRefs.current[point.id] = el}
-                              id={`deliveryCep-${point.id}`}
-                              value={point.cep}
-                              onChange={(e) => {
-                                const value = e.target.value;
-                                updateDeliveryPoint(point.id, "cep", value);
-                                if (value.replace(/\D/g, "").length === 8) {
-                                  handleCepLookup(point.id, value);
-                                }
-                              }}
-                              placeholder="00000-000"
-                              maxLength={9}
-                              className="h-9"
-                            />
-                            {lookingUpCep && (
-                              <div className="flex items-center">
-                                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                              </div>
-                            )}
+                    <div className="space-y-1">
+                      <Label className="text-xs text-slate-500">Nome do Cliente</Label>
+                      <Input
+                        value={point.customerName}
+                        onChange={(e) => updateDeliveryPoint(point.id, "customerName", e.target.value)}
+                        placeholder="Nome completo do cliente"
+                        className="bg-white"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <Label className="text-xs text-slate-500">WhatsApp (opcional)</Label>
+                      <Input
+                        value={point.customerWhatsapp}
+                        onChange={(e) => {
+                          const value = e.target.value.replace(/\D/g, "");
+                          updateDeliveryPoint(point.id, "customerWhatsapp", value);
+                        }}
+                        placeholder="11999999999"
+                        maxLength={11}
+                        className="bg-white"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <Label className="text-xs text-slate-500">CEP</Label>
+                      <div className="flex gap-2">
+                        <Input
+                          ref={(el) => deliveryCepInputRefs.current[point.id] = el}
+                          value={point.cep}
+                          onChange={(e) => {
+                            const value = e.target.value;
+                            updateDeliveryPoint(point.id, "cep", value);
+                            if (value.replace(/\D/g, "").length === 8) {
+                              handleCepLookup(point.id, value);
+                            }
+                          }}
+                          placeholder="00000-000"
+                          maxLength={9}
+                          className="bg-white"
+                        />
+                        {lookingUpCep && (
+                          <div className="flex items-center">
+                            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                           </div>
-                        </div>
+                        )}
+                      </div>
+                    </div>
 
-                        <div>
-                          <Label htmlFor={`deliveryAddress-${point.id}`} className="text-xs">Endereço</Label>
-                          <Input
-                            ref={(el) => deliveryAddressInputRefs.current[point.id] = el}
-                            id={`deliveryAddress-${point.id}`}
-                            value={point.address}
-                            onChange={(e) => updateDeliveryPoint(point.id, "address", e.target.value)}
-                            placeholder="Rua, Avenida..."
-                            className="h-9"
-                          />
-                        </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-slate-500">Endereço</Label>
+                      <Input
+                        ref={(el) => deliveryAddressInputRefs.current[point.id] = el}
+                        value={point.address}
+                        onChange={(e) => updateDeliveryPoint(point.id, "address", e.target.value)}
+                        placeholder="Rua, Avenida..."
+                        className="bg-white"
+                      />
+                    </div>
 
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <Label htmlFor={`deliveryNumber-${point.id}`} className="text-xs">Número</Label>
-                            <Input
-                              id={`deliveryNumber-${point.id}`}
-                              value={point.number}
-                              onChange={(e) => updateDeliveryPoint(point.id, "number", e.target.value)}
-                              placeholder="123"
-                              className="h-9"
-                            />
-                          </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label className="text-xs text-slate-500">Número</Label>
+                        <Input
+                          value={point.number}
+                          onChange={(e) => updateDeliveryPoint(point.id, "number", e.target.value)}
+                          placeholder="123"
+                          className="bg-white"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs text-slate-500">Bairro</Label>
+                        <Input
+                          value={point.neighborhood}
+                          onChange={(e) => updateDeliveryPoint(point.id, "neighborhood", e.target.value)}
+                          placeholder="Centro"
+                          className="bg-white"
+                        />
+                      </div>
+                    </div>
 
-                          <div>
-                            <Label htmlFor={`deliveryNeighborhood-${point.id}`} className="text-xs">Bairro</Label>
-                            <Input
-                              id={`deliveryNeighborhood-${point.id}`}
-                              value={point.neighborhood}
-                              onChange={(e) => updateDeliveryPoint(point.id, "neighborhood", e.target.value)}
-                              placeholder="Centro"
-                              className="h-9"
-                            />
-                          </div>
-                        </div>
-
-                        <div>
-                          <Label htmlFor={`deliveryReference-${point.id}`} className="text-xs">Referência</Label>
-                          <Input
-                            id={`deliveryReference-${point.id}`}
-                            value={point.reference}
-                            onChange={(e) => updateDeliveryPoint(point.id, "reference", e.target.value)}
-                            placeholder="Próximo ao..."
-                            className="h-9"
-                          />
-                        </div>
-                      </AccordionContent>
-                    </AccordionItem>
-                  ))}
-                </Accordion>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-slate-500">Referência</Label>
+                      <Input
+                        value={point.reference}
+                        onChange={(e) => updateDeliveryPoint(point.id, "reference", e.target.value)}
+                        placeholder="Próximo ao..."
+                        className="bg-white"
+                      />
+                    </div>
+                  </div>
+                ))}
               </div>
 
               {/* Categoria do Veículo */}
               {deliveryPoints.some(point => point.address) && (
-                <div className="space-y-2">
-                  <h3 className="font-semibold">Categoria do Veículo</h3>
-                  <div>
-                    <Label htmlFor="vehicleType" className="text-xs">Selecione a categoria</Label>
+                <div className="space-y-3">
+                  <h3 className="font-medium text-slate-700">Categoria do Veículo</h3>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-slate-500">Selecione a categoria</Label>
                     <Select
                       value={deliveryForm.vehicleTypeId}
                       onValueChange={(value) =>
                         setDeliveryForm({ ...deliveryForm, vehicleTypeId: value })
                       }
                     >
-                      <SelectTrigger id="vehicleType" className="h-9">
+                      <SelectTrigger className="bg-slate-50">
                         <SelectValue placeholder="Escolha a categoria..." />
                       </SelectTrigger>
                       <SelectContent>
@@ -2077,59 +2080,53 @@ export default function EmpresaEntregasEmAndamento() {
                   </div>
                 </div>
               )}
-  
-              {/* Opção de Retorno - DESTACADO */}
-              <div className="flex items-center space-x-4 py-6 border-t-4 border-red-500 bg-red-50 rounded-xl p-6 shadow-lg">
-                <div className="flex items-center space-x-3">
-                  <input
-                    type="checkbox"
+
+              {/* Options */}
+              <div className="space-y-4 pt-2">
+                <div className="bg-red-50 border border-red-100 p-4 rounded-lg flex items-start gap-3">
+                  <Checkbox
                     id="needsReturn"
                     checked={deliveryForm.needsReturn}
-                    onChange={(e) => {
-                      setDeliveryForm({ ...deliveryForm, needsReturn: e.target.checked });
+                    onCheckedChange={(checked) => {
+                      setDeliveryForm({ ...deliveryForm, needsReturn: checked as boolean });
                     }}
-                    className="h-6 w-6 rounded border-red-300 text-red-600 focus:ring-red-500 focus:ring-2 focus:ring-offset-2"
+                    className="mt-1 data-[state=checked]:bg-red-600 data-[state=checked]:border-red-600 border-red-300"
                   />
-                  <div>
-                    <Label htmlFor="needsReturn" className="text-base font-bold cursor-pointer text-red-800">
-                      ⚠️ Motorista precisa voltar após a entrega?
+                  <div className="space-y-1">
+                    <Label htmlFor="needsReturn" className="font-semibold text-red-900 flex items-center gap-2 cursor-pointer">
+                      <AlertTriangle className="h-4 w-4 text-red-600" />
+                      Motorista precisa voltar após a entrega?
                     </Label>
+                    <p className="text-xs text-red-700">Marque esta opção se o motorista precisar retornar ao ponto de retirada (ex: devolver maquininha, assinar documento).</p>
                   </div>
                 </div>
-              </div>
 
-              {/* Opção de Agendamento */}
-              <div className="space-y-3">
-                <div className="flex items-center space-x-3">
-                  <input
-                    type="checkbox"
+                <div className="flex items-center space-x-2 px-1">
+                  <Checkbox
                     id="isScheduled"
                     checked={deliveryForm.isScheduled}
-                    onChange={(e) => {
+                    onCheckedChange={(checked) => {
                       setDeliveryForm({
                         ...deliveryForm,
-                        isScheduled: e.target.checked,
-                        scheduledDate: e.target.checked ? deliveryForm.scheduledDate : null,
-                        scheduledTime: e.target.checked ? deliveryForm.scheduledTime : "",
+                        isScheduled: checked as boolean,
+                        scheduledDate: checked ? deliveryForm.scheduledDate : null,
+                        scheduledTime: checked ? deliveryForm.scheduledTime : "",
                       });
                     }}
-                    className="h-5 w-5 rounded border-gray-300 text-primary focus:ring-primary focus:ring-2 focus:ring-offset-2"
                   />
-                  <Label htmlFor="isScheduled" className="text-sm font-medium cursor-pointer">
-                    Agendar entrega?
-                  </Label>
+                  <Label htmlFor="isScheduled" className="cursor-pointer font-medium text-slate-700">Agendar entrega?</Label>
                 </div>
 
                 {deliveryForm.isScheduled && (
-                  <div className="space-y-3 pl-8 border-l-2 border-primary/30">
-                    <div>
-                      <Label className="text-xs">Data do Agendamento</Label>
+                  <div className="space-y-3 pl-6 border-l-2 border-blue-200 ml-3">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-slate-500">Data do Agendamento</Label>
                       <Popover>
                         <PopoverTrigger asChild>
                           <Button
                             variant="outline"
                             className={cn(
-                              "w-full justify-start text-left font-normal h-9",
+                              "w-full justify-start text-left font-normal bg-slate-50",
                               !deliveryForm.scheduledDate && "text-muted-foreground"
                             )}
                           >
@@ -2156,87 +2153,48 @@ export default function EmpresaEntregasEmAndamento() {
                       </Popover>
                     </div>
 
-                    <div>
-                      <Label htmlFor="scheduledTime" className="text-xs">Hora do Agendamento</Label>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-slate-500">Hora do Agendamento</Label>
                       <Input
-                        id="scheduledTime"
                         type="time"
                         value={deliveryForm.scheduledTime}
                         onChange={(e) =>
                           setDeliveryForm({ ...deliveryForm, scheduledTime: e.target.value })
                         }
-                        className="h-9"
+                        className="bg-slate-50"
                       />
                     </div>
                   </div>
                 )}
               </div>
 
-              {/* Botões de Ação */}
-              <div className="flex gap-2 pt-4 border-t">
-                <Button
-                  variant="outline"
-                  onClick={() => setNewDeliveryOpen(false)}
-                  disabled={createDeliveryMutation.isPending}
-                  className="flex-1 h-9"
-                >
-                  Cancelar
-                </Button>
-                <Button
-                  onClick={handleSubmitDelivery}
-                  disabled={createDeliveryMutation.isPending}
-                  className="flex-1 h-9"
-                >
-                  {createDeliveryMutation.isPending ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Criando...
-                    </>
-                  ) : (
-                    "Criar Entrega"
-                  )}
-                </Button>
-              </div>
             </div>
 
-            {/* Right Side - Map */}
-            <div className="relative flex flex-col">
+            {/* Right Column - Map */}
+            <div className="bg-slate-100 flex flex-col relative overflow-hidden">
               {/* Route Info Header */}
               {routeInfo && (
-                <div className="p-4 border-b bg-muted/30 flex items-center justify-between">
+                <div className="p-4 border-b bg-white flex items-center justify-between shrink-0">
                   <div className="flex items-center gap-6">
                     <div className="flex items-center gap-2">
-                      <Clock className="h-4 w-4 text-muted-foreground" />
+                      <Clock className="h-4 w-4 text-slate-400" />
                       <div>
-                        <p className="text-xs text-muted-foreground">Duração</p>
-                        <p className="font-semibold">{routeInfo.duration}m</p>
+                        <p className="text-xs text-slate-500">Duração</p>
+                        <p className="font-semibold text-slate-900">{routeInfo.duration}m</p>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <MapPin className="h-4 w-4 text-muted-foreground" />
+                      <MapPin className="h-4 w-4 text-slate-400" />
                       <div>
-                        <p className="text-xs text-muted-foreground">Distância</p>
-                        <p className="font-semibold">{routeInfo.distance.toFixed(1)} km</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div>
-                        <p className="text-xs text-muted-foreground">Valor Total</p>
-                        <p className="font-semibold text-green-600">
-                          {routeInfo.price
-                            ? new Intl.NumberFormat("pt-BR", {
-                                style: "currency",
-                                currency: "BRL",
-                              }).format(routeInfo.price)
-                            : "-"}
-                        </p>
+                        <p className="text-xs text-slate-500">Distância</p>
+                        <p className="font-semibold text-slate-900">{routeInfo.distance.toFixed(1)} km</p>
                       </div>
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* Map */}
+              {/* Map Area */}
               <div className="flex-1 relative">
                 {deliveryForm.vehicleTypeId ? (
                   <>
@@ -2245,24 +2203,72 @@ export default function EmpresaEntregasEmAndamento() {
                       className="absolute inset-0 w-full h-full"
                     />
                     {calculatingRoute && (
-                      <div className="absolute inset-0 flex items-center justify-center bg-muted/50 z-10">
+                      <div className="absolute inset-0 flex items-center justify-center bg-slate-100/80 z-10">
                         <div className="flex flex-col items-center gap-2">
-                          <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                          <span className="text-sm text-muted-foreground">Calculando rota...</span>
+                          <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+                          <span className="text-sm text-slate-600">Calculando rota...</span>
                         </div>
                       </div>
                     )}
                   </>
                 ) : (
-                  <div className="absolute inset-0 flex items-center justify-center bg-muted/30">
-                    <div className="text-center text-muted-foreground">
-                      <MapPin className="h-12 w-12 mx-auto mb-2 opacity-50" />
-                      <p className="text-sm">Preencha os endereços e selecione a categoria</p>
-                      <p className="text-xs">para visualizar a rota no mapa</p>
+                  <div className="absolute inset-0 flex items-center justify-center p-8">
+                    <div className="absolute inset-0 opacity-10"
+                         style={{
+                           backgroundImage: 'radial-gradient(#cbd5e1 1px, transparent 1px)',
+                           backgroundSize: '20px 20px'
+                         }}>
+                    </div>
+
+                    <div className="text-center space-y-4 max-w-sm relative z-10">
+                      <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center shadow-sm mx-auto mb-6">
+                        <MapPin className="h-8 w-8 text-slate-300" />
+                      </div>
+                      <h3 className="text-lg font-medium text-slate-900">Visualização da Rota</h3>
+                      <p className="text-sm text-slate-500">Preencha os endereços de retirada e entrega para visualizar o trajeto estimado no mapa.</p>
                     </div>
                   </div>
                 )}
               </div>
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="border-t p-4 bg-slate-50 shrink-0 flex justify-between sm:justify-between items-center w-full">
+            <Button
+              variant="outline"
+              onClick={() => setNewDeliveryOpen(false)}
+              disabled={createDeliveryMutation.isPending}
+              className="border-slate-200 text-slate-700 hover:bg-slate-100"
+            >
+              Cancelar
+            </Button>
+            <div className="flex items-center gap-4">
+              <div className="text-right mr-4 hidden sm:block">
+                <span className="text-xs text-slate-500 block">Total Estimado</span>
+                <span className="font-bold text-lg text-slate-900">
+                  {routeInfo?.price
+                    ? new Intl.NumberFormat("pt-BR", {
+                        style: "currency",
+                        currency: "BRL",
+                      }).format(routeInfo.price)
+                    : "R$ 0,00"}
+                </span>
+              </div>
+              <Button
+                onClick={handleSubmitDelivery}
+                disabled={createDeliveryMutation.isPending}
+                className="bg-blue-600 hover:bg-blue-700 text-white min-w-[140px]"
+              >
+                {createDeliveryMutation.isPending ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Criando...
+                  </>
+                ) : (
+                  "Criar Entrega"
+                )}
+              </Button>
             </div>
           </div>
         </DialogContent>

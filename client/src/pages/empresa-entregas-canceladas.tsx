@@ -1,6 +1,6 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -15,7 +15,22 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Eye, User, MapPin, Truck, XCircle, Loader2, CalendarIcon, Search, X, ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
+import {
+  Eye,
+  User,
+  MapPin,
+  Truck,
+  XCircle,
+  Loader2,
+  CalendarIcon,
+  Search,
+  X,
+  ChevronLeft,
+  ChevronRight,
+  RotateCcw,
+  Package,
+  XCircle as XCircleIcon
+} from "lucide-react";
 import { useState, useMemo, useEffect } from "react";
 import {
   Dialog,
@@ -196,261 +211,270 @@ export default function EmpresaEntregasCanceladas() {
   };
 
   return (
-    <div className="p-8">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <XCircle className="h-6 w-6" />
-            Entregas Canceladas
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {/* Filtros */}
-          <div className="mb-6 space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-              {/* Filtro por Número do Pedido */}
-              <div className="space-y-2">
-                <Label htmlFor="search-order">Número do Pedido</Label>
-                <div className="relative">
-                  <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    id="search-order"
-                    type="text"
-                    placeholder="Buscar por nº pedido..."
-                    value={searchOrderNumber}
-                    onChange={(e) => setSearchOrderNumber(e.target.value)}
-                    className="pl-9"
-                  />
-                </div>
-              </div>
+    <div className="space-y-6 pb-8">
+      {/* Header */}
+      <div className="flex flex-col gap-2">
+        <h1 className="text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
+          <XCircleIcon className="h-6 w-6 text-slate-500" />
+          Entregas Canceladas
+        </h1>
+        <p className="text-slate-500">Lista de entregas que foram canceladas.</p>
+      </div>
 
-              {/* Filtro por Nome do Cliente */}
-              <div className="space-y-2">
-                <Label htmlFor="search-customer">Nome do Cliente</Label>
-                <div className="relative">
-                  <User className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    id="search-customer"
-                    type="text"
-                    placeholder="Buscar por cliente..."
-                    value={searchCustomerName}
-                    onChange={(e) => setSearchCustomerName(e.target.value)}
-                    className="pl-9"
-                  />
-                </div>
-              </div>
-
-              {/* Filtro por Nome do Motorista */}
-              <div className="space-y-2">
-                <Label htmlFor="search-driver">Nome do Motorista</Label>
-                <div className="relative">
-                  <Truck className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    id="search-driver"
-                    type="text"
-                    placeholder="Buscar por motorista..."
-                    value={searchDriverName}
-                    onChange={(e) => setSearchDriverName(e.target.value)}
-                    className="pl-9"
-                  />
-                </div>
-              </div>
-
-              {/* Filtro por Data - De */}
-              <div className="space-y-2">
-                <Label>Data Inicial</Label>
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className={cn(
-                        "w-full justify-start text-left font-normal",
-                        !dateFrom && "text-muted-foreground"
-                      )}
-                    >
-                      <CalendarIcon className="mr-2 h-4 w-4" />
-                      {dateFrom ? format(dateFrom, "PPP", { locale: ptBR }) : "Selecione..."}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-auto p-0" align="start">
-                    <Calendar
-                      mode="single"
-                      selected={dateFrom}
-                      onSelect={setDateFrom}
-                      initialFocus
-                      locale={ptBR}
-                    />
-                  </PopoverContent>
-                </Popover>
-              </div>
-
-              {/* Filtro por Data - Até */}
-              <div className="space-y-2">
-                <Label>Data Final</Label>
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className={cn(
-                        "w-full justify-start text-left font-normal",
-                        !dateTo && "text-muted-foreground"
-                      )}
-                    >
-                      <CalendarIcon className="mr-2 h-4 w-4" />
-                      {dateTo ? format(dateTo, "PPP", { locale: ptBR }) : "Selecione..."}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-auto p-0" align="start">
-                    <Calendar
-                      mode="single"
-                      selected={dateTo}
-                      onSelect={setDateTo}
-                      initialFocus
-                      locale={ptBR}
-                    />
-                  </PopoverContent>
-                </Popover>
+      {/* Filtros */}
+      <Card className="shadow-sm border-slate-200">
+        <CardContent className="p-4">
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+            {/* Filtro por Número do Pedido */}
+            <div className="space-y-1.5">
+              <Label htmlFor="search-order" className="text-xs font-medium text-slate-600">Número do Pedido</Label>
+              <div className="relative">
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
+                <Input
+                  id="search-order"
+                  type="text"
+                  placeholder="Buscar..."
+                  value={searchOrderNumber}
+                  onChange={(e) => setSearchOrderNumber(e.target.value)}
+                  className="pl-9 bg-slate-50 border-slate-200 h-9 text-sm"
+                />
               </div>
             </div>
 
-            {/* Botão Limpar Filtros */}
-            {(searchOrderNumber || searchCustomerName || searchDriverName || dateFrom || dateTo) && (
-              <div className="flex justify-end">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={clearFilters}
-                  className="gap-2"
-                >
-                  <X className="h-4 w-4" />
-                  Limpar Filtros
-                </Button>
+            {/* Filtro por Nome do Cliente */}
+            <div className="space-y-1.5">
+              <Label htmlFor="search-customer" className="text-xs font-medium text-slate-600">Nome do Cliente</Label>
+              <div className="relative">
+                <User className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
+                <Input
+                  id="search-customer"
+                  type="text"
+                  placeholder="Buscar..."
+                  value={searchCustomerName}
+                  onChange={(e) => setSearchCustomerName(e.target.value)}
+                  className="pl-9 bg-slate-50 border-slate-200 h-9 text-sm"
+                />
               </div>
-            )}
+            </div>
+
+            {/* Filtro por Nome do Motorista */}
+            <div className="space-y-1.5">
+              <Label htmlFor="search-driver" className="text-xs font-medium text-slate-600">Motorista</Label>
+              <div className="relative">
+                <Truck className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
+                <Input
+                  id="search-driver"
+                  type="text"
+                  placeholder="Buscar..."
+                  value={searchDriverName}
+                  onChange={(e) => setSearchDriverName(e.target.value)}
+                  className="pl-9 bg-slate-50 border-slate-200 h-9 text-sm"
+                />
+              </div>
+            </div>
+
+            {/* Filtro por Data - De */}
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium text-slate-600">Data Inicial</Label>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    className={cn(
+                      "w-full justify-start text-left font-normal h-9 text-sm bg-slate-50 border-slate-200",
+                      !dateFrom && "text-slate-400"
+                    )}
+                  >
+                    <CalendarIcon className="mr-2 h-4 w-4" />
+                    {dateFrom ? format(dateFrom, "dd/MM/yyyy", { locale: ptBR }) : "Selecione..."}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  <Calendar
+                    mode="single"
+                    selected={dateFrom}
+                    onSelect={setDateFrom}
+                    initialFocus
+                    locale={ptBR}
+                  />
+                </PopoverContent>
+              </Popover>
+            </div>
+
+            {/* Filtro por Data - Até */}
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium text-slate-600">Data Final</Label>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    className={cn(
+                      "w-full justify-start text-left font-normal h-9 text-sm bg-slate-50 border-slate-200",
+                      !dateTo && "text-slate-400"
+                    )}
+                  >
+                    <CalendarIcon className="mr-2 h-4 w-4" />
+                    {dateTo ? format(dateTo, "dd/MM/yyyy", { locale: ptBR }) : "Selecione..."}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  <Calendar
+                    mode="single"
+                    selected={dateTo}
+                    onSelect={setDateTo}
+                    initialFocus
+                    locale={ptBR}
+                  />
+                </PopoverContent>
+              </Popover>
+            </div>
           </div>
 
-          {/* Contador de resultados */}
-          <div className="mb-4 text-sm text-muted-foreground">
-            Mostrando {startIndex + 1}-{Math.min(endIndex, filteredDeliveries.length)} de {filteredDeliveries.length} entregas filtradas ({deliveries.length} total)
-          </div>
+          {/* Botão Limpar Filtros */}
+          {(searchOrderNumber || searchCustomerName || searchDriverName || dateFrom || dateTo) && (
+            <div className="flex justify-end mt-4">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={clearFilters}
+                className="gap-2 h-8 text-xs"
+              >
+                <X className="h-3 w-3" />
+                Limpar Filtros
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
+      {/* Lista de Entregas */}
+      <Card className="shadow-sm border-slate-200">
+        <CardHeader className="px-6 py-4 border-b border-slate-100 flex flex-row items-center justify-between bg-white rounded-t-lg">
+          <div className="space-y-1">
+            <CardTitle className="text-base font-medium">Histórico de Cancelamentos</CardTitle>
+            <CardDescription>
+              Mostrando {filteredDeliveries.length > 0 ? startIndex + 1 : 0}-{Math.min(endIndex, filteredDeliveries.length)} de {filteredDeliveries.length} entregas filtradas ({deliveries.length} total)
+            </CardDescription>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
           {isLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+            <div className="flex items-center justify-center py-16">
+              <Loader2 className="h-8 w-8 animate-spin text-slate-400" />
             </div>
           ) : filteredDeliveries.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              {deliveries.length === 0 ? "Nenhuma entrega cancelada" : "Nenhum resultado encontrado com os filtros aplicados"}
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <div className="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center mb-4">
+                <Package className="h-8 w-8 text-slate-400" />
+              </div>
+              <h3 className="text-lg font-medium text-slate-900 mb-1">Nenhuma entrega cancelada</h3>
+              <p className="text-sm text-slate-500 max-w-sm">
+                {deliveries.length === 0
+                  ? "Não há entregas canceladas no momento."
+                  : "Nenhum resultado encontrado com os filtros aplicados."}
+              </p>
             </div>
           ) : (
-            <div>
+            <>
               <Table>
-                <TableHeader>
+                <TableHeader className="bg-slate-50">
                   <TableRow>
-                    <TableHead>Nº Pedido</TableHead>
-                    <TableHead>Cliente</TableHead>
-                    <TableHead>Data Criação</TableHead>
-                    <TableHead>Data Cancelamento</TableHead>
-                    <TableHead>Motorista</TableHead>
-                    <TableHead>Valor</TableHead>
-                    <TableHead className="text-right">Ações</TableHead>
+                    <TableHead className="w-[220px] font-semibold text-slate-600">Nº Pedido</TableHead>
+                    <TableHead className="font-semibold text-slate-600">Cliente</TableHead>
+                    <TableHead className="font-semibold text-slate-600">Data Criação</TableHead>
+                    <TableHead className="font-semibold text-slate-600">Data Cancelamento</TableHead>
+                    <TableHead className="font-semibold text-slate-600">Motorista</TableHead>
+                    <TableHead className="font-semibold text-slate-600 text-right">Valor</TableHead>
+                    <TableHead className="w-[100px] text-center font-semibold text-slate-600">Ações</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {paginatedDeliveries.map((delivery) => (
-                  <TableRow key={delivery.id}>
-                    <TableCell className="font-mono text-xs">
-                      {delivery.requestNumber || delivery.id.substring(0, 8)}
-                    </TableCell>
-                    <TableCell>
-                      {delivery.customerName || <span className="text-muted-foreground italic">-</span>}
-                    </TableCell>
-                    <TableCell>
-                      {formatBrazilianDateTime(delivery.createdAt)}
-                    </TableCell>
-                    <TableCell>
-                      {delivery.cancelledAt ? formatBrazilianDateTime(delivery.cancelledAt) : "-"}
-                    </TableCell>
-                    <TableCell>
-                      {delivery.driverName ? (
-                        <div className="flex items-center gap-2">
-                          <User className="h-4 w-4 text-muted-foreground" />
-                          {delivery.driverName}
+                    <TableRow key={delivery.id} className="hover:bg-slate-50/50 transition-colors">
+                      <TableCell className="font-mono text-xs text-slate-500 font-medium">
+                        {delivery.requestNumber || delivery.id.substring(0, 8)}
+                      </TableCell>
+                      <TableCell>
+                        <div className="font-medium text-slate-900">{delivery.customerName || "-"}</div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="text-sm text-slate-900">{formatBrazilianDateTime(delivery.createdAt)}</div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="text-sm text-slate-900">{delivery.cancelledAt ? formatBrazilianDateTime(delivery.cancelledAt) : "-"}</div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="text-sm text-slate-500">{delivery.driverName || "-"}</div>
+                      </TableCell>
+                      <TableCell className="text-right font-medium text-green-600">
+                        {delivery.totalPrice
+                          ? new Intl.NumberFormat("pt-BR", {
+                              style: "currency",
+                              currency: "BRL",
+                            }).format(parseFloat(delivery.totalPrice))
+                          : "-"}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center justify-center gap-2">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleViewDetails(delivery)}
+                            className="h-8 w-8 text-slate-500 hover:text-blue-600"
+                          >
+                            <Eye className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleRelaunchClick(delivery.id)}
+                            className="h-8 w-8 text-green-600 hover:text-green-700 hover:bg-green-50"
+                            disabled={relaunchMutation.isPending}
+                          >
+                            {relaunchMutation.isPending ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <RotateCcw className="h-4 w-4" />
+                            )}
+                          </Button>
                         </div>
-                      ) : (
-                        <span className="text-muted-foreground italic">-</span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {delivery.totalPrice ? (
-                        <div className="font-semibold text-green-600">
-                          {new Intl.NumberFormat("pt-BR", {
-                            style: "currency",
-                            currency: "BRL",
-                          }).format(parseFloat(delivery.totalPrice))}
-                        </div>
-                      ) : (
-                        <span className="text-muted-foreground">-</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleViewDetails(delivery)}
-                        >
-                          <Eye className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleRelaunchClick(delivery.id)}
-                          className="text-green-600 hover:text-green-700 hover:bg-green-50"
-                          disabled={relaunchMutation.isPending}
-                        >
-                          {relaunchMutation.isPending ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <RefreshCw className="h-4 w-4" />
-                          )}
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
 
-            {/* Controles de paginação */}
-            {totalPages > 1 && (
-              <div className="flex items-center justify-between mt-4">
-                <div className="text-sm text-muted-foreground">
-                  Página {currentPage} de {totalPages}
+              {/* Controles de paginação */}
+              {totalPages > 1 && (
+                <div className="flex items-center justify-between px-6 py-4 border-t border-slate-100">
+                  <div className="text-sm text-slate-500">
+                    Página {currentPage} de {totalPages}
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                      disabled={currentPage === 1}
+                      className="h-8 text-xs"
+                    >
+                      <ChevronLeft className="h-4 w-4 mr-1" />
+                      Anterior
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                      disabled={currentPage === totalPages}
+                      className="h-8 text-xs"
+                    >
+                      Próxima
+                      <ChevronRight className="h-4 w-4 ml-1" />
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-                    disabled={currentPage === 1}
-                  >
-                    <ChevronLeft className="h-4 w-4 mr-1" />
-                    Anterior
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-                    disabled={currentPage === totalPages}
-                  >
-                    Próxima
-                    <ChevronRight className="h-4 w-4 ml-1" />
-                  </Button>
-                </div>
-              </div>
-            )}
-            </div>
+              )}
+            </>
           )}
         </CardContent>
       </Card>

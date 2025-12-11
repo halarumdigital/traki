@@ -1,7 +1,7 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -248,205 +248,225 @@ export default function EmpresaEntregasConcluidas() {
   };
 
   return (
-    <div className="p-8">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <CheckCircle2 className="h-6 w-6" />
-            Entregas Concluídas
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {/* Filtros */}
-          <div className="mb-6 space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-              {/* Filtro por Número do Pedido */}
-              <div className="space-y-2">
-                <Label htmlFor="search-order">Número do Pedido</Label>
-                <div className="relative">
-                  <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    id="search-order"
-                    type="text"
-                    placeholder="Buscar por nº pedido..."
-                    value={searchOrderNumber}
-                    onChange={(e) => setSearchOrderNumber(e.target.value)}
-                    className="pl-9"
-                  />
-                </div>
-              </div>
+    <div className="space-y-6 pb-8">
+      {/* Header */}
+      <div className="flex flex-col gap-2">
+        <h1 className="text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
+          <CheckCircle2 className="h-6 w-6 text-slate-500" />
+          Entregas Concluídas
+        </h1>
+        <p className="text-slate-500">Histórico completo de entregas finalizadas.</p>
+      </div>
 
-              {/* Filtro por Nome do Cliente */}
-              <div className="space-y-2">
-                <Label htmlFor="search-customer">Nome do Cliente</Label>
-                <div className="relative">
-                  <User className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    id="search-customer"
-                    type="text"
-                    placeholder="Buscar por cliente..."
-                    value={searchCustomerName}
-                    onChange={(e) => setSearchCustomerName(e.target.value)}
-                    className="pl-9"
-                  />
-                </div>
-              </div>
-
-              {/* Filtro por Nome do Motorista */}
-              <div className="space-y-2">
-                <Label htmlFor="search-driver">Nome do Motorista</Label>
-                <div className="relative">
-                  <Truck className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    id="search-driver"
-                    type="text"
-                    placeholder="Buscar por motorista..."
-                    value={searchDriverName}
-                    onChange={(e) => setSearchDriverName(e.target.value)}
-                    className="pl-9"
-                  />
-                </div>
-              </div>
-
-              {/* Filtro por Data - De */}
-              <div className="space-y-2">
-                <Label>Data Inicial</Label>
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className={cn(
-                        "w-full justify-start text-left font-normal",
-                        !dateFrom && "text-muted-foreground"
-                      )}
-                    >
-                      <CalendarIcon className="mr-2 h-4 w-4" />
-                      {dateFrom ? format(dateFrom, "PPP", { locale: ptBR }) : "Selecione..."}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-auto p-0" align="start">
-                    <Calendar
-                      mode="single"
-                      selected={dateFrom}
-                      onSelect={setDateFrom}
-                      initialFocus
-                      locale={ptBR}
-                    />
-                  </PopoverContent>
-                </Popover>
-              </div>
-
-              {/* Filtro por Data - Até */}
-              <div className="space-y-2">
-                <Label>Data Final</Label>
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className={cn(
-                        "w-full justify-start text-left font-normal",
-                        !dateTo && "text-muted-foreground"
-                      )}
-                    >
-                      <CalendarIcon className="mr-2 h-4 w-4" />
-                      {dateTo ? format(dateTo, "PPP", { locale: ptBR }) : "Selecione..."}
-                    </Button>
-                  </PopoverTrigger>
-                  <PopoverContent className="w-auto p-0" align="start">
-                    <Calendar
-                      mode="single"
-                      selected={dateTo}
-                      onSelect={setDateTo}
-                      initialFocus
-                      locale={ptBR}
-                    />
-                  </PopoverContent>
-                </Popover>
+      {/* Filtros */}
+      <Card className="shadow-sm border-slate-200">
+        <CardContent className="p-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+            {/* Filtro por Número do Pedido */}
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-slate-500">Número do Pedido</label>
+              <div className="relative">
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
+                <Input
+                  type="text"
+                  placeholder="Buscar por nº pedido..."
+                  value={searchOrderNumber}
+                  onChange={(e) => setSearchOrderNumber(e.target.value)}
+                  className="pl-9 bg-slate-50"
+                />
               </div>
             </div>
 
-            {/* Botão Limpar Filtros */}
-            {(searchOrderNumber || searchCustomerName || searchDriverName || dateFrom || dateTo) && (
-              <div className="flex justify-end">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={clearFilters}
-                  className="gap-2"
-                >
-                  <X className="h-4 w-4" />
-                  Limpar Filtros
-                </Button>
+            {/* Filtro por Nome do Cliente */}
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-slate-500">Nome do Cliente</label>
+              <div className="relative">
+                <User className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
+                <Input
+                  type="text"
+                  placeholder="Buscar por cliente..."
+                  value={searchCustomerName}
+                  onChange={(e) => setSearchCustomerName(e.target.value)}
+                  className="pl-9 bg-slate-50"
+                />
               </div>
-            )}
+            </div>
+
+            {/* Filtro por Nome do Motorista */}
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-slate-500">Nome do Motorista</label>
+              <div className="relative">
+                <Truck className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400" />
+                <Input
+                  type="text"
+                  placeholder="Buscar por motorista..."
+                  value={searchDriverName}
+                  onChange={(e) => setSearchDriverName(e.target.value)}
+                  className="pl-9 bg-slate-50"
+                />
+              </div>
+            </div>
+
+            {/* Filtro por Data - De */}
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-slate-500">Data Inicial</label>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    className={cn(
+                      "w-full justify-start text-left font-normal bg-slate-50",
+                      !dateFrom && "text-muted-foreground"
+                    )}
+                  >
+                    <CalendarIcon className="mr-2 h-4 w-4" />
+                    {dateFrom ? format(dateFrom, "dd/MM/yyyy", { locale: ptBR }) : "Selecione..."}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  <Calendar
+                    mode="single"
+                    selected={dateFrom}
+                    onSelect={setDateFrom}
+                    initialFocus
+                    locale={ptBR}
+                  />
+                </PopoverContent>
+              </Popover>
+            </div>
+
+            {/* Filtro por Data - Até */}
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-slate-500">Data Final</label>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    className={cn(
+                      "w-full justify-start text-left font-normal bg-slate-50",
+                      !dateTo && "text-muted-foreground"
+                    )}
+                  >
+                    <CalendarIcon className="mr-2 h-4 w-4" />
+                    {dateTo ? format(dateTo, "dd/MM/yyyy", { locale: ptBR }) : "Selecione..."}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-auto p-0" align="start">
+                  <Calendar
+                    mode="single"
+                    selected={dateTo}
+                    onSelect={setDateTo}
+                    initialFocus
+                    locale={ptBR}
+                  />
+                </PopoverContent>
+              </Popover>
+            </div>
           </div>
 
-          {/* Contador de resultados */}
-          <div className="mb-4 text-sm text-muted-foreground">
-            Mostrando {startIndex + 1}-{Math.min(endIndex, filteredDeliveries.length)} de {filteredDeliveries.length} entregas filtradas ({deliveries.length} total)
-          </div>
+          {/* Botão Limpar Filtros */}
+          {(searchOrderNumber || searchCustomerName || searchDriverName || dateFrom || dateTo) && (
+            <div className="mt-4 flex justify-end">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={clearFilters}
+                className="h-8"
+              >
+                <X className="mr-2 h-3 w-3" />
+                Limpar Filtros
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
+      {/* Lista de Entregas */}
+      <Card className="shadow-sm border-slate-200">
+        <CardHeader className="px-6 py-4 border-b border-slate-100 flex flex-row items-center justify-between bg-white rounded-t-lg">
+          <div className="space-y-1">
+            <CardTitle className="text-base font-medium">Histórico de Entregas</CardTitle>
+            <CardDescription>
+              Mostrando {filteredDeliveries.length > 0 ? startIndex + 1 : 0}-{Math.min(endIndex, filteredDeliveries.length)} de {filteredDeliveries.length} entregas filtradas ({deliveries.length} total)
+            </CardDescription>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
           {isLoading ? (
-            <div className="flex items-center justify-center py-8">
+            <div className="flex items-center justify-center py-16">
               <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
             </div>
           ) : filteredDeliveries.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              {deliveries.length === 0 ? "Nenhuma entrega concluída" : "Nenhum resultado encontrado com os filtros aplicados"}
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <CheckCircle2 className="h-12 w-12 text-slate-300 mb-4" />
+              <h3 className="text-lg font-medium text-slate-600 mb-1">
+                Nenhuma entrega concluída
+              </h3>
+              <p className="text-sm text-slate-400 max-w-sm">
+                {deliveries.length === 0 ? "Suas entregas concluídas aparecerão aqui" : "Nenhum resultado encontrado com os filtros aplicados"}
+              </p>
             </div>
           ) : (
             <div>
               <Table>
-                <TableHeader>
+                <TableHeader className="bg-slate-50">
                   <TableRow>
-                    <TableHead>Nº Pedido</TableHead>
-                    <TableHead>Cliente</TableHead>
-                    <TableHead>Motorista</TableHead>
-                    <TableHead>Data Conclusão</TableHead>
-                    <TableHead>Valor</TableHead>
-                    <TableHead>Avaliação</TableHead>
-                    <TableHead className="text-right">Ações</TableHead>
+                    <TableHead className="w-[220px] font-semibold text-slate-600">Nº Pedido</TableHead>
+                    <TableHead className="font-semibold text-slate-600">Cliente</TableHead>
+                    <TableHead className="font-semibold text-slate-600">Motorista</TableHead>
+                    <TableHead className="font-semibold text-slate-600">Data Conclusão</TableHead>
+                    <TableHead className="font-semibold text-slate-600 text-right">Valor</TableHead>
+                    <TableHead className="font-semibold text-slate-600 w-[150px]">Avaliação</TableHead>
+                    <TableHead className="w-[100px] text-center font-semibold text-slate-600">Ações</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {paginatedDeliveries.map((delivery) => (
-                  <TableRow key={delivery.id}>
-                    <TableCell className="font-mono text-xs">
+                  <TableRow key={delivery.id} className="hover:bg-slate-50/50 transition-colors">
+                    <TableCell className="font-mono text-xs text-slate-500 font-medium">
                       {delivery.requestNumber || delivery.id.substring(0, 8)}
                     </TableCell>
                     <TableCell>
-                      {delivery.customerName || <span className="text-muted-foreground italic">-</span>}
+                      <div className="font-medium text-slate-900">{delivery.customerName || "-"}</div>
                     </TableCell>
                     <TableCell>
                       {delivery.driverName ? (
-                        <div className="space-y-1">
-                          <div className="font-medium">{delivery.driverName}</div>
-                          <RatingStars rating={delivery.driverRating} count={delivery.driverRatingCount} />
+                        <div className="flex items-center gap-3">
+                          <div className="h-9 w-9 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center">
+                            <User className="h-4 w-4 text-slate-500" />
+                          </div>
+                          <div>
+                            <div className="font-medium text-sm text-slate-900">{delivery.driverName}</div>
+                            <div className="flex items-center gap-1 mt-0.5">
+                              <Star className="h-3 w-3 text-amber-500 fill-amber-500" />
+                              <span className="text-xs text-slate-500 font-medium">
+                                {delivery.driverRating ? parseFloat(delivery.driverRating).toFixed(1) : "-"}
+                              </span>
+                            </div>
+                          </div>
                         </div>
                       ) : (
-                        <span className="text-muted-foreground italic">-</span>
+                        <span className="text-sm text-slate-400">-</span>
                       )}
                     </TableCell>
                     <TableCell>
-                      {delivery.completedAt ? formatBrazilianDateTime(delivery.completedAt) : "-"}
+                      <div className="text-sm text-slate-900">
+                        {delivery.completedAt ? formatBrazilianDateTime(delivery.completedAt) : "-"}
+                      </div>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="text-right font-medium text-green-600">
                       {delivery.totalPrice ? (
-                        <div className="font-semibold text-green-600">
-                          {new Intl.NumberFormat("pt-BR", {
-                            style: "currency",
-                            currency: "BRL",
-                          }).format(parseFloat(delivery.totalPrice))}
-                        </div>
-                      ) : (
-                        <span className="text-muted-foreground">-</span>
-                      )}
+                        new Intl.NumberFormat("pt-BR", {
+                          style: "currency",
+                          currency: "BRL",
+                        }).format(parseFloat(delivery.totalPrice))
+                      ) : "-"}
                     </TableCell>
                     <TableCell>
                       {delivery.driverId ? (
                         delivery.companyRated ? (
-                          <Badge className="bg-green-100 text-green-700 gap-1">
-                            <Star className="h-3 w-3 fill-current" />
+                          <Badge variant="secondary" className="bg-green-100 text-green-700 hover:bg-green-100 border-green-200 gap-1 pl-1.5 pr-2.5">
+                            <CheckCircle2 className="h-3.5 w-3.5" />
                             Avaliado
                           </Badge>
                         ) : (
@@ -454,20 +474,21 @@ export default function EmpresaEntregasConcluidas() {
                             variant="outline"
                             size="sm"
                             onClick={() => handleOpenRating(delivery)}
-                            className="gap-1"
+                            className="h-8 gap-1.5 text-slate-600"
                           >
-                            <Star className="h-4 w-4" />
+                            <Star className="h-3.5 w-3.5" />
                             Avaliar
                           </Button>
                         )
                       ) : (
-                        <span className="text-muted-foreground text-xs">Sem motorista</span>
+                        <span className="text-slate-400 text-xs">Sem motorista</span>
                       )}
                     </TableCell>
-                    <TableCell className="text-right">
+                    <TableCell className="text-center">
                       <Button
                         variant="ghost"
-                        size="sm"
+                        size="icon"
+                        className="h-8 w-8 text-slate-500 hover:text-blue-600"
                         onClick={() => handleViewDetails(delivery)}
                       >
                         <Eye className="h-4 w-4" />
@@ -480,8 +501,8 @@ export default function EmpresaEntregasConcluidas() {
 
             {/* Controles de paginação */}
             {totalPages > 1 && (
-              <div className="flex items-center justify-between mt-4">
-                <div className="text-sm text-muted-foreground">
+              <div className="flex items-center justify-between p-4 border-t border-slate-100">
+                <div className="text-sm text-slate-500">
                   Página {currentPage} de {totalPages}
                 </div>
                 <div className="flex gap-2">

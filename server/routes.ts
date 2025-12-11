@@ -7282,6 +7282,143 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     }
   });
 
+  // GET /api/empresa/dashboard/stats - Estatísticas do dashboard da empresa
+  app.get("/api/empresa/dashboard/stats", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const companyId = req.session.companyId;
+
+      // Buscar estatísticas de entregas rápidas
+      const deliveryStats = await pool.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE is_completed = false AND is_cancelled = false) AS "inProgress",
+          COUNT(*) FILTER (WHERE is_completed = true) AS "completed",
+          COUNT(*) FILTER (WHERE is_cancelled = true) AS "cancelled",
+          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '1 day' AND is_completed = false AND is_cancelled = false) AS "todayInProgress",
+          COUNT(*) FILTER (WHERE completed_at >= NOW() - INTERVAL '1 day') AS "todayCompleted",
+          COUNT(*) FILTER (WHERE cancelled_at >= NOW() - INTERVAL '1 day') AS "todayCancelled",
+          COALESCE(AVG(EXTRACT(EPOCH FROM (completed_at - created_at)) / 60) FILTER (WHERE is_completed = true AND completed_at >= NOW() - INTERVAL '7 days'), 0) AS "avgDeliveryTimeMinutes",
+          COALESCE(SUM(rb.total_amount) FILTER (WHERE r.is_completed = true AND r.completed_at >= NOW() - INTERVAL '7 days'), 0) AS "weeklySpent"
+        FROM requests r
+        LEFT JOIN request_bills rb ON r.id = rb.request_id
+        WHERE r.company_id = $1
+      `, [companyId]);
+
+      // Buscar estatísticas de entregas intermunicipais
+      const intermunicipalStats = await pool.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE status NOT IN ('cancelada', 'entregue')) AS "inProgress",
+          COUNT(*) FILTER (WHERE status = 'entregue') AS "completed",
+          COUNT(*) FILTER (WHERE status = 'cancelada') AS "cancelled"
+        FROM entregas_intermunicipais
+        WHERE empresa_id = $1
+      `, [companyId]);
+
+      // Buscar últimas 5 entregas para lista recente
+      const recentDeliveries = await pool.query(`
+        SELECT
+          r.id,
+          r.request_number AS "requestNumber",
+          r.customer_name AS "customerName",
+          to_char(r.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo', 'DD/MM/YYYY HH24:MI') AS "createdAt",
+          rb.total_amount AS "totalPrice",
+          d.name AS "driverName",
+          CASE
+            WHEN r.is_cancelled = true THEN 'cancelled'
+            WHEN r.is_completed = true THEN 'completed'
+            WHEN r.is_trip_start = true THEN 'in_progress'
+            WHEN r.driver_id IS NOT NULL THEN 'accepted'
+            ELSE 'pending'
+          END AS status
+        FROM requests r
+        LEFT JOIN request_bills rb ON r.id = rb.request_id
+        LEFT JOIN drivers d ON r.driver_id = d.id
+        WHERE r.company_id = $1
+        ORDER BY r.created_at DESC
+        LIMIT 5
+      `, [companyId]);
+
+      // Buscar dados para gráfico de entregas por dia (últimos 7 dias)
+      const dailyDeliveries = await pool.query(`
+        SELECT
+          to_char(date_trunc('day', r.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo'), 'DD/MM') AS date,
+          to_char(date_trunc('day', r.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo'), 'Dy') AS day_name,
+          COUNT(*) FILTER (WHERE r.is_completed = true) AS "completed",
+          COUNT(*) FILTER (WHERE r.is_cancelled = true) AS "cancelled",
+          COUNT(*) AS "total"
+        FROM requests r
+        WHERE r.company_id = $1
+          AND r.created_at >= NOW() - INTERVAL '7 days'
+        GROUP BY date_trunc('day', r.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')
+        ORDER BY date_trunc('day', r.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')
+      `, [companyId]);
+
+      // Buscar horários de pico (volume por hora)
+      const hourlyVolume = await pool.query(`
+        SELECT
+          EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::int AS hour,
+          COUNT(*) AS volume
+        FROM requests
+        WHERE company_id = $1
+          AND created_at >= NOW() - INTERVAL '30 days'
+        GROUP BY EXTRACT(HOUR FROM created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')
+        ORDER BY hour
+      `, [companyId]);
+
+      // Buscar top 5 motoristas mais utilizados
+      const topDrivers = await pool.query(`
+        SELECT
+          d.id,
+          d.name,
+          d.rating,
+          COUNT(*) AS "deliveryCount",
+          COUNT(*) FILTER (WHERE r.is_completed = true) AS "completedCount"
+        FROM requests r
+        JOIN drivers d ON r.driver_id = d.id
+        WHERE r.company_id = $1 AND r.driver_id IS NOT NULL
+        GROUP BY d.id, d.name, d.rating
+        ORDER BY COUNT(*) DESC
+        LIMIT 5
+      `, [companyId]);
+
+      const stats = deliveryStats.rows[0];
+      const interStats = intermunicipalStats.rows[0];
+
+      return res.json({
+        deliveries: {
+          inProgress: parseInt(stats.inProgress) || 0,
+          completed: parseInt(stats.completed) || 0,
+          cancelled: parseInt(stats.cancelled) || 0,
+          total: (parseInt(stats.inProgress) || 0) + (parseInt(stats.completed) || 0) + (parseInt(stats.cancelled) || 0),
+        },
+        today: {
+          inProgress: parseInt(stats.todayInProgress) || 0,
+          completed: parseInt(stats.todayCompleted) || 0,
+          cancelled: parseInt(stats.todayCancelled) || 0,
+        },
+        intermunicipal: {
+          inProgress: parseInt(interStats.inProgress) || 0,
+          completed: parseInt(interStats.completed) || 0,
+          cancelled: parseInt(interStats.cancelled) || 0,
+        },
+        metrics: {
+          avgDeliveryTimeMinutes: Math.round(parseFloat(stats.avgDeliveryTimeMinutes) || 0),
+          weeklySpent: parseFloat(stats.weeklySpent) || 0,
+        },
+        recentDeliveries: recentDeliveries.rows,
+        dailyDeliveries: dailyDeliveries.rows,
+        hourlyVolume: hourlyVolume.rows,
+        topDrivers: topDrivers.rows,
+      });
+    } catch (error) {
+      console.error("Erro ao buscar estatísticas do dashboard:", error);
+      return res.status(500).json({ message: "Erro ao buscar estatísticas" });
+    }
+  });
+
   // POST /api/empresa/deliveries/:requestId/rate - Avaliar motorista
   app.post("/api/empresa/deliveries/:requestId/rate", async (req, res) => {
     try {

@@ -57,7 +57,7 @@ import { cn } from "@/lib/utils";
 import { useForm, useFieldArray } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { PlusCircle, Package, Trash2, Calendar, MapPin, Clock, Ruler, Eye, Phone, Building2, User } from "lucide-react";
+import { PlusCircle, Package, Trash2, Calendar, MapPin, Clock, Ruler, Eye, Phone, Building2, User, Loader2, Route } from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import "@/styles/google-maps-fix.css";
@@ -558,86 +558,120 @@ export default function EntregasIntermunicipais() {
   const rotaSelecionada = rotas.find((r) => r.id === rotaId);
 
   return (
-    <div className="p-8">
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <div>
-            <CardTitle className="text-2xl flex items-center gap-2">
-              <Package className="h-6 w-6" />
-              Entregas Intermunicipais
-            </CardTitle>
+    <div className="space-y-6 pb-8">
+      {/* Header */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div className="flex flex-col gap-2">
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
+            <MapPin className="h-6 w-6 text-slate-500" />
+            Entregas Intermunicipais
+          </h1>
+          <p className="text-slate-500">Gerencie entregas entre cidades e rotas longas.</p>
+        </div>
+        <Button onClick={handleOpenDialog} className="bg-blue-600 hover:bg-blue-700 text-white shadow-sm">
+          <PlusCircle className="mr-2 h-4 w-4" />
+          Nova Entrega Intermunicipal
+        </Button>
+      </div>
+
+      {/* Lista de Entregas */}
+      <Card className="shadow-sm border-slate-200">
+        <CardHeader className="px-6 py-4 border-b border-slate-100 flex flex-row items-center justify-between bg-white rounded-t-lg">
+          <div className="space-y-1">
+            <CardTitle className="text-base font-medium">Entregas Intermunicipais</CardTitle>
             <CardDescription>
-              Agende entregas entre cidades através de nossas rotas intermunicipais
+              Mostrando {entregas.length > 0 ? 1 : 0}-{entregas.length} de {entregas.length} entregas filtradas ({entregas.length} total)
             </CardDescription>
           </div>
-          <Button onClick={handleOpenDialog}>
-            <PlusCircle className="mr-2 h-4 w-4" />
-            Nova Entrega
-          </Button>
         </CardHeader>
-        <CardContent>
+        <CardContent className="p-0">
           {isLoading ? (
-            <div className="text-center py-8">Carregando entregas...</div>
+            <div className="flex items-center justify-center py-16">
+              <Loader2 className="h-8 w-8 animate-spin text-slate-400" />
+            </div>
           ) : entregas.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              Nenhuma entrega agendada ainda
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <div className="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center mb-4">
+                <Package className="h-8 w-8 text-slate-400" />
+              </div>
+              <h3 className="text-lg font-medium text-slate-900 mb-1">Nenhuma entrega agendada</h3>
+              <p className="text-sm text-slate-500 max-w-sm">
+                Clique em "Nova Entrega" para agendar uma entrega intermunicipal.
+              </p>
             </div>
           ) : (
             <Table>
-              <TableHeader>
+              <TableHeader className="bg-slate-50">
                 <TableRow>
-                  <TableHead>Nº Pedido</TableHead>
-                  <TableHead>Rota</TableHead>
-                  <TableHead>Data</TableHead>
-                  <TableHead>Destinatário</TableHead>
-                  <TableHead>Pacotes</TableHead>
-                  <TableHead>Peso</TableHead>
-                  <TableHead>Valor</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Motorista</TableHead>
-                  <TableHead className="text-right">Ações</TableHead>
+                  <TableHead className="w-[180px] font-semibold text-slate-600">ID</TableHead>
+                  <TableHead className="font-semibold text-slate-600">Cliente</TableHead>
+                  <TableHead className="font-semibold text-slate-600">Rota</TableHead>
+                  <TableHead className="font-semibold text-slate-600">Motorista</TableHead>
+                  <TableHead className="font-semibold text-slate-600">Status</TableHead>
+                  <TableHead className="font-semibold text-slate-600">Data</TableHead>
+                  <TableHead className="font-semibold text-slate-600 text-right">Valor</TableHead>
+                  <TableHead className="w-[80px] text-center font-semibold text-slate-600">Ações</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {entregas.map((entrega) => (
-                  <TableRow key={entrega.id}>
-                    <TableCell className="font-medium">{entrega.numeroPedido}</TableCell>
-                    <TableCell>{entrega.rotaNome}</TableCell>
+                  <TableRow key={entrega.id} className="hover:bg-slate-50/50 transition-colors">
+                    <TableCell className="font-mono text-xs text-slate-500 font-medium">{entrega.numeroPedido}</TableCell>
                     <TableCell>
-                      {format(new Date(entrega.dataAgendada), "dd/MM/yyyy", { locale: ptBR })}
+                      <div className="font-medium text-slate-900">{entrega.destinatarioNome}</div>
                     </TableCell>
-                    <TableCell>{entrega.destinatarioNome}</TableCell>
-                    <TableCell>{entrega.quantidadePacotes}</TableCell>
-                    <TableCell>{entrega.pesoTotalKg} kg</TableCell>
-                    <TableCell>R$ {parseFloat(entrega.valorTotal).toFixed(2)}</TableCell>
                     <TableCell>
-                      <Badge variant={statusColors[entrega.status] as any}>
+                      <div className="flex items-center gap-1.5 text-sm text-slate-700">
+                        <MapPin className="h-3 w-3 text-blue-500" />
+                        {entrega.rotaNome}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      {entrega.motoristaName ? (
+                        <div className="flex items-center gap-3">
+                          <div className="h-8 w-8 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center">
+                            <User className="h-4 w-4 text-slate-500" />
+                          </div>
+                          <div>
+                            <div className="font-medium text-sm text-slate-900">{entrega.motoristaName}</div>
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-slate-400 italic text-sm">Aguardando</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        variant="secondary"
+                        className={cn(
+                          "font-medium border",
+                          entrega.status === "aguardando_motorista" && "bg-amber-50 text-amber-700 border-amber-200",
+                          entrega.status === "entregue" && "bg-green-50 text-green-700 border-green-200",
+                          entrega.status === "em_transito" && "bg-blue-50 text-blue-700 border-blue-200",
+                          entrega.status === "cancelada" && "bg-red-50 text-red-700 border-red-200"
+                        )}
+                      >
                         {statusLabels[entrega.status] || entrega.status}
                       </Badge>
                     </TableCell>
                     <TableCell>
-                      {entrega.motoristaName || '-'}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setSelectedEntregaId(entrega.id)}
-                          title="Ver detalhes"
-                        >
-                          <Eye className="h-4 w-4" />
-                        </Button>
-                        {entrega.status === "aguardando_motorista" && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleDelete(entrega.id, entrega.status, entrega.viagemId)}
-                          >
-                            <Trash2 className="h-4 w-4 text-destructive" />
-                          </Button>
-                        )}
+                      <div className="text-sm text-slate-900">
+                        {format(new Date(entrega.dataAgendada), "dd/MM/yyyy", { locale: ptBR })}
                       </div>
+                    </TableCell>
+                    <TableCell className="text-right font-medium text-green-600">
+                      R$ {parseFloat(entrega.valorTotal).toFixed(2)}
+                    </TableCell>
+                    <TableCell className="text-center">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setSelectedEntregaId(entrega.id)}
+                        title="Ver detalhes"
+                        className="h-8 w-8 text-slate-500 hover:text-blue-600"
+                      >
+                        <Eye className="h-4 w-4" />
+                      </Button>
                     </TableCell>
                   </TableRow>
                 ))}
