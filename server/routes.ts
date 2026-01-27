@@ -11070,6 +11070,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
+      // Buscar dados do motorista para pegar pixKey
+      const driver = await storage.getDriver(driverId);
+
       // Verificar se pode sacar hoje (limite de 1 saque por dia)
       const jaSacouHoje = await financialService.hasWithdrawnToday(driverId);
       const ultimoSaque = await financialService.getLastWithdrawal(driverId);
@@ -11084,6 +11087,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           saldoDisponivel: result.balance,
           saldoEmCentavos: result.balanceInCents,
           subcontaPixKey: result.subaccountPixKey,
+          pixKey: driver?.pixKey || null,
+          pixKeyType: driver?.pixKeyType || null,
           ultimaAtualizacao: result.lastUpdate,
           formatado: `R$ ${result.balance.toFixed(2)}`,
           saque: {
@@ -11550,18 +11555,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ message: "Não autenticado" });
       }
 
-      // Buscar dados do motorista
-      const driver = await storage.getDriver(driverId);
+      // Buscar dados do motorista com joins
+      const result = await db
+        .select({
+          driver: drivers,
+          city: serviceLocations,
+          vehicleType: vehicleTypes,
+          brand: brands,
+          model: vehicleModels,
+        })
+        .from(drivers)
+        .leftJoin(serviceLocations, eq(drivers.serviceLocationId, serviceLocations.id))
+        .leftJoin(vehicleTypes, eq(drivers.vehicleTypeId, vehicleTypes.id))
+        .leftJoin(brands, eq(drivers.brandId, brands.id))
+        .leftJoin(vehicleModels, eq(drivers.modelId, vehicleModels.id))
+        .where(eq(drivers.id, driverId))
+        .limit(1);
 
-      if (!driver) {
+      if (!result || result.length === 0) {
         return res.status(404).json({ message: "Motorista não encontrado" });
       }
+
+      const { driver, city, vehicleType, brand, model } = result[0];
 
       return res.json({
         success: true,
         data: {
           id: driver.id,
           name: driver.name,
+          nome: driver.name, // Alias para compatibilidade
           mobile: driver.mobile,
           email: driver.email,
           cpf: driver.cpf,
@@ -11578,9 +11600,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
           carColor: driver.carColor,
           carYear: driver.carYear,
           uploadedDocuments: driver.uploadedDocuments,
-          referralCode: driver.referralCode, // Código de indicação do motorista
-          totalDeliveries: driver.totalDeliveries, // Total de entregas completadas
-          referredByCode: driver.referredByCode, // Código de quem indicou (se houver)
+          referralCode: driver.referralCode,
+          totalDeliveries: driver.totalDeliveries,
+          referredByCode: driver.referredByCode,
+          pixKey: driver.pixKey,
+          pixKeyType: driver.pixKeyType,
+          // Dados completos das tabelas relacionadas
+          categoria: vehicleType ? {
+            id: vehicleType.id,
+            name: vehicleType.name,
+            image: vehicleType.image,
+          } : null,
+          marca: brand ? {
+            id: brand.id,
+            name: brand.name,
+          } : null,
+          modelo: model ? {
+            id: model.id,
+            name: model.name,
+            brandId: model.brandId,
+          } : null,
+          cidade: city ? {
+            id: city.id,
+            name: city.name,
+            state: city.state,
+          } : null,
         }
       });
     } catch (error) {
@@ -11592,7 +11636,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // POST /api/v1/driver/profile - Atualizar perfil do motorista
   app.post("/api/v1/driver/profile", upload.single("profile_picture"), async (req, res) => {
     try {
-      if (!req.session.driverId) {
+      let driverId = req.session.driverId;
+
+      // Se não tiver sessão, tenta obter do token Bearer
+      if (!driverId) {
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          const token = authHeader.substring(7);
+          try {
+            const decoded = JSON.parse(Buffer.from(token, 'base64').toString('utf8'));
+            if (decoded.type === 'driver' && decoded.id) {
+              driverId = decoded.id;
+            }
+          } catch (e) {
+            console.error("Token inválido:", e);
+          }
+        }
+      }
+
+      if (!driverId) {
         return res.status(401).json({ message: "Não autenticado" });
       }
 
@@ -11604,6 +11666,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         carNumber,
         carColor,
         carYear,
+        pixKey,
+        pixKeyType,
       } = req.body;
 
       const updateData: any = {};
@@ -11616,12 +11680,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (carColor) updateData.carColor = carColor;
       if (carYear) updateData.carYear = carYear;
 
+      // Atualizar chave PIX
+      if (pixKey !== undefined) {
+        updateData.pixKey = pixKey || null;
+      }
+      if (pixKeyType !== undefined) {
+        // Validar tipo de chave PIX
+        const validTypes = ['EMAIL', 'CPF', 'CNPJ', 'PHONE', 'EVP'];
+        if (pixKeyType && !validTypes.includes(pixKeyType.toUpperCase())) {
+          return res.status(400).json({
+            message: "Tipo de chave PIX inválido. Use: EMAIL, CPF, CNPJ, PHONE ou EVP"
+          });
+        }
+        updateData.pixKeyType = pixKeyType ? pixKeyType.toUpperCase() : null;
+      }
+
       // Se houver upload de imagem
       if (req.file) {
         updateData.profilePicture = `/uploads/${req.file.filename}`;
       }
 
-      const updatedDriver = await storage.updateDriver(req.session.driverId, updateData);
+      const updatedDriver = await storage.updateDriver(driverId, updateData);
 
       if (!updatedDriver) {
         return res.status(404).json({ message: "Motorista não encontrado" });
@@ -11640,6 +11719,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           carNumber: updatedDriver.carNumber,
           carColor: updatedDriver.carColor,
           carYear: updatedDriver.carYear,
+          pixKey: updatedDriver.pixKey,
+          pixKeyType: updatedDriver.pixKeyType,
         }
       });
     } catch (error) {
@@ -17352,11 +17433,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Atualizar saldo consultando a Woovi (retorna em centavos)
       const balanceInCents = await financialService.updateSubaccountBalance(subaccount.id);
 
+      // Buscar dados do motorista para pegar pixKeyType
+      const driver = await storage.getDriver(driverId);
+
       return res.json({
         balance: balanceInCents / 100, // Converter para reais
         balanceCache: subaccount.balanceCache,
         lastUpdate: subaccount.lastBalanceUpdate,
         pixKey: subaccount.pixKey,
+        pixKeyType: driver?.pixKeyType || null,
       });
     } catch (error) {
       console.error("Erro ao consultar saldo do motorista:", error);
