@@ -1073,6 +1073,66 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
     }
   });
 
+  // POST /api/users - Criar novo usuário (admin only)
+  app.post("/api/users", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(403).json({ message: "Acesso negado. Apenas administradores podem criar usuários." });
+      }
+
+      const { nome, email, password, isAdmin } = req.body;
+
+      // Validação básica
+      if (!nome || !email || !password) {
+        return res.status(400).json({ message: "Nome, email e senha são obrigatórios" });
+      }
+
+      // Validar formato de email
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({ message: "Email inválido" });
+      }
+
+      // Validar senha mínima
+      if (password.length < 6) {
+        return res.status(400).json({ message: "A senha deve ter no mínimo 6 caracteres" });
+      }
+
+      // Verificar se o email já existe
+      const existingUser = await storage.getUserByEmail(email);
+      if (existingUser) {
+        return res.status(400).json({ message: "Este email já está cadastrado" });
+      }
+
+      // Hash da senha
+      const hashedPassword = await bcrypt.hash(password, 10);
+
+      // Criar usuário
+      const newUser = await storage.createUser({
+        nome,
+        email,
+        password: hashedPassword,
+        isAdmin: isAdmin || false,
+        active: true,
+        emailConfirmed: false,
+        mobileConfirmed: false,
+        timezone: "America/Sao_Paulo",
+        lang: "pt",
+        loginBy: "web",
+      });
+
+      // Remover senha da resposta
+      const { password: _, ...userWithoutPassword } = newUser;
+
+      return res.status(201).json(userWithoutPassword);
+    } catch (error) {
+      console.error("Erro ao criar usuário:", error);
+      return res.status(500).json({
+        message: "Erro ao criar usuário"
+      });
+    }
+  });
+
   // ========================================
   // SERVICE LOCATIONS (CIDADES) ROUTES
   // ========================================
