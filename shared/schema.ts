@@ -46,6 +46,20 @@ export const users = pgTable("users", {
 });
 
 // ========================================
+// PASSWORD RESET TOKENS (Tokens de Recuperação de Senha)
+// ========================================
+export const passwordResetTokens = pgTable("password_reset_tokens", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull(), // Removida foreign key para suportar users, drivers e companies
+  userType: varchar("user_type", { length: 20 }).notNull().default("user"), // 'user', 'driver', 'company'
+  token: varchar("token", { length: 255 }).notNull().unique(),
+  expiresAt: timestamp("expires_at").notNull(),
+  used: boolean("used").notNull().default(false),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+// ========================================
 // SERVICE LOCATIONS (Cidades)
 // ========================================
 export const serviceLocations = pgTable("service_locations", {
@@ -748,6 +762,15 @@ export const insertUserSchema = createInsertSchema(users).omit({
 export const loginSchema = z.object({
   email: z.string().email("Email inválido"),
   password: z.string().min(1, "Senha obrigatória"),
+});
+
+export const forgotPasswordSchema = z.object({
+  email: z.string().email("Email inválido"),
+});
+
+export const resetPasswordSchema = z.object({
+  token: z.string().min(1, "Token obrigatório"),
+  password: z.string().min(6, "A senha deve ter no mínimo 6 caracteres"),
 });
 
 export const insertServiceLocationSchema = createInsertSchema(serviceLocations).omit({

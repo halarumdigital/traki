@@ -2,12 +2,14 @@ import express, { type Express } from "express";
 import { createServer, type Server } from "http";
 import { Server as SocketIOServer } from "socket.io";
 import { storage } from "./storage";
-import { loginSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications, cityPrices, settings, companyCancellationTypes, insertCompanyCancellationTypeSchema, promotions, insertPromotionSchema, companyDriverRatings, driverCompanyRatings, deliveryStops, faqs, insertFaqSchema, pushNotifications, referralSettings, driverReferrals, companyReferrals, ticketSubjects, insertTicketSubjectSchema, supportTickets, insertSupportTicketSchema, ticketReplies, insertTicketReplySchema, entregadorRotas, entregasIntermunicipais, rotasIntermunicipais, viagemColetas, viagemEntregas, wooviCharges, financialTransactions, wooviSubaccounts } from "@shared/schema";
+import { loginSchema, forgotPasswordSchema, resetPasswordSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications, cityPrices, settings, companyCancellationTypes, insertCompanyCancellationTypeSchema, promotions, insertPromotionSchema, companyDriverRatings, driverCompanyRatings, deliveryStops, faqs, insertFaqSchema, pushNotifications, referralSettings, driverReferrals, companyReferrals, ticketSubjects, insertTicketSubjectSchema, supportTickets, insertSupportTicketSchema, ticketReplies, insertTicketReplySchema, entregadorRotas, entregasIntermunicipais, rotasIntermunicipais, viagemColetas, viagemEntregas, wooviCharges, financialTransactions, wooviSubaccounts } from "@shared/schema";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import { pool, db } from "./db";
 import { eq, and, or, sql, desc, isNotNull, ilike } from "drizzle-orm";
 import bcrypt from "bcrypt";
+import crypto from "crypto";
+import { EmailService } from "./emailService";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
@@ -224,7 +226,11 @@ function getDriverIdFromRequest(req: any): string | null {
   return driverId || null;
 }
 
-export async function registerRoutes(app: Express): Promise<Server> {  // Configurar CORS para permitir credenciais
+export async function registerRoutes(app: Express): Promise<Server> {
+  // Inicializar serviço de email
+  const emailService = new EmailService(storage);
+
+  // Configurar CORS para permitir credenciais
   app.use((req, res, next) => {
     const origin = req.headers.origin || "http://localhost:5173";
     res.setHeader("Access-Control-Allow-Origin", origin);
@@ -331,6 +337,246 @@ export async function registerRoutes(app: Express): Promise<Server> {  // Config
       res.clearCookie("connect.sid");
       return res.json({ message: "Logout realizado com sucesso" });
     });
+  });
+
+  // POST /api/auth/forgot-password - Solicitar recuperação de senha
+  app.post("/api/auth/forgot-password", async (req, res) => {
+    console.log("🔐 [FORGOT-PASSWORD] Iniciando processo de recuperação de senha");
+
+    try {
+      const result = forgotPasswordSchema.safeParse(req.body);
+
+      if (!result.success) {
+        console.log("❌ [FORGOT-PASSWORD] Validação falhou:", result.error.errors);
+        return res.status(400).json({
+          message: "Dados inválidos",
+          errors: result.error.errors
+        });
+      }
+
+      const { email } = result.data;
+      console.log(`📧 [FORGOT-PASSWORD] Email solicitado: ${email}`);
+
+      // Buscar em USERS primeiro
+      let user = await storage.getUserByEmail(email);
+      let userType = "user";
+
+      // Se não encontrou em users, buscar em DRIVERS
+      if (!user) {
+        console.log(`   Não encontrado em USERS, buscando em DRIVERS...`);
+        const driver = await storage.getDriverByEmail(email);
+        if (driver) {
+          user = driver;
+          userType = "driver";
+        }
+      }
+
+      // Por segurança, sempre retornar sucesso mesmo se o email não existir
+      // Isso evita que atacantes descubram quais emails estão cadastrados
+      if (!user) {
+        console.log(`⚠️  [FORGOT-PASSWORD] Email não encontrado em nenhuma tabela: ${email}`);
+        return res.json({
+          message: "Se o email estiver cadastrado, você receberá instruções para redefinir sua senha."
+        });
+      }
+
+      console.log(`✅ [FORGOT-PASSWORD] Encontrado em ${userType.toUpperCase()}: ${user.nome} (${user.id})`);
+
+      // Gerar código de 7 dígitos para recuperação
+      const resetToken = Math.floor(1000000 + Math.random() * 9000000).toString();
+      console.log(`🔑 [FORGOT-PASSWORD] Código gerado: ${resetToken}`);
+
+      // Token expira em 1 hora
+      const expiresAt = new Date();
+      expiresAt.setHours(expiresAt.getHours() + 1);
+
+      // Salvar token no banco de dados
+      console.log(`💾 [FORGOT-PASSWORD] Salvando token no banco (tipo: ${userType})...`);
+      await storage.createPasswordResetToken(user.id, resetToken, expiresAt, userType);
+      console.log(`✅ [FORGOT-PASSWORD] Token salvo com sucesso`);
+
+      // Limpar tokens expirados (limpeza assíncrona)
+      storage.deleteExpiredPasswordResetTokens().catch(err =>
+        console.error("⚠️  [FORGOT-PASSWORD] Erro ao limpar tokens expirados:", err)
+      );
+
+      // Obter a URL base do app (para construir o link de redefinição)
+      const appUrl = process.env.CLIENT_URL || `${req.protocol}://${req.get('host')}`;
+      console.log(`🌐 [FORGOT-PASSWORD] URL do app: ${appUrl}`);
+
+      // Verificar configurações SMTP antes de enviar
+      const settings = await storage.getSettings();
+      if (!settings || !settings.smtpHost || !settings.smtpUser || !settings.smtpPassword) {
+        console.error("❌ [FORGOT-PASSWORD] Configurações SMTP não encontradas ou incompletas");
+        console.error("   SMTP Host:", settings?.smtpHost || "NÃO CONFIGURADO");
+        console.error("   SMTP User:", settings?.smtpUser || "NÃO CONFIGURADO");
+        console.error("   SMTP Password:", settings?.smtpPassword ? "CONFIGURADO" : "NÃO CONFIGURADO");
+
+        return res.status(500).json({
+          message: "Serviço de email não configurado. Entre em contato com o suporte."
+        });
+      }
+
+      console.log(`📧 [FORGOT-PASSWORD] Configurações SMTP:`);
+      console.log(`   Host: ${settings.smtpHost}`);
+      console.log(`   Port: ${settings.smtpPort}`);
+      console.log(`   User: ${settings.smtpUser}`);
+      console.log(`   From: ${settings.smtpFromEmail || settings.smtpUser}`);
+
+      // Enviar email com o link de recuperação
+      console.log(`📤 [FORGOT-PASSWORD] Enviando email para ${user.email}...`);
+      const emailSent = await emailService.sendPasswordResetEmail(
+        user.email,
+        user.nome,
+        resetToken,
+        appUrl
+      );
+
+      if (!emailSent) {
+        console.error("❌ [FORGOT-PASSWORD] Falha ao enviar email de recuperação");
+        return res.status(500).json({
+          message: "Erro ao enviar email de recuperação. Por favor, tente novamente mais tarde."
+        });
+      }
+
+      console.log(`✅ [FORGOT-PASSWORD] Email enviado com sucesso para ${user.email}`);
+      return res.json({
+        message: "Se o email estiver cadastrado, você receberá instruções para redefinir sua senha."
+      });
+    } catch (error) {
+      console.error("❌ [FORGOT-PASSWORD] Erro ao processar recuperação de senha:", error);
+      return res.status(500).json({
+        message: "Erro interno do servidor"
+      });
+    }
+  });
+
+  // POST /api/auth/verify-reset-token - Verificar se o token é válido
+  app.post("/api/auth/verify-reset-token", async (req, res) => {
+    try {
+      const { token } = req.body;
+
+      if (!token) {
+        return res.status(400).json({
+          message: "Token obrigatório",
+          valid: false
+        });
+      }
+
+      // Buscar token no banco de dados
+      const resetToken = await storage.getPasswordResetToken(token);
+
+      if (!resetToken) {
+        return res.json({
+          message: "Token inválido ou expirado",
+          valid: false
+        });
+      }
+
+      // Verificar se o token já foi usado
+      if (resetToken.used) {
+        return res.json({
+          message: "Este token já foi utilizado",
+          valid: false
+        });
+      }
+
+      // Verificar se o token expirou
+      if (new Date() > resetToken.expiresAt) {
+        return res.json({
+          message: "Token expirado",
+          valid: false
+        });
+      }
+
+      return res.json({
+        message: "Token válido",
+        valid: true
+      });
+    } catch (error) {
+      console.error("Erro ao verificar token:", error);
+      return res.status(500).json({
+        message: "Erro interno do servidor",
+        valid: false
+      });
+    }
+  });
+
+  // POST /api/auth/reset-password - Redefinir senha com token
+  app.post("/api/auth/reset-password", async (req, res) => {
+    try {
+      const result = resetPasswordSchema.safeParse(req.body);
+
+      if (!result.success) {
+        return res.status(400).json({
+          message: "Dados inválidos",
+          errors: result.error.errors
+        });
+      }
+
+      const { token, password } = result.data;
+
+      // Buscar token no banco de dados
+      const resetToken = await storage.getPasswordResetToken(token);
+
+      if (!resetToken) {
+        return res.status(400).json({
+          message: "Token inválido ou expirado"
+        });
+      }
+
+      // Verificar se o token já foi usado
+      if (resetToken.used) {
+        return res.status(400).json({
+          message: "Este token já foi utilizado"
+        });
+      }
+
+      // Verificar se o token expirou
+      if (new Date() > resetToken.expiresAt) {
+        return res.status(400).json({
+          message: "Token expirado. Por favor, solicite uma nova recuperação de senha."
+        });
+      }
+
+      // Buscar usuário baseado no tipo do token
+      const userType = resetToken.userType || "user";
+      let user: any = null;
+
+      if (userType === "driver") {
+        user = await storage.getDriver(resetToken.userId);
+      } else {
+        user = await storage.getUser(resetToken.userId);
+      }
+
+      if (!user) {
+        return res.status(404).json({
+          message: "Usuário não encontrado"
+        });
+      }
+
+      // Hash da nova senha
+      const hashedPassword = await bcrypt.hash(password, 10);
+
+      // Atualizar senha do usuário ou driver
+      if (userType === "driver") {
+        await storage.updateDriver(user.id, { password: hashedPassword });
+      } else {
+        await storage.updateUser(user.id, { password: hashedPassword });
+      }
+
+      // Marcar token como usado
+      await storage.markPasswordResetTokenAsUsed(token);
+
+      return res.json({
+        message: "Senha redefinida com sucesso! Você já pode fazer login com sua nova senha."
+      });
+    } catch (error) {
+      console.error("Erro ao redefinir senha:", error);
+      return res.status(500).json({
+        message: "Erro interno do servidor"
+      });
+    }
   });
 
   const resolveServiceLocationIdForRequest = async (request: any): Promise<string | null> => {
