@@ -16248,20 +16248,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Adicionar ticketNumber aos dados validados
-      const dataToInsert = {
-        ...validation.data,
-        ticketNumber,
-      };
+      console.log("  ✅ Dados validados - ticketNumber:", validation.data.ticketNumber);
 
       const newTicket = await db
         .insert(supportTickets)
-        .values(dataToInsert)
+        .values(validation.data)
         .returning();
+
+      console.log("  💾 Ticket criado no banco - ticketNumber:", newTicket[0].ticketNumber);
+
+      // Retornar com ticketNumber como ID principal
+      const ticketResponse = {
+        ...newTicket[0],
+        id: newTicket[0].ticketNumber || newTicket[0].id, // Usar ticketNumber como ID exibido
+        ticketNumber: newTicket[0].ticketNumber, // Garantir que ticketNumber está presente
+        internalId: newTicket[0].id, // Manter UUID original para referência interna
+      };
+
+      console.log("  📤 Resposta enviada ao app:");
+      console.log("     - id:", ticketResponse.id);
+      console.log("     - ticketNumber:", ticketResponse.ticketNumber);
 
       res.status(201).json({
         success: true,
-        ticket: newTicket[0],
+        ticket: ticketResponse,
       });
     } catch (error) {
       console.error("Erro ao criar ticket:", error);
@@ -16317,14 +16327,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const tickets = await query.orderBy(desc(supportTickets.createdAt));
 
-      // Converter URLs de imagens para URLs completas
+      console.log("📋 [GET TICKETS] Total de tickets encontrados:", tickets.length);
+      tickets.forEach((item, index) => {
+        console.log(`  Ticket ${index + 1}:`, {
+          id: item.ticket.id,
+          ticketNumber: item.ticket.ticketNumber,
+          driverName: item.ticket.driverName,
+        });
+      });
+
+      // Converter URLs de imagens para URLs completas e usar ticketNumber como ID principal
       const ticketsWithFullUrls = tickets.map(item => ({
         ...item,
         ticket: {
           ...item.ticket,
+          id: item.ticket.ticketNumber || item.ticket.id, // Usar ticketNumber como ID exibido
+          ticketNumber: item.ticket.ticketNumber, // Garantir que ticketNumber está presente
+          internalId: item.ticket.id, // Manter UUID original para referência interna
           attachmentUrl: getFullImageUrl(req, item.ticket.attachmentUrl),
         },
       }));
+
+      console.log("📤 [GET TICKETS] Resposta enviada:", ticketsWithFullUrls.map(t => ({
+        id: t.ticket.id,
+        ticketNumber: t.ticket.ticketNumber,
+      })));
 
       res.json({
         success: true,
@@ -16365,9 +16392,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const tickets = await query.orderBy(desc(supportTickets.createdAt));
 
+      // Usar ticketNumber como ID principal
+      const ticketsWithCorrectId = tickets.map(item => ({
+        ...item,
+        ticket: {
+          ...item.ticket,
+          id: item.ticket.ticketNumber || item.ticket.id, // Usar ticketNumber como ID exibido
+          ticketNumber: item.ticket.ticketNumber, // Garantir que ticketNumber está presente
+          internalId: item.ticket.id, // Manter UUID original
+        },
+      }));
+
       res.json({
         success: true,
-        tickets,
+        tickets: ticketsWithCorrectId,
       });
     } catch (error) {
       console.error("Erro ao listar tickets:", error);
@@ -16383,6 +16421,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const { id } = req.params;
 
     try {
+      // Aceitar tanto UUID quanto ticketNumber
       const ticket = await db
         .select({
           ticket: supportTickets,
@@ -16390,7 +16429,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
         })
         .from(supportTickets)
         .leftJoin(ticketSubjects, eq(supportTickets.subjectId, ticketSubjects.id))
-        .where(eq(supportTickets.id, id));
+        .where(
+          or(
+            eq(supportTickets.id, id),
+            eq(supportTickets.ticketNumber, id)
+          )
+        );
 
       if (ticket.length === 0) {
         return res.status(404).json({
@@ -16399,34 +16443,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
+      const ticketId = ticket[0].ticket.id;
+
       // Buscar respostas
       const replies = await db
         .select()
         .from(ticketReplies)
-        .where(eq(ticketReplies.ticketId, id))
+        .where(eq(ticketReplies.ticketId, ticketId))
         .orderBy(ticketReplies.createdAt);
 
       // Marcar ticket e respostas como lidas pelo motorista
       await db
         .update(supportTickets)
         .set({ unreadByDriver: false })
-        .where(eq(supportTickets.id, id));
+        .where(eq(supportTickets.id, ticketId));
 
       await db
         .update(ticketReplies)
         .set({ readByDriver: true })
         .where(
           and(
-            eq(ticketReplies.ticketId, id),
+            eq(ticketReplies.ticketId, ticketId),
             eq(ticketReplies.authorType, "admin")
           )
         );
 
-      // Converter URLs de imagens para URLs completas
+      // Converter URLs de imagens para URLs completas e usar ticketNumber como ID
       const ticketWithFullUrl = {
         ...ticket[0],
         ticket: {
           ...ticket[0].ticket,
+          id: ticket[0].ticket.ticketNumber || ticket[0].ticket.id, // Usar ticketNumber como ID exibido
+          ticketNumber: ticket[0].ticket.ticketNumber, // Garantir que ticketNumber está presente
+          internalId: ticket[0].ticket.id, // Manter UUID original
           attachmentUrl: getFullImageUrl(req, ticket[0].ticket.attachmentUrl),
         },
       };
@@ -16478,13 +16527,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
 
     try {
-      // Verificar se o ticket existe e pertence ao motorista
+      // Verificar se o ticket existe e pertence ao motorista (aceitar UUID ou ticketNumber)
       const ticket = await db
         .select()
         .from(supportTickets)
         .where(
           and(
-            eq(supportTickets.id, id),
+            or(
+              eq(supportTickets.id, id),
+              eq(supportTickets.ticketNumber, id)
+            ),
             eq(supportTickets.driverId, driverId)
           )
         );
@@ -16496,6 +16548,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           message: "Ticket não encontrado",
         });
       }
+
+      const ticketId = ticket[0].id;
 
       // Fazer upload para R2 se houver arquivo
       let attachmentUrl = null;
@@ -16512,7 +16566,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const replyData = {
-        ticketId: id,
+        ticketId: ticketId,
         authorType: "driver" as const,
         authorId: driverId,
         authorName: driverName,
@@ -16542,7 +16596,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           lastReplyAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(supportTickets.id, id));
+        .where(eq(supportTickets.id, ticketId));
 
       res.status(201).json({
         success: true,

@@ -1430,9 +1430,9 @@ export const insertSupportTicketSchema = createInsertSchema(supportTickets, {
   message: z.string().min(1, "Mensagem é obrigatória"),
   attachmentUrl: z.string().nullable().optional(),
   status: z.enum(["open", "in_progress", "resolved", "closed"]).default("open"),
+  ticketNumber: z.string().optional(), // Permitir ticketNumber opcional
 }).omit({
   id: true,
-  ticketNumber: true,
   repliesCount: true,
   unreadByDriver: true,
   lastReplyAt: true,

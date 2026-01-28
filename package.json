@@ -24,7 +24,9 @@
     "setup:smtp": "tsx server/setup-smtp.ts",
     "fix:smtp": "tsx server/fix-smtp-config.ts",
     "test:forgot-password": "tsx server/test-forgot-password.ts",
-    "find:email": "tsx server/find-email.ts"
+    "find:email": "tsx server/find-email.ts",
+    "fix:tickets": "tsx server/fix-ticket-numbers.ts",
+    "check:tickets": "tsx server/check-tickets.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.931.0",
