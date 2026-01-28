@@ -3010,13 +3010,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log("📝 Dados recebidos para criar preço:", req.body);
 
+      // Converter strings vazias para null em campos de foreign key
+      const data = { ...req.body };
+      if (data.rotaIntermunicipalId === '' || data.rotaIntermunicipalId === undefined) {
+        data.rotaIntermunicipalId = null;
+      }
+      if (data.serviceLocationId === '' || data.serviceLocationId === undefined) {
+        data.serviceLocationId = null;
+      }
+
       // Verificação de duplicados depende do tipo
-      if (req.body.tipo === "entrega_rapida") {
+      if (data.tipo === "entrega_rapida") {
         // Para entrega rápida: verificar combinação cidade + categoria
-        if (req.body.serviceLocationId && req.body.vehicleTypeId) {
+        if (data.serviceLocationId && data.vehicleTypeId) {
           const existing = await storage.getCityPriceByLocationAndVehicle(
-            req.body.serviceLocationId,
-            req.body.vehicleTypeId
+            data.serviceLocationId,
+            data.vehicleTypeId
           );
 
           if (existing) {
@@ -3026,14 +3035,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
             });
           }
         }
-      } else if (req.body.tipo === "rota_intermunicipal") {
+      } else if (data.tipo === "rota_intermunicipal") {
         // Para rota intermunicipal: verificar combinação rota + categoria
-        if (req.body.rotaIntermunicipalId && req.body.vehicleTypeId) {
+        if (data.rotaIntermunicipalId && data.vehicleTypeId) {
           const allPrices = await storage.getAllCityPrices();
           const existing = allPrices.find(p =>
             p.tipo === "rota_intermunicipal" &&
-            p.rotaIntermunicipalId === req.body.rotaIntermunicipalId &&
-            p.vehicleTypeId === req.body.vehicleTypeId
+            p.rotaIntermunicipalId === data.rotaIntermunicipalId &&
+            p.vehicleTypeId === data.vehicleTypeId
           );
 
           if (existing) {
@@ -3045,8 +3054,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      console.log("✅ Criando novo preço...");
-      const cityPrice = await storage.createCityPrice(req.body);
+      console.log("✅ Criando novo preço...", data);
+      const cityPrice = await storage.createCityPrice(data);
       console.log("✅ Preço criado com sucesso:", cityPrice);
       return res.status(201).json(cityPrice);
     } catch (error: any) {
@@ -3065,7 +3074,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const { id } = req.params;
-      const cityPrice = await storage.updateCityPrice(id, req.body);
+
+      // Converter strings vazias para null em campos de foreign key
+      const data = { ...req.body };
+      if (data.rotaIntermunicipalId === '') {
+        data.rotaIntermunicipalId = null;
+      }
+      if (data.serviceLocationId === '') {
+        data.serviceLocationId = null;
+      }
+
+      const cityPrice = await storage.updateCityPrice(id, data);
 
       if (!cityPrice) {
         return res.status(404).json({ message: "Preço não encontrado" });
@@ -7692,14 +7711,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const companyId = req.session.companyId;
 
       // Buscar estatísticas de entregas rápidas
+      // Usando DATE() com timezone America/Sao_Paulo para comparar corretamente o dia de hoje
       const deliveryStats = await pool.query(`
         SELECT
           COUNT(*) FILTER (WHERE is_completed = false AND is_cancelled = false) AS "inProgress",
           COUNT(*) FILTER (WHERE is_completed = true) AS "completed",
           COUNT(*) FILTER (WHERE is_cancelled = true) AS "cancelled",
-          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '1 day' AND is_completed = false AND is_cancelled = false) AS "todayInProgress",
-          COUNT(*) FILTER (WHERE completed_at >= NOW() - INTERVAL '1 day') AS "todayCompleted",
-          COUNT(*) FILTER (WHERE cancelled_at >= NOW() - INTERVAL '1 day') AS "todayCancelled",
+          COUNT(*) FILTER (WHERE DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = DATE(NOW() AT TIME ZONE 'America/Sao_Paulo') AND is_completed = false AND is_cancelled = false) AS "todayInProgress",
+          COUNT(*) FILTER (WHERE DATE(completed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = DATE(NOW() AT TIME ZONE 'America/Sao_Paulo')) AS "todayCompleted",
+          COUNT(*) FILTER (WHERE DATE(cancelled_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = DATE(NOW() AT TIME ZONE 'America/Sao_Paulo')) AS "todayCancelled",
           COALESCE(AVG(EXTRACT(EPOCH FROM (completed_at - created_at)) / 60) FILTER (WHERE is_completed = true AND completed_at >= NOW() - INTERVAL '7 days'), 0) AS "avgDeliveryTimeMinutes",
           COALESCE(SUM(rb.total_amount) FILTER (WHERE r.is_completed = true AND r.completed_at >= NOW() - INTERVAL '7 days'), 0) AS "weeklySpent"
         FROM requests r
@@ -11979,7 +11999,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         document = inserted;
       }
 
-      // 📸 Se o documento for uma selfie, atualizar a foto de perfil do motorista
+      // 📸 Se for selfie, atualizar foto de perfil do motorista
       const [documentType] = await db
         .select()
         .from(driverDocumentTypes)
@@ -11990,464 +12010,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log(`📸 Atualizando foto de perfil do motorista com a selfie`);
         await db
           .update(drivers)
-          .set({
-            profilePicture: documentUrl,
-          })
+          .set({ profilePicture: documentUrl })
           .where(eq(drivers.id, driverId));
-
-        console.log(`✅ Foto de perfil atualizada: ${documentUrl}`);
-
-        // 🔍 Validar selfie com FaceMatch comparando com a CNH
-        if (process.env.CELLEREIT_API_TOKEN) {
-          try {
-            console.log(`🔍 Validando selfie com FaceMatch...`);
-
-            // Buscar a CNH do motorista
-            const cnhDoc = await db
-              .select()
-              .from(driverDocuments)
-              .innerJoin(
-                driverDocumentTypes,
-                eq(driverDocuments.documentTypeId, driverDocumentTypes.id)
-              )
-              .where(
-                and(
-                  eq(driverDocuments.driverId, driverId),
-                  sql`LOWER(${driverDocumentTypes.name}) LIKE '%cnh%'`
-                )
-              )
-              .limit(1);
-
-            if (cnhDoc.length > 0 && cnhDoc[0].driver_documents.documentUrl) {
-              console.log(`📄 CNH encontrada: ${cnhDoc[0].driver_documents.documentUrl}`);
-
-              // Baixar as imagens da CNH e Selfie do R2
-              const [cnhImageResponse, selfieImageResponse] = await Promise.all([
-                nodeFetch(cnhDoc[0].driver_documents.documentUrl),
-                nodeFetch(documentUrl),
-              ]);
-
-              if (!cnhImageResponse.ok || !selfieImageResponse.ok) {
-                throw new Error('Erro ao baixar imagens do R2');
-              }
-
-              const [cnhBuffer, selfieBuffer] = await Promise.all([
-                cnhImageResponse.arrayBuffer(),
-                selfieImageResponse.arrayBuffer(),
-              ]);
-
-              // Criar FormData para a API FaceMatch
-              const FormData = (await import('form-data')).default;
-              const formData = new FormData();
-
-              formData.append('face_a', Buffer.from(selfieBuffer), {
-                filename: 'selfie.jpg',
-                contentType: 'image/jpeg',
-              });
-
-              formData.append('face_b', Buffer.from(cnhBuffer), {
-                filename: 'cnh.jpg',
-                contentType: 'image/jpeg',
-              });
-
-              console.log(`📡 Enviando para API FaceMatch...`);
-
-              // Chamar API FaceMatch
-              const faceMatchResponse = await nodeFetch('https://api.gw.cellereit.com.br/facematch/', {
-                method: 'POST',
-                headers: {
-                  ...formData.getHeaders(),
-                  'Authorization': `Bearer ${process.env.CELLEREIT_API_TOKEN}`,
-                },
-                body: formData as any,
-              });
-
-              console.log(`📡 Status da resposta FaceMatch: ${faceMatchResponse.status}`);
-
-              if (faceMatchResponse.ok) {
-                const faceMatchData = await faceMatchResponse.json();
-                console.log(`📋 Resultado FaceMatch:`, JSON.stringify(faceMatchData, null, 2));
-
-                // Verificar se a API retornou erro interno (mesmo com HTTP 200)
-                if (faceMatchData.status && faceMatchData.status.code !== 200) {
-                  console.log(`⚠️ API FaceMatch retornou erro interno: ${faceMatchData.status.code} - ${faceMatchData.status.message}`);
-
-                  // Verificar detalhes do erro
-                  let selfieHasFace = false;
-                  if (faceMatchData.result?.img_stats) {
-                    const imgA = faceMatchData.result.img_stats.imga;
-                    const imgB = faceMatchData.result.img_stats.imgb;
-                    console.log(`📊 Faces detectadas:`);
-                    console.log(`   Selfie: ${imgA?.num_faces || 0} face(s) (score: ${imgA?.score || -1})`);
-                    console.log(`   CNH: ${imgB?.num_faces || 0} face(s) (score: ${imgB?.score || -1})`);
-
-                    selfieHasFace = (imgA?.num_faces || 0) === 1;
-                  }
-
-                  console.log(`${selfieHasFace ? '⚠️ Selfie válida mas falhou na comparação' : '❌ Selfie inválida - nenhuma face detectada'}`);
-
-                  // Salvar resultado indicando se detectou face ou não
-                  await db
-                    .update(driverDocuments)
-                    .set({
-                      faceMatchScore: null,
-                      faceMatchValidated: selfieHasFace ? false : null, // false = detectou face mas não passou na validação, null = não detectou face
-                      faceMatchData: faceMatchData,
-                      updatedAt: new Date(),
-                    })
-                    .where(eq(driverDocuments.id, document.id));
-
-                  // Atualizar variável document para retornar na resposta
-                  document = {
-                    ...document,
-                    faceMatchScore: null,
-                    faceMatchValidated: selfieHasFace ? false : null,
-                    faceMatchData: faceMatchData,
-                  };
-                } else {
-                  // Extrair score de similaridade
-                  // A API retorna 'confiability' e 'distance'
-                  let faceMatchScore: number | null = null;
-                  let faceMatchValidated = false;
-
-                  if (faceMatchData.result?.confiability !== undefined && faceMatchData.result.confiability !== '') {
-                    faceMatchScore = parseFloat(faceMatchData.result.confiability);
-                  } else if (faceMatchData.result?.distance !== undefined && faceMatchData.result.distance >= 0) {
-                    // Distance: quanto menor, mais similar (0 = idêntico)
-                    // Converter para porcentagem de similaridade (inverso)
-                    faceMatchScore = Math.max(0, 100 - (faceMatchData.result.distance * 10));
-                  }
-
-                  // Considerar validado se score >= 70% (ajuste conforme necessário)
-                  if (faceMatchScore !== null && faceMatchScore >= 70) {
-                    faceMatchValidated = true;
-                  }
-
-                  console.log(`📊 Score FaceMatch: ${faceMatchScore}`);
-                  console.log(`${faceMatchValidated ? '✅ Validação APROVADA' : '⚠️ Validação REPROVADA'}`);
-
-                  // Atualizar documento com informações do FaceMatch
-                  await db
-                    .update(driverDocuments)
-                    .set({
-                      faceMatchScore: faceMatchScore,
-                      faceMatchValidated: faceMatchValidated,
-                      faceMatchData: faceMatchData,
-                      updatedAt: new Date(),
-                    })
-                    .where(eq(driverDocuments.id, document.id));
-
-                  // Atualizar variável document para retornar na resposta
-                  document = {
-                    ...document,
-                    faceMatchScore: faceMatchScore,
-                    faceMatchValidated: faceMatchValidated,
-                    faceMatchData: faceMatchData,
-                  };
-                }
-              } else {
-                console.log(`⚠️ Erro na API FaceMatch: ${faceMatchResponse.status} ${faceMatchResponse.statusText}`);
-                try {
-                  const errorBody = await faceMatchResponse.text();
-                  console.log(`📋 Corpo do erro:`, errorBody);
-
-                  // Tentar parsear como JSON para ver se tem mais detalhes
-                  try {
-                    const errorJson = JSON.parse(errorBody);
-                    console.log(`📋 Erro JSON:`, JSON.stringify(errorJson, null, 2));
-                  } catch (e) {
-                    // Não é JSON, já logamos o texto acima
-                  }
-                } catch (e) {
-                  console.log(`Não foi possível ler o corpo do erro`);
-                }
-              }
-            } else {
-              console.log(`⚠️ CNH não encontrada para o motorista. Não é possível validar selfie.`);
-            }
-          } catch (faceMatchError) {
-            console.error("Erro ao validar selfie com FaceMatch:", faceMatchError);
-            // Não bloqueia o upload se a validação falhar
-          }
-        }
-      }
-
-      // 🔍 Se o documento for CNH, validar data de validade automaticamente
-      if (documentType && documentType.name.toLowerCase().includes('cnh') && process.env.CELLEREIT_API_TOKEN) {
-        try {
-          console.log(`🔍 Validando CNH automaticamente...`);
-
-          // Converter imagem para base64
-          const imageBase64 = req.file.buffer.toString('base64');
-
-          // Chamar API Cellereit para extrair dados da CNH
-          const cnhResponse = await fetch('https://api.gw.cellereit.com.br/contextus/cnh', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${process.env.CELLEREIT_API_TOKEN}`,
-            },
-            body: JSON.stringify({
-              image: imageBase64
-            }),
-          });
-
-          if (cnhResponse.ok) {
-            const cnhData = await cnhResponse.json();
-            console.log(`📋 Dados da CNH extraídos:`, cnhData);
-
-            // Verificar se a API retornou erro interno (status.code != 200)
-            if (cnhData.status && cnhData.status.code !== 200) {
-              console.log(`⚠️ API retornou erro interno: ${cnhData.status.code} - ${cnhData.status.message || 'Sem mensagem'}`);
-              if (cnhData.result && cnhData.result[0] && cnhData.result[0].docQualityScore === 0) {
-                console.log(`⚠️ Imagem não reconhecida como CNH válida (qualidade: 0). Verifique se a imagem está clara e é uma CNH.`);
-              }
-            }
-
-            // Procurar campo data_validade na resposta
-            let expirationDateStr = null;
-            let validationData: Record<string, string> = {};
-
-            // A resposta pode vir em diferentes formatos, vamos tentar encontrar a data de validade
-            if (Array.isArray(cnhData)) {
-              // Se for array de campos
-              for (const field of cnhData) {
-                if (field.name && field.value) {
-                  validationData[field.name] = field.value;
-                  if (field.name === 'data_validade' || field.name === 'validade') {
-                    expirationDateStr = field.value;
-                  }
-                }
-              }
-            } else if (cnhData.result && Array.isArray(cnhData.result) && cnhData.result.length > 0) {
-              // Formato: { result: [{ fields: [...] }] }
-              const firstResult = cnhData.result[0];
-
-              // Verificar qualidade do documento
-              if (firstResult.docQualityScore) {
-                console.log(`📊 Qualidade do documento: ${(firstResult.docQualityScore * 100).toFixed(1)}%`);
-              }
-              if (firstResult.docType) {
-                console.log(`📄 Tipo de documento detectado: ${firstResult.docType}`);
-              }
-
-              if (firstResult.fields && Array.isArray(firstResult.fields) && firstResult.fields.length > 0) {
-                console.log(`📋 Campos encontrados (${firstResult.fields.length}):`, firstResult.fields.map((f: any) => f.name).join(', '));
-                for (const field of firstResult.fields) {
-                  if (field.name && field.value) {
-                    validationData[field.name] = field.value;
-                    if (field.name === 'data_validade' || field.name === 'validade') {
-                      expirationDateStr = field.value;
-                    }
-                  }
-                }
-              } else {
-                console.log(`⚠️ Nenhum campo extraído da imagem. A qualidade pode estar muito baixa ou não é uma CNH válida.`);
-              }
-            } else if (cnhData.data_validade) {
-              expirationDateStr = cnhData.data_validade;
-              validationData = cnhData;
-            } else if (cnhData.fields && Array.isArray(cnhData.fields)) {
-              for (const field of cnhData.fields) {
-                if (field.name && field.value) {
-                  validationData[field.name] = field.value;
-                  if (field.name === 'data_validade' || field.name === 'validade') {
-                    expirationDateStr = field.value;
-                  }
-                }
-              }
-            }
-
-            if (expirationDateStr) {
-              console.log(`📅 Data de validade encontrada: ${expirationDateStr}`);
-
-              // Converter data de validade (formato DD/MM/YYYY) para Date
-              const dateParts = expirationDateStr.split('/');
-              let expirationDate: Date | null = null;
-
-              if (dateParts.length === 3) {
-                const day = parseInt(dateParts[0], 10);
-                const month = parseInt(dateParts[1], 10) - 1; // Mês em JS é 0-indexed
-                const year = parseInt(dateParts[2], 10);
-                expirationDate = new Date(year, month, day);
-              }
-
-              if (expirationDate && !isNaN(expirationDate.getTime())) {
-                // Verificar se está vencido
-                const today = new Date();
-                today.setHours(0, 0, 0, 0);
-                const isExpired = expirationDate < today;
-
-                console.log(`📅 Data de validade: ${expirationDate.toLocaleDateString('pt-BR')}`);
-                console.log(`${isExpired ? '⚠️ DOCUMENTO VENCIDO!' : '✅ Documento válido'}`);
-
-                // Atualizar documento com informações de validade
-                await db
-                  .update(driverDocuments)
-                  .set({
-                    expirationDate: expirationDate,
-                    isExpired: isExpired,
-                    validationData: validationData,
-                    updatedAt: new Date(),
-                  })
-                  .where(eq(driverDocuments.id, document.id));
-
-                // Atualizar variável document para retornar na resposta
-                document = {
-                  ...document,
-                  expirationDate: expirationDate,
-                  isExpired: isExpired,
-                  validationData: validationData,
-                };
-              }
-            } else {
-              console.log(`⚠️ Data de validade não encontrada na resposta da API`);
-            }
-          } else {
-            console.log(`⚠️ Erro na API de validação CNH: ${cnhResponse.status}`);
-          }
-        } catch (cnhError) {
-          console.error("Erro ao validar CNH automaticamente:", cnhError);
-          // Não bloqueia o upload se a validação falhar
-        }
-      }
-
-      // 🔍 Se o documento for CRLV, validar data de validade automaticamente
-      if (documentType && documentType.name.toLowerCase().includes('crlv') && process.env.CELLEREIT_API_TOKEN) {
-        try {
-          console.log(`🔍 Validando CRLV-Digital automaticamente...`);
-
-          // Criar FormData para enviar o arquivo
-          const FormData = (await import('form-data')).default;
-          const formData = new FormData();
-          formData.append('file', req.file.buffer, {
-            filename: req.file.originalname || 'crlv.pdf',
-            contentType: req.file.mimetype || 'application/pdf',
-          });
-
-          console.log(`📦 Tamanho do arquivo: ${req.file.buffer.length} bytes`);
-
-          // Chamar API Cellereit para extrair dados do CRLV
-          // A API do CRLV usa multipart/form-data
-          const crlvResponse = await fetch('https://api.gw.cellereit.com.br/contextus/crlv-digital', {
-            method: 'POST',
-            headers: {
-              ...formData.getHeaders(),
-              'Authorization': `Bearer ${process.env.CELLEREIT_API_TOKEN}`,
-            },
-            body: formData,
-          });
-
-          console.log(`📡 Status da resposta CRLV: ${crlvResponse.status}`);
-
-          if (crlvResponse.ok) {
-            const crlvData = await crlvResponse.json();
-            console.log(`📋 Dados do CRLV extraídos:`, crlvData);
-
-            // Verificar se a API retornou erro interno
-            if (crlvData.status && crlvData.status.code !== 200) {
-              console.log(`⚠️ API retornou erro interno: ${crlvData.status.code} - ${crlvData.status.message || 'Sem mensagem'}`);
-              if (crlvData.result && crlvData.result[0] && crlvData.result[0].docQualityScore === 0) {
-                console.log(`⚠️ Imagem não reconhecida como CRLV válido (qualidade: 0). Verifique se a imagem está clara e é um CRLV.`);
-              }
-            }
-
-            // Procurar campo data_validade na resposta
-            let expirationDateStr = null;
-            let validationData: Record<string, string> = {};
-
-            if (crlvData.result && Array.isArray(crlvData.result) && crlvData.result.length > 0) {
-              const firstResult = crlvData.result[0];
-
-              // Verificar qualidade do documento
-              if (firstResult.docQualityScore) {
-                console.log(`📊 Qualidade do documento: ${(firstResult.docQualityScore * 100).toFixed(1)}%`);
-              }
-              if (firstResult.docType) {
-                console.log(`📄 Tipo de documento detectado: ${firstResult.docType}`);
-              }
-
-              if (firstResult.fields && Array.isArray(firstResult.fields) && firstResult.fields.length > 0) {
-                console.log(`📋 Campos encontrados (${firstResult.fields.length}):`, firstResult.fields.map((f: any) => f.name).join(', '));
-                for (const field of firstResult.fields) {
-                  if (field.name && field.value) {
-                    validationData[field.name] = field.value;
-                    // CRLV pode ter diferentes nomes para data de validade
-                    if (field.name === 'data_validade' || field.name === 'validade' || field.name === 'exercicio' || field.name === 'ano_exercicio') {
-                      expirationDateStr = field.value;
-                    }
-                  }
-                }
-              } else {
-                console.log(`⚠️ Nenhum campo extraído da imagem. A qualidade pode estar muito baixa ou não é um CRLV válido.`);
-              }
-            }
-
-            if (expirationDateStr) {
-              console.log(`📅 Data de validade/exercício encontrada: ${expirationDateStr}`);
-
-              let expirationDate: Date | null = null;
-
-              // CRLV pode vir como data (DD/MM/YYYY) ou apenas ano (YYYY)
-              if (expirationDateStr.includes('/')) {
-                // Formato DD/MM/YYYY
-                const dateParts = expirationDateStr.split('/');
-                if (dateParts.length === 3) {
-                  const day = parseInt(dateParts[0], 10);
-                  const month = parseInt(dateParts[1], 10) - 1;
-                  const year = parseInt(dateParts[2], 10);
-                  expirationDate = new Date(year, month, day);
-                }
-              } else if (/^\d{4}$/.test(expirationDateStr)) {
-                // Apenas ano (YYYY) - considerar vencido se ano < ano atual
-                const year = parseInt(expirationDateStr, 10);
-                expirationDate = new Date(year, 11, 31); // Fim do ano de exercício
-              }
-
-              if (expirationDate && !isNaN(expirationDate.getTime())) {
-                // Verificar se está vencido
-                const today = new Date();
-                today.setHours(0, 0, 0, 0);
-                const isExpired = expirationDate < today;
-
-                console.log(`📅 Data de validade: ${expirationDate.toLocaleDateString('pt-BR')}`);
-                console.log(`${isExpired ? '⚠️ DOCUMENTO VENCIDO!' : '✅ Documento válido'}`);
-
-                // Atualizar documento com informações de validade
-                await db
-                  .update(driverDocuments)
-                  .set({
-                    expirationDate: expirationDate,
-                    isExpired: isExpired,
-                    validationData: validationData,
-                    updatedAt: new Date(),
-                  })
-                  .where(eq(driverDocuments.id, document.id));
-
-                // Atualizar variável document para retornar na resposta
-                document = {
-                  ...document,
-                  expirationDate: expirationDate,
-                  isExpired: isExpired,
-                  validationData: validationData,
-                };
-              }
-            } else {
-              console.log(`⚠️ Data de validade não encontrada na resposta da API`);
-            }
-          } else {
-            console.log(`⚠️ Erro na API de validação CRLV: ${crlvResponse.status}`);
-            try {
-              const errorBody = await crlvResponse.text();
-              console.log(`📋 Corpo do erro:`, errorBody);
-            } catch (e) {
-              console.log(`Não foi possível ler o corpo do erro`);
-            }
-          }
-        } catch (crlvError) {
-          console.error("Erro ao validar CRLV automaticamente:", crlvError);
-          // Não bloqueia o upload se a validação falhar
-        }
       }
 
       // Verificar se todos os documentos obrigatórios foram enviados
