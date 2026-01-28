@@ -549,6 +549,26 @@ export default function EntregasIntermunicipais() {
     return () => clearTimeout(timer);
   }, [isDialogOpen, fields, initializeAutocomplete]);
 
+  // Inicializar autocomplete quando o accordion abre um novo item
+  useEffect(() => {
+    if (!window.google?.maps?.places || !isDialogOpen || accordionValue === "") {
+      return;
+    }
+
+    const index = parseInt(accordionValue, 10);
+    if (isNaN(index)) return;
+
+    // Aguardar o accordion terminar de abrir e o input estar disponível
+    const timer = setTimeout(() => {
+      const inputElement = enderecoInputsRef.current[index];
+      if (inputElement && !autocompletesRef.current[index]) {
+        initializeAutocomplete(index);
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [accordionValue, isDialogOpen, initializeAutocomplete]);
+
   // Atualizar selectedRota quando rotaId mudar
   if (rotaId && rotaId !== selectedRota) {
     console.log("🔄 Atualizando selectedRota:", { de: selectedRota, para: rotaId });
@@ -883,7 +903,7 @@ export default function EntregasIntermunicipais() {
                 ) : (
                   <div className="p-4 border border-orange-200 bg-orange-50 rounded-lg">
                     <p className="text-sm text-orange-800">
-                      ⚠️ Não há preços configurados para esta rota. Entre em contato com o administrador para configurar as categorias de veículos e preços.
+                      ⚠️ Rota indisponível no momento, contate o suporte para maiores informações.
                     </p>
                   </div>
                 )

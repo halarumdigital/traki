@@ -1535,6 +1535,8 @@ export class DatabaseStorage implements IStorage {
         id: viagensIntermunicipais.id,
         rotaId: viagensIntermunicipais.rotaId,
         rotaNome: rotasIntermunicipais.nomeRota,
+        distanciaKm: rotasIntermunicipais.distanciaKm,
+        tempoEstimadoMinutos: rotasIntermunicipais.tempoMedioMinutos,
         dataViagem: viagensIntermunicipais.dataViagem,
         status: viagensIntermunicipais.status,
         capacidadePacotesTotal: viagensIntermunicipais.capacidadePacotesTotal,
@@ -1637,7 +1639,7 @@ export class DatabaseStorage implements IStorage {
     console.log(`🔍 [storage.getViagemColetas] Buscando coletas para viagem ${viagemId}`);
 
     // Buscar coletas da tabela viagem_coletas com join de entrega e empresa
-    // IMPORTANTE: Filtrar apenas entregas NÃO canceladas
+    // IMPORTANTE: Filtrar apenas entregas NÃO canceladas (inclui entregas entregues para cálculo de valor)
     const coletas = await db
       .select({
         coleta: viagemColetas,
@@ -1650,7 +1652,7 @@ export class DatabaseStorage implements IStorage {
       .where(
         and(
           eq(viagemColetas.viagemId, viagemId),
-          sql`${entregasIntermunicipais.status} NOT IN ('cancelada', 'concluida')`
+          sql`${entregasIntermunicipais.status} != 'cancelada'`
         )
       )
       .orderBy(viagemColetas.ordemColeta);
@@ -1739,7 +1741,7 @@ export class DatabaseStorage implements IStorage {
     console.log(`🔍 [storage.getViagemEntregas] Buscando entregas para viagem ${viagemId}`);
 
     // Buscar entregas da tabela viagem_entregas com join de entrega intermunicipal
-    // IMPORTANTE: Filtrar apenas entregas NÃO canceladas
+    // IMPORTANTE: Filtrar apenas entregas NÃO canceladas (inclui entregas entregues para cálculo de valor)
     const entregas = await db
       .select({
         viagemEntrega: viagemEntregas,
@@ -1750,7 +1752,7 @@ export class DatabaseStorage implements IStorage {
       .where(
         and(
           eq(viagemEntregas.viagemId, viagemId),
-          sql`${entregasIntermunicipais.status} NOT IN ('cancelada', 'concluida')`
+          sql`${entregasIntermunicipais.status} != 'cancelada'`
         )
       )
       .orderBy(viagemEntregas.ordemEntrega);
@@ -1840,7 +1842,7 @@ export class DatabaseStorage implements IStorage {
         capacidadePacotes: entregadorRotas.capacidadePacotes,
         capacidadePesoKg: entregadorRotas.capacidadePesoKg,
         horarioSaidaPadrao: entregadorRotas.horarioSaida,
-        ativa: entregadorRotas.ativa,
+        ativo: entregadorRotas.ativa, // Mapeado: ativa -> ativo
         createdAt: entregadorRotas.createdAt,
         updatedAt: entregadorRotas.updatedAt,
       })
@@ -1870,7 +1872,7 @@ export class DatabaseStorage implements IStorage {
         diasSemana: entregadorRotas.diasSemana, // ✅ Campo adicionado
         horarioSaidaPadrao: entregadorRotas.horarioSaida,
         horarioChegada: entregadorRotas.horarioChegada,
-        ativa: entregadorRotas.ativa,
+        ativo: entregadorRotas.ativa, // Mapeado: ativa -> ativo (para o app mobile)
       })
       .from(entregadorRotas)
       .leftJoin(rotasIntermunicipais, eq(entregadorRotas.rotaId, rotasIntermunicipais.id))

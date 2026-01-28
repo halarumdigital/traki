@@ -41,7 +41,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Pencil, Trash2, Plus, Eye, Star, Search, DollarSign, TrendingUp, MapPin, Wallet, ArrowDownToLine, ArrowUpFromLine, CreditCard, Key, Upload, X, Building2 } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { insertCompanySchema, type Company } from "@shared/schema";
+import { insertCompanySchema, type Company, type ServiceLocation } from "@shared/schema";
 import type { z } from "zod";
 
 type FormData = z.infer<typeof insertCompanySchema>;
@@ -108,6 +108,10 @@ export default function Empresas() {
 
   const { data: companies = [], isLoading } = useQuery<Company[]>({
     queryKey: ["/api/companies"],
+  });
+
+  const { data: cities = [] } = useQuery<ServiceLocation[]>({
+    queryKey: ["/api/cities"],
   });
 
   const { data: companyTrips = [] } = useQuery<any[]>({
@@ -855,11 +859,31 @@ export default function Empresas() {
 
                   <div>
                     <Label htmlFor="city">Cidade</Label>
-                    <Input
+                    <select
                       id="city"
                       {...register("city")}
-                      placeholder="Nome da cidade"
-                    />
+                      onChange={(e) => {
+                        const selectedCity = cities.find(c => c.name === e.target.value);
+                        if (selectedCity) {
+                          setValue("city", selectedCity.name);
+                          setValue("state", selectedCity.state);
+                        } else {
+                          setValue("city", e.target.value);
+                        }
+                      }}
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <option value="">Selecione uma cidade</option>
+                      {cities
+                        .filter(city => city.active)
+                        .sort((a, b) => a.name.localeCompare(b.name))
+                        .map(city => (
+                          <option key={city.id} value={city.name}>
+                            {city.name} - {city.state}
+                          </option>
+                        ))
+                      }
+                    </select>
                   </div>
 
                   <div>
@@ -869,6 +893,8 @@ export default function Empresas() {
                       {...register("state")}
                       placeholder="UF"
                       maxLength={2}
+                      readOnly
+                      className="bg-muted"
                     />
                   </div>
 

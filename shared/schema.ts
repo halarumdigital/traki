@@ -293,7 +293,7 @@ export const entregadorCapacidadeDiaria = pgTable("entregador_capacidade_diaria"
 // ========================================
 export const cityPrices = pgTable("city_prices", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  serviceLocationId: varchar("service_location_id").notNull().references(() => serviceLocations.id),
+  serviceLocationId: varchar("service_location_id").references(() => serviceLocations.id), // Nullable para rotas intermunicipais
   vehicleTypeId: varchar("vehicle_type_id").notNull().references(() => vehicleTypes.id),
 
   // Pricing

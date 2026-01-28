@@ -3224,6 +3224,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       const { id } = req.params;
 
+      console.log("🔄 PUT rotas-intermunicipais - Body recebido:", req.body);
+      console.log("🔄 PUT rotas-intermunicipais - ativo:", req.body.ativo, "tipo:", typeof req.body.ativo);
+
       // Validar que origem e destino são diferentes (se ambos foram fornecidos)
       if (req.body.cidadeOrigemId && req.body.cidadeDestinoId &&
           req.body.cidadeOrigemId === req.body.cidadeDestinoId) {
@@ -3250,6 +3253,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (req.body.ativo !== undefined) {
         updateData.ativa = req.body.ativo; // Mapear ativo -> ativa
       }
+
+      console.log("🔄 PUT rotas-intermunicipais - updateData a ser salvo:", updateData);
 
       // Se as cidades estão sendo alteradas, regenerar o nome da rota
       if (req.body.cidadeOrigemId || req.body.cidadeDestinoId) {
@@ -3292,6 +3297,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!rota) {
         return res.status(404).json({ message: "Rota não encontrada" });
       }
+
+      console.log("🔄 PUT rotas-intermunicipais - Rota atualizada:", rota);
 
       return res.json(rota);
     } catch (error) {
@@ -4325,7 +4332,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (entrega.entrega_id) {
               const entregaDetalhes = await storage.getEntregaIntermunicipal(entrega.entrega_id);
               if (entregaDetalhes) {
-                valorTotalViagem += parseFloat(entregaDetalhes.valorFrete || '0');
+                valorTotalViagem += parseFloat(entregaDetalhes.valorTotal || '0');
               }
             }
           }
@@ -4335,7 +4342,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (entrega.entrega_id) {
               const entregaDetalhes = await storage.getEntregaIntermunicipal(entrega.entrega_id);
               if (entregaDetalhes && entregaDetalhes.empresaId) {
-                const valorEntrega = parseFloat(entregaDetalhes.valorFrete || '0');
+                const valorEntrega = parseFloat(entregaDetalhes.valorTotal || '0');
 
                 if (valorEntrega > 0) {
                   console.log(`💰 Processando pagamento da entrega ${entrega.entrega_id}...`);
@@ -4416,7 +4423,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (entrega.entrega_id) {
           const entregaDetalhes = await storage.getEntregaIntermunicipal(entrega.entrega_id);
           if (entregaDetalhes) {
-            const valorEntrega = parseFloat(entregaDetalhes.valorFrete || '0');
+            const valorEntrega = parseFloat(entregaDetalhes.valorTotal || '0');
             valorTotalViagem += valorEntrega;
 
             // Calcular valores individuais
@@ -4749,7 +4756,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(403).json({ message: "Acesso negado" });
       }
 
-      const rota = await storage.updateEntregadorRota(id, req.body);
+      // Mapear campos do app mobile para o schema do banco
+      const updateData: any = { ...req.body };
+
+      console.log("🔄 PUT entregador/rotas - Body recebido:", JSON.stringify(req.body, null, 2));
+
+      // Mapear ativo -> ativa (app envia 'ativo', banco usa 'ativa')
+      if (req.body.ativo !== undefined) {
+        updateData.ativa = req.body.ativo;
+        delete updateData.ativo;
+      }
+
+      // Mapear horarioSaidaPadrao -> horarioSaida
+      if (req.body.horarioSaidaPadrao !== undefined) {
+        updateData.horarioSaida = req.body.horarioSaidaPadrao;
+        delete updateData.horarioSaidaPadrao;
+      }
+
+      console.log("🔄 PUT entregador/rotas - updateData a salvar:", JSON.stringify(updateData, null, 2));
+
+      const rota = await storage.updateEntregadorRota(id, updateData);
+
+      console.log("🔄 PUT entregador/rotas - Rota salva:", JSON.stringify(rota, null, 2));
 
       if (!rota) {
         return res.status(404).json({ message: "Rota não encontrada" });
@@ -5265,19 +5293,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log(`🚚 GET /api/entregador/viagens - driverId: ${driverId}`);
       const viagens = await storage.getViagensIntermunicipasByEntregador(driverId);
       console.log(`📦 Viagens encontradas: ${viagens.length}`);
+      if (viagens.length > 0) {
+        console.log(`🔍 Primeira viagem (debug):`, {
+          id: viagens[0].id,
+          rotaId: viagens[0].rotaId,
+          distanciaKm: viagens[0].distanciaKm,
+          tempoEstimadoMinutos: viagens[0].tempoEstimadoMinutos
+        });
+      }
 
-      // Adicionar contagem de coletas e entregas para cada viagem
+      // Buscar porcentagem de comissão do admin para este motorista
+      const comissaoAdmin = await storage.getDriverCommissionPercentage(driverId);
+      const percentualEntregador = (100 - comissaoAdmin) / 100;
+
+      // Adicionar contagem de coletas, entregas e valor do entregador para cada viagem
       const viagensComDetalhes = await Promise.all(
         viagens.map(async (viagem) => {
           const coletas = await storage.getViagemColetas(viagem.id);
           const entregas = await storage.getViagemEntregas(viagem.id);
+
+          // Calcular valor total das entregas da viagem
+          let valorTotalViagem = 0;
+          console.log(`💰 Calculando valor para viagem ${viagem.id}, coletas: ${coletas.length}`);
+          for (const coleta of coletas) {
+            console.log(`   Coleta: entrega_id=${coleta.entrega_id}`);
+            if (coleta.entrega_id) {
+              const entrega = await storage.getEntregaIntermunicipal(coleta.entrega_id);
+              console.log(`   Entrega encontrada: valorTotal=${entrega?.valorTotal}`);
+              if (entrega && entrega.valorTotal) {
+                valorTotalViagem += parseFloat(entrega.valorTotal);
+              }
+            }
+          }
+          console.log(`   Valor total viagem: ${valorTotalViagem}`);
+
+          // Calcular valor que o entregador recebe (valor total - comissão admin)
+          const valorEntregador = valorTotalViagem * percentualEntregador;
 
           return {
             ...viagem,
             totalColetas: coletas.length,
             coletasConcluidas: coletas.filter(c => c.status === 'coletado').length,
             totalEntregas: entregas.length,
-            entregasConcluidas: entregas.filter(e => e.status === 'entregue').length
+            entregasConcluidas: entregas.filter(e => e.status === 'entregue').length,
+            valorEntregador: valorEntregador.toFixed(2)
           };
         })
       );
@@ -5287,6 +5346,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         rotaNome: v.rotaNome,
         status: v.status,
         dataViagem: v.dataViagem,
+        distanciaKm: v.distanciaKm,
+        tempoEstimadoMinutos: v.tempoEstimadoMinutos,
+        valorEntregador: v.valorEntregador,
         coletas: `${v.coletasConcluidas}/${v.totalColetas}`,
         entregas: `${v.entregasConcluidas}/${v.totalEntregas}`
       })));
