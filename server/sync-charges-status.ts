@@ -44,17 +44,18 @@ async function syncChargesStatus() {
 
           console.log(`   Status na Woovi: ${wooviStatus}`);
 
-          if (wooviStatus === 'COMPLETED' && charge.status !== 'completed') {
-            // Atualizar para completed
+          if (wooviStatus === 'COMPLETED' && charge.status !== 'paid') {
+            // Atualizar para paid
             await db
               .update(wooviCharges)
               .set({
-                status: 'completed',
+                status: 'paid',
+                paidAt: new Date(),
                 updatedAt: new Date(),
               })
               .where(eq(wooviCharges.id, charge.id));
 
-            console.log(`   ✅ Atualizado para COMPLETED`);
+            console.log(`   ✅ Atualizado para PAID`);
           } else if (wooviStatus === 'EXPIRED') {
             await db
               .update(wooviCharges)

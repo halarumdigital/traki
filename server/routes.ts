@@ -17134,16 +17134,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
             .limit(1);
 
           if (wooviCharge) {
-            // Atualizar status da cobrança para 'completed'
+            // Atualizar status da cobrança para 'paid'
             await db
               .update(wooviCharges)
               .set({
-                status: 'completed',
+                status: 'paid',
+                paidAt: new Date(),
                 updatedAt: new Date(),
               })
               .where(eq(wooviCharges.id, wooviCharge.id));
 
-            console.log(`✅ Status atualizado para completed: ${wooviCharge.id}`);
+            console.log(`✅ Status atualizado para paid: ${wooviCharge.id}`);
 
             // Atualizar o saldo da subconta
             if (wooviCharge.subaccountId) {

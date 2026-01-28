@@ -160,18 +160,24 @@ class FinancialService {
         throw new Error('Subconta não encontrada');
       }
 
+      console.log(`💰 [Balance] Consultando saldo da subconta: ${subaccount.pixKey} (ID: ${subaccountId})`);
+
       // Consultar saldo na Woovi
       const balanceResponse = await wooviService.getSubaccountBalance(subaccount.pixKey);
+
+      console.log(`💰 [Balance] Resposta da Woovi:`, JSON.stringify(balanceResponse, null, 2));
 
       // Verificar se a resposta é válida (API pode retornar "SubAccount" ou "subAccount")
       const subAccountData = balanceResponse?.SubAccount || balanceResponse?.subAccount;
       if (!balanceResponse || !subAccountData) {
-        console.warn(`Resposta inválida da Woovi para subconta ${subaccount.pixKey}`);
+        console.warn(`⚠️ [Balance] Resposta inválida da Woovi para subconta ${subaccount.pixKey}. Resposta:`, JSON.stringify(balanceResponse));
         // Retornar o saldo em cache se não conseguir atualizar
         return parseInt(subaccount.balanceCache || '0');
       }
 
-      const balance = subAccountData.balance || 0;
+      const balance = subAccountData.balance ?? 0;
+
+      console.log(`💰 [Balance] Saldo retornado pela Woovi: ${balance} centavos (R$ ${(balance / 100).toFixed(2)})`);
 
       // Atualizar cache no banco
       await db
@@ -184,7 +190,7 @@ class FinancialService {
 
       return balance;
     } catch (error) {
-      console.error('Erro ao atualizar saldo da subconta:', error);
+      console.error('❌ [Balance] Erro ao atualizar saldo da subconta:', error);
       throw error;
     }
   }
@@ -285,7 +291,7 @@ class FinancialService {
 
       // De acordo com a documentação, para fazer split para subconta:
       // A taxa fica na conta principal, o resto vai para a subconta
-      const chargeResponse = await wooviService.createCharge({
+      const splitPayload = {
         value: valueInCents,
         correlationID,
         comment: `Recarga de saldo - Empresa`,
@@ -297,7 +303,13 @@ class FinancialService {
             splitType: 'SPLIT_SUB_ACCOUNT' // Tipo de split para subconta virtual (valor correto da API)
           }
         ]
-      });
+      };
+
+      console.log(`📤 [Recarga] Payload enviado para Woovi:`, JSON.stringify(splitPayload, null, 2));
+
+      const chargeResponse = await wooviService.createCharge(splitPayload);
+
+      console.log(`📥 [Recarga] Resposta da Woovi:`, JSON.stringify(chargeResponse, null, 2));
 
       // Salvar cobrança no banco de dados
       const [charge] = await db.insert(wooviCharges).values({

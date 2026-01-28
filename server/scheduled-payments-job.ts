@@ -38,17 +38,18 @@ export async function syncPendingPayments() {
 
         if (!wooviStatus) continue;
 
-        if (wooviStatus === 'COMPLETED' && charge.status !== 'completed') {
-          // Atualizar para completed
+        if (wooviStatus === 'COMPLETED' && charge.status !== 'paid') {
+          // Atualizar para paid
           await db
             .update(wooviCharges)
             .set({
-              status: 'completed',
+              status: 'paid',
+              paidAt: new Date(),
               updatedAt: new Date(),
             })
             .where(eq(wooviCharges.id, charge.id));
 
-          console.log(`✅ [Payment Sync] Cobrança ${charge.correlationId.slice(-20)} → COMPLETED`);
+          console.log(`✅ [Payment Sync] Cobrança ${charge.correlationId.slice(-20)} → PAID`);
 
           // Atualizar saldo da subconta
           let newBalance = 0;
@@ -68,7 +69,7 @@ export async function syncPendingPayments() {
               chargeId: charge.id,
               correlationId: charge.correlationId,
               value: parseFloat(charge.value),
-              status: 'completed',
+              status: 'paid',
               newBalance,
             });
             console.log(`📡 [Payment Sync] Evento emitido para empresa ${charge.companyId}`);
