@@ -9,7 +9,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
-import { Eye, EyeOff, Lock, Mail, Truck, ArrowRight, CheckCircle2 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+} from "@/components/ui/dialog";
+import { Eye, EyeOff, Lock, Mail, Truck, ArrowRight, CheckCircle2, AlertTriangle } from "lucide-react";
 import { useLocation, Link } from "wouter";
 
 interface CompanyLoginResponse {
@@ -24,6 +28,7 @@ interface CompanyLoginResponse {
 export default function EmpresaLogin() {
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
+  const [showInactiveModal, setShowInactiveModal] = useState(false);
   const { toast } = useToast();
   const [, setLocation] = useLocation();
 
@@ -64,10 +69,14 @@ export default function EmpresaLogin() {
       setLocation("/empresa/dashboard");
     },
     onError: (error: Error) => {
+      if (error.message?.toLowerCase().includes("inativa")) {
+        setShowInactiveModal(true);
+        return;
+      }
       toast({
         variant: "destructive",
         title: "Erro ao fazer login",
-        description: error.message || "Credenciais inválidas. Tente novamente.",
+        description: "Credenciais inválidas. Tente novamente.",
       });
     },
   });
@@ -224,6 +233,29 @@ export default function EmpresaLogin() {
 
         </div>
       </div>
+
+      {/* Modal empresa inativa */}
+      <Dialog open={showInactiveModal} onOpenChange={setShowInactiveModal}>
+        <DialogContent className="max-w-md text-center">
+          <div className="flex flex-col items-center gap-4 py-4">
+            <div className="w-16 h-16 rounded-full bg-amber-100 flex items-center justify-center">
+              <AlertTriangle className="w-8 h-8 text-amber-600" />
+            </div>
+            <h2 className="text-xl font-semibold text-slate-900">
+              Empresa Inativa
+            </h2>
+            <p className="text-slate-500">
+              Sua empresa esta inativa, contate o suporte.
+            </p>
+            <Button
+              onClick={() => setShowInactiveModal(false)}
+              className="mt-2 bg-blue-600 hover:bg-blue-700"
+            >
+              Entendi
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

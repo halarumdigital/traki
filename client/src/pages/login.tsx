@@ -222,16 +222,6 @@ export default function Login() {
               </Button>
             </form>
 
-            <div className="mt-6 pt-6 border-t border-border">
-              <p className="text-center text-sm text-muted-foreground">
-                Não tem uma conta?{" "}
-                <Link href="/register">
-                  <span className="text-primary font-medium hover:underline underline-offset-4 transition-all cursor-pointer" data-testid="link-signup">
-                    Cadastre-se
-                  </span>
-                </Link>
-              </p>
-            </div>
           </CardContent>
         </Card>
 

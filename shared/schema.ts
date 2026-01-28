@@ -29,6 +29,18 @@ export const users = pgTable("users", {
   apnToken: text("apn_token"),
   loginBy: varchar("login_by", { length: 20 }).default("web"),
 
+  // Dados empresariais
+  cnpj: varchar("cnpj", { length: 18 }).unique(),
+
+  // Responsável
+  responsibleName: varchar("responsible_name", { length: 255 }),
+  responsibleWhatsapp: varchar("responsible_whatsapp", { length: 20 }),
+  responsibleEmail: varchar("responsible_email", { length: 255 }),
+
+  // Financeiro - Chave PIX
+  pixKey: varchar("pix_key", { length: 255 }),
+  pixKeyType: varchar("pix_key_type", { length: 20 }), // EMAIL, CPF, CNPJ, PHONE, EVP
+
   // Referral (para depois)
   refferalCode: varchar("refferal_code", { length: 50 }).unique(),
   referredBy: varchar("referred_by", { length: 255 }),
@@ -206,6 +218,9 @@ export const companies = pgTable("companies", {
   // Financeiro - Chave PIX para transações
   pixKey: varchar("pix_key", { length: 255 }),
   pixKeyType: varchar("pix_key_type", { length: 20 }), // EMAIL, CPF, CNPJ, PHONE, EVP
+
+  // Tipo de pagamento
+  paymentType: varchar("payment_type", { length: 20 }).notNull().default("PRE_PAGO"), // PRE_PAGO, BOLETO
 
   password: varchar("password", { length: 255 }),
 

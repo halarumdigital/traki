@@ -101,6 +101,7 @@ export default function Empresas() {
   const [viewDialogOpen, setViewDialogOpen] = useState(false);
   const [viewingCompany, setViewingCompany] = useState<Company | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [cityFilter, setCityFilter] = useState("");
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
@@ -137,8 +138,20 @@ export default function Empresas() {
 
   const [financialView, setFinancialView] = useState<"recargas" | "pagamentos">("recargas");
 
-  // Filtrar empresas pela busca
+  // Cidades únicas para o filtro (agrupadas por nome, ignorando maiúsculas/minúsculas)
+  const uniqueCities = Array.from(
+    companies.reduce((map, c) => {
+      if (c.city) {
+        const key = c.city.toLowerCase();
+        if (!map.has(key)) map.set(key, c.city);
+      }
+      return map;
+    }, new Map<string, string>()).values()
+  ).sort((a, b) => a.localeCompare(b, "pt-BR"));
+
+  // Filtrar empresas pela busca e cidade
   const filteredCompanies = companies.filter((company) => {
+    if (cityFilter && (company.city || "").toLowerCase() !== cityFilter.toLowerCase()) return false;
     if (!searchTerm.trim()) return true;
     const search = searchTerm.toLowerCase();
     const name = company.name?.toLowerCase() || "";
@@ -173,6 +186,9 @@ export default function Empresas() {
       state: null,
       reference: null,
       active: true,
+      paymentType: "PRE_PAGO",
+      pixKey: null,
+      pixKeyType: null,
     },
   });
 
@@ -391,10 +407,17 @@ export default function Empresas() {
       setValue("complement", company.complement);
       setValue("neighborhood", company.neighborhood);
       setValue("cep", company.cep);
-      setValue("city", company.city);
-      setValue("state", company.state);
+      // Buscar cidade correspondente na lista (case-insensitive)
+      const matchingCity = cities.find(
+        (c) => c.name.toLowerCase() === (company.city || "").toLowerCase()
+      );
+      setValue("city", matchingCity ? matchingCity.name : company.city);
+      setValue("state", matchingCity ? matchingCity.state : company.state);
       setValue("reference", company.reference);
       setValue("active", company.active);
+      setValue("paymentType", company.paymentType || "PRE_PAGO");
+      setValue("pixKey", company.pixKey);
+      setValue("pixKeyType", company.pixKeyType);
       // Inicializar preview do logo existente
       setLogoPreview(company.logoUrl || null);
       setLogoFile(null);
@@ -417,6 +440,9 @@ export default function Empresas() {
         state: null,
         reference: null,
         active: true,
+        paymentType: "PRE_PAGO",
+        pixKey: null,
+        pixKeyType: null,
       });
       // Limpar logo
       setLogoPreview(null);
@@ -483,7 +509,7 @@ export default function Empresas() {
   };
 
   return (
-    <div className="container mx-auto py-8 px-4">
+    <div className="w-full py-8 px-4">
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Empresas</CardTitle>
@@ -493,9 +519,9 @@ export default function Empresas() {
           </Button>
         </CardHeader>
         <CardContent>
-          {/* Campo de busca */}
-          <div className="mb-6">
-            <div className="relative">
+          {/* Filtros */}
+          <div className="mb-6 flex flex-col md:flex-row gap-4">
+            <div className="relative flex-1">
               <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
               <Input
                 placeholder="Buscar por nome, CNPJ ou email..."
@@ -503,6 +529,18 @@ export default function Empresas() {
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="pl-10"
               />
+            </div>
+            <div className="w-full md:w-64">
+              <select
+                value={cityFilter}
+                onChange={(e) => setCityFilter(e.target.value)}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              >
+                <option value="">Todas as cidades</option>
+                {uniqueCities.map((city) => (
+                  <option key={city} value={city}>{city}</option>
+                ))}
+              </select>
             </div>
           </div>
 
@@ -513,6 +551,7 @@ export default function Empresas() {
               Nenhuma empresa cadastrada. Clique em "Adicionar Empresa" para começar.
             </div>
           ) : (
+            <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -523,6 +562,7 @@ export default function Empresas() {
                   <TableHead>Telefone</TableHead>
                   <TableHead>Cidade</TableHead>
                   <TableHead>Avaliação</TableHead>
+                  <TableHead className="text-center">Pagamento</TableHead>
                   <TableHead className="text-center">Ativo</TableHead>
                   <TableHead className="text-right">Ações</TableHead>
                 </TableRow>
@@ -545,6 +585,13 @@ export default function Empresas() {
                     <TableCell>{company.city || "-"}</TableCell>
                     <TableCell>
                       <StarRating rating={company.rating} />
+                    </TableCell>
+                    <TableCell className="text-center">
+                      {company.paymentType === "BOLETO" ? (
+                        <span className="text-blue-600 text-xs px-2 py-1 rounded bg-blue-50">Boleto</span>
+                      ) : (
+                        <span className="text-green-600 text-xs px-2 py-1 rounded bg-green-50">Pré Pago</span>
+                      )}
                     </TableCell>
                     <TableCell className="text-center">
                       {company.active ? (
@@ -583,6 +630,7 @@ export default function Empresas() {
                 ))}
               </TableBody>
             </Table>
+            </div>
           )}
         </CardContent>
       </Card>
@@ -874,6 +922,11 @@ export default function Empresas() {
                       className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       <option value="">Selecione uma cidade</option>
+                      {editingCompany?.city && !cities.some(c => c.name.toLowerCase() === editingCompany.city!.toLowerCase()) && (
+                        <option value={editingCompany.city}>
+                          {editingCompany.city} {editingCompany.state ? `- ${editingCompany.state}` : ""}
+                        </option>
+                      )}
                       {cities
                         .filter(city => city.active)
                         .sort((a, b) => a.name.localeCompare(b.name))
@@ -905,6 +958,24 @@ export default function Empresas() {
                       {...register("reference")}
                       placeholder="Ponto de referência"
                     />
+                  </div>
+                </div>
+              </div>
+
+              {/* Tipo de Pagamento */}
+              <div className="border-b pb-4">
+                <h3 className="font-semibold mb-3">Tipo de Pagamento</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <Label htmlFor="paymentType">Forma de Pagamento</Label>
+                    <select
+                      id="paymentType"
+                      {...register("paymentType")}
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <option value="PRE_PAGO">Pré Pago</option>
+                      <option value="BOLETO">Boleto</option>
+                    </select>
                   </div>
                 </div>
               </div>
@@ -996,6 +1067,16 @@ export default function Empresas() {
                           <span className="text-green-600">Ativo</span>
                         ) : (
                           <span className="text-red-600">Inativo</span>
+                        )}
+                      </p>
+                    </div>
+                    <div>
+                      <Label className="text-muted-foreground">Tipo de Pagamento</Label>
+                      <p className="font-medium">
+                        {viewingCompany.paymentType === "BOLETO" ? (
+                          <span className="text-blue-600">Boleto</span>
+                        ) : (
+                          <span className="text-green-600">Pré Pago</span>
                         )}
                       </p>
                     </div>

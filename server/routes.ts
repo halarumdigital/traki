@@ -2,7 +2,7 @@ import express, { type Express } from "express";
 import { createServer, type Server } from "http";
 import { Server as SocketIOServer } from "socket.io";
 import { storage } from "./storage";
-import { loginSchema, forgotPasswordSchema, resetPasswordSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications, cityPrices, settings, companyCancellationTypes, insertCompanyCancellationTypeSchema, promotions, insertPromotionSchema, companyDriverRatings, driverCompanyRatings, deliveryStops, faqs, insertFaqSchema, pushNotifications, referralSettings, driverReferrals, companyReferrals, ticketSubjects, insertTicketSubjectSchema, supportTickets, insertSupportTicketSchema, ticketReplies, insertTicketReplySchema, entregadorRotas, entregasIntermunicipais, rotasIntermunicipais, viagemColetas, viagemEntregas, wooviCharges, financialTransactions, wooviSubaccounts } from "@shared/schema";
+import { loginSchema, forgotPasswordSchema, resetPasswordSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications, cityPrices, settings, companyCancellationTypes, insertCompanyCancellationTypeSchema, promotions, insertPromotionSchema, companyDriverRatings, driverCompanyRatings, deliveryStops, faqs, insertFaqSchema, pushNotifications, referralSettings, driverReferrals, companyReferrals, ticketSubjects, insertTicketSubjectSchema, supportTickets, insertSupportTicketSchema, ticketReplies, insertTicketReplySchema, entregadorRotas, entregasIntermunicipais, rotasIntermunicipais, viagemColetas, viagemEntregas, wooviCharges, financialTransactions, wooviSubaccounts, users } from "@shared/schema";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import { pool, db } from "./db";
@@ -823,6 +823,75 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // GET /api/cnpj-lookup - Consultar dados do CNPJ via Cellereit
+  app.get("/api/cnpj-lookup", async (req, res) => {
+    try {
+      const { cnpj } = req.query;
+
+      if (!cnpj || typeof cnpj !== "string") {
+        return res.status(400).json({ message: "CNPJ é obrigatório" });
+      }
+
+      const cleanCnpj = cnpj.replace(/\D/g, "");
+      if (cleanCnpj.length !== 14) {
+        return res.status(400).json({ message: "CNPJ deve ter 14 dígitos" });
+      }
+
+      const apiToken = process.env.CELLEREIT_API_TOKEN;
+      if (!apiToken) {
+        console.error("CELLEREIT_API_TOKEN não configurado");
+        return res.status(500).json({ message: "Serviço de consulta CNPJ não configurado" });
+      }
+
+      const response = await nodeFetch(
+        `https://api.gw.cellereit.com.br/analise-financeira/cnpj-completo?cnpj=${cleanCnpj}`,
+        {
+          method: "GET",
+          headers: {
+            "Authorization": `Bearer ${apiToken}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      if (!response.ok) {
+        console.error("Erro na API Cellereit:", response.status, response.statusText);
+        return res.status(response.status).json({ message: "Erro ao consultar CNPJ" });
+      }
+
+      const data = await response.json() as any;
+
+      // Normalizar texto para Title Case (ex: "JOAÇABA" → "Joaçaba")
+      const toTitleCase = (str: string) =>
+        str.toLowerCase().replace(/(?:^|\s)\S/g, (c) => c.toUpperCase());
+
+      const raw = {
+        nomeFantasia: data.NomeFantasia || data.nomeFantasia || "",
+        logradouro: data.Logradouro || data.logradouro || "",
+        numero: data.Numero || data.numero || "",
+        complemento: data.Complemento || data.complemento || "",
+        cep: data.CEP || data.cep || "",
+        bairro: data.BairroDistrito || data.bairroDistrito || "",
+        municipio: data.Municipio || data.municipio || "",
+        uf: (data.UF || data.uf || "").toUpperCase(),
+      };
+
+      return res.json({
+        nomeFantasia: raw.nomeFantasia ? toTitleCase(raw.nomeFantasia) : "",
+        logradouro: raw.logradouro ? toTitleCase(raw.logradouro) : "",
+        numero: raw.numero,
+        complemento: raw.complemento ? toTitleCase(raw.complemento) : "",
+        cep: raw.cep,
+        bairro: raw.bairro ? toTitleCase(raw.bairro) : "",
+        municipio: raw.municipio ? toTitleCase(raw.municipio) : "",
+        uf: raw.uf,
+      });
+    } catch (error) {
+      console.error("Erro ao consultar CNPJ:", error);
+      return res.status(500).json({ message: "Erro ao consultar CNPJ" });
+    }
+  });
+
   // POST /api/empresa/auth/register - Registrar nova empresa
   app.post("/api/empresa/auth/register", async (req, res) => {
     try {
@@ -1260,11 +1329,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/auth/register", async (req, res) => {
     try {
-      const { nome, email, password } = req.body;
+      const { nome, email, password, mobile, cnpj, responsibleName, responsibleWhatsapp, responsibleEmail, pixKeyType, pixKey, referralCode } = req.body;
 
       if (!nome || !email || !password) {
-        return res.status(400).json({ 
-          message: "Todos os campos são obrigatórios" 
+        return res.status(400).json({
+          message: "Nome, email e senha são obrigatórios"
         });
       }
 
@@ -1275,6 +1344,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
+      // Verificar CNPJ duplicado
+      if (cnpj) {
+        const existingCnpj = await db.select().from(users).where(eq(users.cnpj, cnpj)).limit(1);
+        if (existingCnpj.length > 0) {
+          return res.status(400).json({
+            message: "Este CNPJ já está em uso"
+          });
+        }
+      }
+
       // Hash da senha antes de salvar
       const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -1283,6 +1362,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         email,
         password: hashedPassword,
         isAdmin: false,
+        mobile: mobile || null,
+        cnpj: cnpj || null,
+        responsibleName: responsibleName || null,
+        responsibleWhatsapp: responsibleWhatsapp || null,
+        responsibleEmail: responsibleEmail || null,
+        pixKeyType: pixKeyType || null,
+        pixKey: pixKey || null,
+        referredBy: referralCode || null,
       });
 
       req.session.userId = user.id;
@@ -1298,8 +1385,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (error) {
       console.error("Erro no registro:", error);
-      return res.status(500).json({ 
-        message: "Erro interno do servidor" 
+      return res.status(500).json({
+        message: "Erro interno do servidor"
       });
     }
   });
