@@ -1173,6 +1173,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           requestId: newRequest.id,
           requestNumber: newRequest.requestNumber,
           customerName: company?.name || "Empresa",
+          companyLogoUrl: company?.logoUrl || "", // Logo da empresa
           pickupAddress,
           dropoffAddress: deliveryAddress,
           totalDistance: distance.toFixed(1),
@@ -2733,6 +2734,96 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Erro ao excluir empresa:", error);
       return res.status(500).json({ message: "Erro ao excluir empresa" });
+    }
+  });
+
+  // POST /api/companies/:id/logo - Upload de logo da empresa para R2
+  app.post("/api/companies/:id/logo", uploadR2.single("logo"), async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+
+      if (!req.file) {
+        return res.status(400).json({ message: "Nenhum arquivo foi enviado" });
+      }
+
+      // Validar se é uma imagem
+      if (!isValidImage(req.file.mimetype)) {
+        return res.status(400).json({
+          message: "Formato de arquivo inválido. Aceitos: JPEG, PNG, GIF, WebP"
+        });
+      }
+
+      // Validar tamanho (máximo 5MB)
+      if (!isValidFileSize(req.file.size, 5)) {
+        return res.status(400).json({
+          message: "Arquivo muito grande. Tamanho máximo: 5MB"
+        });
+      }
+
+      // Verificar se a empresa existe
+      const company = await storage.getCompany(id);
+      if (!company) {
+        return res.status(404).json({ message: "Empresa não encontrada" });
+      }
+
+      // Se já existe um logo, deletar o antigo do R2
+      if (company.logoUrl) {
+        try {
+          await deleteFromR2(company.logoUrl);
+        } catch (error) {
+          console.error("Erro ao deletar logo antigo do R2:", error);
+        }
+      }
+
+      // Fazer upload para R2 na pasta de logos de empresas
+      const logoUrl = await uploadToR2(
+        req.file.buffer,
+        "logos_empresas",
+        req.file.originalname
+      );
+
+      // Atualizar empresa com a URL do logo
+      const updated = await storage.updateCompany(id, { logoUrl });
+
+      return res.json({ logoUrl: updated?.logoUrl });
+    } catch (error) {
+      console.error("Erro ao fazer upload do logo:", error);
+      return res.status(500).json({ message: "Erro ao fazer upload do logo" });
+    }
+  });
+
+  // DELETE /api/companies/:id/logo - Remover logo da empresa
+  app.delete("/api/companies/:id/logo", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+
+      const company = await storage.getCompany(id);
+      if (!company) {
+        return res.status(404).json({ message: "Empresa não encontrada" });
+      }
+
+      if (company.logoUrl) {
+        try {
+          await deleteFromR2(company.logoUrl);
+        } catch (error) {
+          console.error("Erro ao deletar logo do R2:", error);
+        }
+      }
+
+      await storage.updateCompany(id, { logoUrl: null });
+
+      return res.json({ message: "Logo removido com sucesso" });
+    } catch (error) {
+      console.error("Erro ao remover logo:", error);
+      return res.status(500).json({ message: "Erro ao remover logo" });
     }
   });
 
@@ -8135,12 +8226,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const random = Math.floor(Math.random() * 1000);
       const requestNumber = `REQ-${timestamp}-${random}`;
 
-      // Buscar dados da empresa para pegar cidade/estado e nome
+      // Buscar dados da empresa para pegar cidade/estado, nome e logo
       const [company] = await db
         .select({
           name: companies.name,
           city: companies.city,
           state: companies.state,
+          logoUrl: companies.logoUrl,
         })
         .from(companies)
         .where(eq(companies.id, req.session.companyId))
@@ -8577,6 +8669,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             distance: distance?.toString() || "0",
             estimatedTime: estimatedTimeWithMargin.toString(), // Google Maps + 5 min
             companyName: company?.name || "", // Nome da empresa que solicitou a entrega
+            companyLogoUrl: company?.logoUrl || "", // Logo da empresa que solicitou a entrega
             customerName: customerName || "", // Nome do cliente final (destinatário)
             acceptanceTimeout: driverAcceptanceTimeout.toString(), // Tempo para aceitar (segundos)
             searchTimeout: minTimeToFindDriver.toString(), // Tempo total de busca (segundos)
@@ -8934,6 +9027,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           requestId: newRequest.id,
           requestNumber: newRequest.requestNumber,
           companyName: company?.name || 'Empresa',
+          companyLogoUrl: company?.logoUrl || '', // Logo da empresa
           customerName: newRequest.customerName || 'Cliente',
           customerWhatsapp: newRequest.customerWhatsapp || '',
           deliveryReference: newRequest.deliveryReference || '',
@@ -9680,6 +9774,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           requestId: newRequest.id,
           requestNumber: newRequest.requestNumber,
           companyName: company?.name || 'Empresa',
+          companyLogoUrl: company?.logoUrl || '', // Logo da empresa
           customerName: newRequest.customerName || 'Cliente',
           customerWhatsapp: newRequest.customerWhatsapp || '',
           deliveryReference: newRequest.deliveryReference || '',
@@ -13304,6 +13399,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           rp.drop_lat,
           rp.drop_lng,
           c.name as company_name,
+          c.logo_url as company_logo_url,
           vt.name as vehicle_type_name,
           rb.total_amount,
           rb.admin_commision
@@ -14848,6 +14944,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           rp.drop_lng,
           c.name as company_name,
           c.phone as company_phone,
+          c.logo_url as company_logo_url,
           vt.name as vehicle_type_name,
           rb.total_amount,
           rb.admin_commision

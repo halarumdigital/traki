@@ -174,6 +174,7 @@ export const companies = pgTable("companies", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: varchar("name", { length: 255 }).notNull(),
   cnpj: varchar("cnpj", { length: 18 }).unique(),
+  logoUrl: varchar("logo_url", { length: 500 }), // URL do logo no Cloudflare R2
   email: varchar("email", { length: 255 }),
   phone: varchar("phone", { length: 20 }),
 

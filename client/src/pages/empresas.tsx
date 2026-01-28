@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import {
   Table,
   TableBody,
@@ -37,7 +38,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Pencil, Trash2, Plus, Eye, Star, Search, DollarSign, TrendingUp, MapPin, Wallet, ArrowDownToLine, ArrowUpFromLine, CreditCard, Key } from "lucide-react";
+import { Pencil, Trash2, Plus, Eye, Star, Search, DollarSign, TrendingUp, MapPin, Wallet, ArrowDownToLine, ArrowUpFromLine, CreditCard, Key, Upload, X, Building2 } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { insertCompanySchema, type Company } from "@shared/schema";
@@ -100,6 +101,10 @@ export default function Empresas() {
   const [viewDialogOpen, setViewDialogOpen] = useState(false);
   const [viewingCompany, setViewingCompany] = useState<Company | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
+  const [isUploadingLogo, setIsUploadingLogo] = useState(false);
+  const logoInputRef = useRef<HTMLInputElement>(null);
 
   const { data: companies = [], isLoading } = useQuery<Company[]>({
     queryKey: ["/api/companies"],
@@ -192,6 +197,8 @@ export default function Empresas() {
       });
       setIsDialogOpen(false);
       reset();
+      setLogoFile(null);
+      setLogoPreview(null);
     },
     onError: (error: Error) => {
       toast({
@@ -226,6 +233,8 @@ export default function Empresas() {
       setIsDialogOpen(false);
       setEditingCompany(null);
       reset();
+      setLogoFile(null);
+      setLogoPreview(null);
     },
     onError: (error: Error) => {
       toast({
@@ -267,6 +276,102 @@ export default function Empresas() {
     },
   });
 
+  const uploadLogoMutation = useMutation({
+    mutationFn: async ({ companyId, file }: { companyId: string; file: File }) => {
+      const formData = new FormData();
+      formData.append("logo", file);
+
+      const response = await fetch(`/api/companies/${companyId}/logo`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Erro ao fazer upload do logo");
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/companies"] });
+      toast({
+        title: "Sucesso",
+        description: "Logo atualizado com sucesso",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Erro",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const deleteLogoMutation = useMutation({
+    mutationFn: async (companyId: string) => {
+      const response = await fetch(`/api/companies/${companyId}/logo`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Erro ao remover logo");
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/companies"] });
+      toast({
+        title: "Sucesso",
+        description: "Logo removido com sucesso",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Erro",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleLogoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      // Validar tipo
+      if (!["image/jpeg", "image/png", "image/gif", "image/webp"].includes(file.type)) {
+        toast({
+          title: "Erro",
+          description: "Formato inválido. Use JPEG, PNG, GIF ou WebP",
+          variant: "destructive",
+        });
+        return;
+      }
+      // Validar tamanho (5MB)
+      if (file.size > 5 * 1024 * 1024) {
+        toast({
+          title: "Erro",
+          description: "Arquivo muito grande. Máximo 5MB",
+          variant: "destructive",
+        });
+        return;
+      }
+      setLogoFile(file);
+      setLogoPreview(URL.createObjectURL(file));
+    }
+  };
+
+  const handleRemoveLogo = () => {
+    setLogoFile(null);
+    setLogoPreview(null);
+    if (logoInputRef.current) {
+      logoInputRef.current.value = "";
+    }
+  };
+
   const handleOpenDialog = (company?: Company) => {
     if (company) {
       setEditingCompany(company);
@@ -286,6 +391,9 @@ export default function Empresas() {
       setValue("state", company.state);
       setValue("reference", company.reference);
       setValue("active", company.active);
+      // Inicializar preview do logo existente
+      setLogoPreview(company.logoUrl || null);
+      setLogoFile(null);
     } else {
       setEditingCompany(null);
       reset({
@@ -306,6 +414,9 @@ export default function Empresas() {
         reference: null,
         active: true,
       });
+      // Limpar logo
+      setLogoPreview(null);
+      setLogoFile(null);
     }
     setIsDialogOpen(true);
   };
@@ -314,13 +425,35 @@ export default function Empresas() {
     setIsDialogOpen(false);
     setEditingCompany(null);
     reset();
+    setLogoFile(null);
+    setLogoPreview(null);
   };
 
-  const onSubmit = (data: FormData) => {
-    if (editingCompany) {
-      updateMutation.mutate({ id: editingCompany.id, data });
-    } else {
-      createMutation.mutate(data);
+  const onSubmit = async (data: FormData) => {
+    try {
+      setIsUploadingLogo(true);
+
+      if (editingCompany) {
+        // Atualizar empresa
+        await updateMutation.mutateAsync({ id: editingCompany.id, data });
+
+        // Upload do logo se houver arquivo novo
+        if (logoFile) {
+          await uploadLogoMutation.mutateAsync({ companyId: editingCompany.id, file: logoFile });
+        }
+      } else {
+        // Criar empresa
+        const newCompany = await createMutation.mutateAsync(data);
+
+        // Upload do logo se houver arquivo
+        if (logoFile && newCompany?.id) {
+          await uploadLogoMutation.mutateAsync({ companyId: newCompany.id, file: logoFile });
+        }
+      }
+    } catch {
+      // Erros já tratados nas mutations
+    } finally {
+      setIsUploadingLogo(false);
     }
   };
 
@@ -379,6 +512,7 @@ export default function Empresas() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead>Logo</TableHead>
                   <TableHead>Nome</TableHead>
                   <TableHead>CNPJ</TableHead>
                   <TableHead>Email</TableHead>
@@ -392,6 +526,14 @@ export default function Empresas() {
               <TableBody>
                 {filteredCompanies.map((company) => (
                   <TableRow key={company.id}>
+                    <TableCell>
+                      <Avatar className="h-10 w-10 rounded-lg">
+                        <AvatarImage src={company.logoUrl || undefined} alt={company.name} className="object-cover" />
+                        <AvatarFallback className="rounded-lg bg-gray-100">
+                          <Building2 className="h-5 w-5 text-gray-400" />
+                        </AvatarFallback>
+                      </Avatar>
+                    </TableCell>
                     <TableCell className="font-medium">{company.name}</TableCell>
                     <TableCell>{company.cnpj || "-"}</TableCell>
                     <TableCell>{company.email || "-"}</TableCell>
@@ -519,6 +661,58 @@ export default function Empresas() {
                     <p className="text-xs text-muted-foreground mt-1">
                       {editingCompany ? "Deixe em branco para manter a senha atual" : "Defina uma senha para a empresa acessar o painel"}
                     </p>
+                  </div>
+
+                  {/* Logo da Empresa */}
+                  <div className="md:col-span-2">
+                    <Label>Logo da Empresa</Label>
+                    <div className="mt-2 flex items-center gap-4">
+                      {logoPreview ? (
+                        <div className="relative">
+                          <Avatar className="h-20 w-20 rounded-lg">
+                            <AvatarImage src={logoPreview} alt="Logo da empresa" className="object-cover" />
+                            <AvatarFallback className="rounded-lg">
+                              <Building2 className="h-8 w-8" />
+                            </AvatarFallback>
+                          </Avatar>
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            size="icon"
+                            className="absolute -top-2 -right-2 h-6 w-6 rounded-full"
+                            onClick={handleRemoveLogo}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="h-20 w-20 rounded-lg border-2 border-dashed border-gray-300 flex items-center justify-center">
+                          <Building2 className="h-8 w-8 text-gray-400" />
+                        </div>
+                      )}
+                      <div className="flex flex-col gap-2">
+                        <input
+                          ref={logoInputRef}
+                          type="file"
+                          accept="image/jpeg,image/png,image/gif,image/webp"
+                          onChange={handleLogoChange}
+                          className="hidden"
+                          id="logo-upload"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => logoInputRef.current?.click()}
+                        >
+                          <Upload className="h-4 w-4 mr-2" />
+                          {logoPreview ? "Alterar Logo" : "Selecionar Logo"}
+                        </Button>
+                        <p className="text-xs text-muted-foreground">
+                          JPEG, PNG, GIF ou WebP. Máximo 5MB.
+                        </p>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -708,9 +902,9 @@ export default function Empresas() {
               </Button>
               <Button
                 type="submit"
-                disabled={createMutation.isPending || updateMutation.isPending}
+                disabled={createMutation.isPending || updateMutation.isPending || isUploadingLogo}
               >
-                {createMutation.isPending || updateMutation.isPending
+                {createMutation.isPending || updateMutation.isPending || isUploadingLogo
                   ? "Salvando..."
                   : "Salvar"}
               </Button>
@@ -738,6 +932,21 @@ export default function Empresas() {
                 <div className="border-b pb-4">
                   <h3 className="font-semibold mb-3 text-lg">Dados da Empresa</h3>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Logo da Empresa */}
+                    <div className="md:col-span-2 flex items-center gap-4 mb-2">
+                      <Avatar className="h-20 w-20 rounded-lg">
+                        <AvatarImage src={viewingCompany.logoUrl || undefined} alt={viewingCompany.name} className="object-cover" />
+                        <AvatarFallback className="rounded-lg bg-gray-100">
+                          <Building2 className="h-8 w-8 text-gray-400" />
+                        </AvatarFallback>
+                      </Avatar>
+                      <div>
+                        <Label className="text-muted-foreground">Logo</Label>
+                        <p className="text-sm text-muted-foreground">
+                          {viewingCompany.logoUrl ? "Logo cadastrado" : "Sem logo"}
+                        </p>
+                      </div>
+                    </div>
                     <div>
                       <Label className="text-muted-foreground">Nome</Label>
                       <p className="font-medium">{viewingCompany.name}</p>
