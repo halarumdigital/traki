@@ -85,6 +85,11 @@ import {
   type NpsResponseItem,
   type InsertNpsResponseItem,
   passwordResetTokens,
+  promotions,
+  promotionProgress,
+  type Promotion,
+  type PromotionProgress,
+  type InsertPromotionProgress,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, desc, sql, inArray, gt } from "drizzle-orm";
@@ -285,6 +290,13 @@ export interface IStorage {
     averageScores: { itemId: string; label: string; average: number }[];
     textResponses: { itemId: string; label: string; responses: string[] }[];
   }>;
+
+  // ===== PROMOTION PROGRESS =====
+  getPromotionProgress(promotionId: string, driverId: string): Promise<PromotionProgress | undefined>;
+  getDriverPromotionProgress(driverId: string): Promise<PromotionProgress[]>;
+  incrementPromotionProgress(driverId: string, deliveryDate: Date): Promise<void>;
+  getActivePromotions(): Promise<Promotion[]>;
+  getPromotionRanking(promotionId: string): Promise<{ driverId: string; deliveryCount: number; rank: number }[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2179,6 +2191,112 @@ export class DatabaseStorage implements IStorage {
       averageScores,
       textResponses,
     };
+  }
+
+  // ========================================
+  // PROMOTION PROGRESS
+  // ========================================
+  async getPromotionProgress(promotionId: string, driverId: string): Promise<PromotionProgress | undefined> {
+    const [progress] = await db
+      .select()
+      .from(promotionProgress)
+      .where(
+        and(
+          eq(promotionProgress.promotionId, promotionId),
+          eq(promotionProgress.driverId, driverId)
+        )
+      );
+    return progress || undefined;
+  }
+
+  async getDriverPromotionProgress(driverId: string): Promise<PromotionProgress[]> {
+    return db
+      .select()
+      .from(promotionProgress)
+      .where(eq(promotionProgress.driverId, driverId));
+  }
+
+  async getActivePromotions(): Promise<Promotion[]> {
+    return db
+      .select()
+      .from(promotions)
+      .where(eq(promotions.active, true));
+  }
+
+  async getPromotionRanking(promotionId: string): Promise<{ driverId: string; deliveryCount: number; rank: number }[]> {
+    const results = await db
+      .select({
+        driverId: promotionProgress.driverId,
+        deliveryCount: promotionProgress.deliveryCount,
+      })
+      .from(promotionProgress)
+      .where(eq(promotionProgress.promotionId, promotionId))
+      .orderBy(desc(promotionProgress.deliveryCount));
+
+    return results.map((r, index) => ({
+      driverId: r.driverId,
+      deliveryCount: r.deliveryCount,
+      rank: index + 1,
+    }));
+  }
+
+  async incrementPromotionProgress(driverId: string, deliveryDate: Date): Promise<void> {
+    // Converter data para string no formato YYYY-MM-DD (timezone São Paulo)
+    const spDate = new Date(deliveryDate.toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
+    const dateString = spDate.toISOString().split('T')[0];
+
+    // Buscar promoções ativas
+    const activePromotions = await this.getActivePromotions();
+
+    for (const promotion of activePromotions) {
+      // Verificar se a data da entrega está nos dias válidos da promoção
+      const validDates = promotion.validDates.split(',').map(d => d.trim());
+
+      if (!validDates.includes(dateString)) {
+        continue;
+      }
+
+      // Buscar ou criar registro de progresso
+      let [progress] = await db
+        .select()
+        .from(promotionProgress)
+        .where(
+          and(
+            eq(promotionProgress.promotionId, promotion.id),
+            eq(promotionProgress.driverId, driverId)
+          )
+        );
+
+      if (!progress) {
+        // Criar novo registro
+        [progress] = await db
+          .insert(promotionProgress)
+          .values({
+            promotionId: promotion.id,
+            driverId: driverId,
+            deliveryCount: 1,
+            goalReached: promotion.type === 'complete_and_win' && promotion.deliveryQuantity === 1,
+            goalReachedAt: promotion.type === 'complete_and_win' && promotion.deliveryQuantity === 1 ? new Date() : null,
+          })
+          .returning();
+      } else {
+        // Incrementar contador existente
+        const newCount = progress.deliveryCount + 1;
+        const goalReached = promotion.type === 'complete_and_win'
+          && promotion.deliveryQuantity !== null
+          && newCount >= promotion.deliveryQuantity;
+
+        await db
+          .update(promotionProgress)
+          .set({
+            deliveryCount: newCount,
+            goalReached: goalReached,
+            goalReachedAt: goalReached && !progress.goalReached ? new Date() : progress.goalReachedAt,
+            updatedAt: new Date(),
+          })
+          .where(eq(promotionProgress.id, progress.id));
+      }
+    }
   }
 }
 

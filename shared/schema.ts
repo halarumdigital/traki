@@ -1051,6 +1051,35 @@ export const insertPromotionSchema = createInsertSchema(promotions, {
 export type Promotion = typeof promotions.$inferSelect;
 export type InsertPromotion = z.infer<typeof insertPromotionSchema>;
 
+// ========================================
+// PROMOTION PROGRESS (Progresso das Promoções)
+// ========================================
+export const promotionProgress = pgTable("promotion_progress", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  promotionId: varchar("promotion_id").notNull().references(() => promotions.id, { onDelete: "cascade" }),
+  driverId: varchar("driver_id").notNull().references(() => drivers.id, { onDelete: "cascade" }),
+  deliveryCount: integer("delivery_count").notNull().default(0),
+  goalReached: boolean("goal_reached").notNull().default(false),
+  goalReachedAt: timestamp("goal_reached_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertPromotionProgressSchema = createInsertSchema(promotionProgress, {
+  promotionId: z.string().min(1, "Promoção é obrigatória"),
+  driverId: z.string().min(1, "Motorista é obrigatório"),
+  deliveryCount: z.number().int().min(0).default(0),
+  goalReached: z.boolean().default(false),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  goalReachedAt: true,
+});
+
+export type PromotionProgress = typeof promotionProgress.$inferSelect;
+export type InsertPromotionProgress = z.infer<typeof insertPromotionProgressSchema>;
+
 // Company Driver Ratings
 export const insertCompanyDriverRatingSchema = createInsertSchema(companyDriverRatings, {
   rating: z.number().int().min(1, "Avaliação deve ser entre 1 e 5").max(5, "Avaliação deve ser entre 1 e 5"),

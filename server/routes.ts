@@ -4337,6 +4337,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
                     // Incrementar contador de entregas mensais do entregador
                     await storage.incrementDriverMonthlyDeliveries(driverId);
+
+                    // Incrementar progresso das promoções ativas
+                    await storage.incrementPromotionProgress(driverId, new Date());
                   } else {
                     console.error(`❌ Falha no pagamento da entrega ${entrega.entrega_id}: ${paymentResult.error}`);
                   }
@@ -11352,7 +11355,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // GET /api/v1/driver/promotions - Obter promoções ativas
+  // GET /api/v1/driver/promotions - Obter promoções ativas com progresso
   app.get("/api/v1/driver/promotions", async (req, res) => {
     try {
       let driverId = req.session.driverId;
@@ -11394,15 +11397,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return validDates.some(date => date.substring(0, 7) === currentMonth);
       });
 
-      // Formatar resposta para o app
-      const formattedPromotions = validPromotions.map(promo => ({
-        id: promo.id,
-        type: promo.type,
-        name: promo.name,
-        description: promo.rule,
-        validDates: promo.validDates, // Enviar como string, não array
-        goal: promo.deliveryQuantity,
-        prize: promo.prize
+      // Buscar progresso do motorista para cada promoção
+      const formattedPromotions = await Promise.all(validPromotions.map(async (promo) => {
+        // Buscar progresso do motorista
+        const driverProgress = await storage.getPromotionProgress(promo.id, driverId);
+        const currentCount = driverProgress?.deliveryCount || 0;
+
+        let progress: any;
+
+        if (promo.type === 'complete_and_win') {
+          // Para "Complete e Ganhe": mostrar progresso em relação à meta
+          const goal = promo.deliveryQuantity || 0;
+          const percentage = goal > 0 ? Math.min(100, (currentCount / goal) * 100) : 0;
+          const remaining = Math.max(0, goal - currentCount);
+
+          progress = {
+            current: currentCount,
+            goal: goal,
+            percentage: Math.round(percentage * 100) / 100,
+            goalReached: driverProgress?.goalReached || false,
+            remaining: remaining
+          };
+        } else {
+          // Para "Quem fizer mais": mostrar posição e líder
+          const ranking = await storage.getPromotionRanking(promo.id);
+          const driverRank = ranking.find(r => r.driverId === driverId);
+          const leader = ranking[0];
+
+          progress = {
+            current: currentCount,
+            rank: driverRank?.rank || (ranking.length + 1),
+            leaderCount: leader?.deliveryCount || 0
+          };
+        }
+
+        return {
+          id: promo.id,
+          type: promo.type,
+          name: promo.name,
+          description: promo.rule,
+          validDates: promo.validDates,
+          goal: promo.deliveryQuantity,
+          prize: promo.prize,
+          progress
+        };
       }));
 
       return res.json({
@@ -14021,6 +14059,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             // Incrementar contador mensal de entregas do motorista
             await storage.incrementDriverMonthlyDeliveries(driverId);
 
+            // Incrementar progresso das promoções ativas
+            await storage.incrementPromotionProgress(driverId, new Date());
+
             // Incrementar total de entregas do motorista e verificar comissões de indicação
             const [driver] = await db
               .select()
@@ -14252,6 +14293,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         // Incrementar contador mensal de entregas do motorista
         await storage.incrementDriverMonthlyDeliveries(driverId);
+
+        // Incrementar progresso das promoções ativas
+        await storage.incrementPromotionProgress(driverId, new Date());
 
         // Incrementar total de entregas do motorista e verificar comissões de indicação
         const [driver] = await db
@@ -14525,6 +14569,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         await storage.incrementDriverMonthlyDeliveries(driverId);
         console.log(`✅ Contador mensal incrementado para motorista ${driverId}`);
+
+        // Incrementar progresso das promoções ativas
+        await storage.incrementPromotionProgress(driverId, new Date());
       } else {
         console.log(`⚠️ Entrega já estava completa, contador não incrementado`);
       }
@@ -14693,6 +14740,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         await storage.incrementDriverMonthlyDeliveries(driverId);
         console.log(`✅ Contador mensal incrementado para motorista ${driverId}`);
+
+        // Incrementar progresso das promoções ativas
+        await storage.incrementPromotionProgress(driverId, new Date());
 
         // Incrementar total de entregas do motorista e verificar comissões de indicação
         const [driver] = await db
