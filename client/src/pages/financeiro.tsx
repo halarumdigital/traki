@@ -100,7 +100,7 @@ export default function Financeiro() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold">Financeiro</h1>
-          <p className="text-muted-foreground">Gestão de empresas com subcontas Woovi</p>
+          <p className="text-muted-foreground">Gestão de empresas</p>
         </div>
         <Button variant="outline" onClick={() => refetch()}>
           <RefreshCw className="h-4 w-4 mr-2" />
@@ -173,7 +173,7 @@ export default function Financeiro() {
       <Card>
         <CardHeader>
           <CardTitle>Empresas com Subcontas</CardTitle>
-          <CardDescription>Lista de todas as empresas com subcontas Woovi cadastradas</CardDescription>
+          <CardDescription>Lista de todas as empresas com subcontas cadastradas</CardDescription>
         </CardHeader>
         <CardContent>
           {isLoading ? (

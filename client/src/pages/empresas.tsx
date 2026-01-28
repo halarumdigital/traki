@@ -124,7 +124,7 @@ export default function Empresas() {
     subaccount: any;
     pixKey: string | null;
     pixKeyType: string | null;
-    wooviBalance: number;
+    balance: number;
     recharges: any[];
     payments: any[];
     totals: {
@@ -814,7 +814,7 @@ export default function Empresas() {
 
               {/* Dados PIX */}
               <div className="border-b pb-4">
-                <h3 className="font-semibold mb-3">Dados PIX (Woovi)</h3>
+                <h3 className="font-semibold mb-3">Dados PIX</h3>
                 <p className="text-sm text-muted-foreground mb-3">
                   Cadastre uma chave PIX para receber pagamentos e gerenciar saldo da empresa
                 </p>
@@ -1274,7 +1274,7 @@ export default function Empresas() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <Card>
                   <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                    <CardTitle className="text-sm font-medium">Subconta Woovi</CardTitle>
+                    <CardTitle className="text-sm font-medium">Subconta</CardTitle>
                     <CreditCard className="h-4 w-4 text-muted-foreground" />
                   </CardHeader>
                   <CardContent>
@@ -1286,7 +1286,7 @@ export default function Empresas() {
                       )}
                     </div>
                     <p className="text-xs text-muted-foreground mt-1">
-                      {companyFinancial?.subaccount?.wooviSubaccountId || "ID não disponível"}
+                      {companyFinancial?.subaccount?.subaccountId || "ID não disponível"}
                     </p>
                   </CardContent>
                 </Card>
@@ -1308,13 +1308,13 @@ export default function Empresas() {
 
                 <Card>
                   <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                    <CardTitle className="text-sm font-medium">Saldo na Conta Woovi</CardTitle>
+                    <CardTitle className="text-sm font-medium">Saldo na Conta</CardTitle>
                     <Wallet className="h-4 w-4 text-green-600" />
                   </CardHeader>
                   <CardContent>
                     <div className="text-2xl font-bold text-green-600">
                       {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
-                        (companyFinancial?.wooviBalance || 0) / 100
+                        (companyFinancial?.balance || 0) / 100
                       )}
                     </div>
                     <p className="text-xs text-muted-foreground">
