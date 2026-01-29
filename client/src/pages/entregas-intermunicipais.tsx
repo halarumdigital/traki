@@ -57,7 +57,7 @@ import { cn } from "@/lib/utils";
 import { useForm, useFieldArray } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { PlusCircle, Package, Trash2, Calendar, MapPin, Clock, Ruler, Eye, Phone, Building2, User, Loader2, Route } from "lucide-react";
+import { PlusCircle, Package, Trash2, Calendar, MapPin, Clock, Ruler, Eye, Phone, Building2, User, Loader2, Route, Filter, RefreshCw } from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import "@/styles/google-maps-fix.css";
@@ -194,6 +194,7 @@ const statusLabels: Record<string, string> = {
   em_transito: "Em Trânsito",
   em_entrega: "Em Entrega",
   entregue: "Entregue",
+  concluida: "Concluída",
   cancelada: "Cancelada",
 };
 
@@ -229,6 +230,7 @@ export default function EntregasIntermunicipais() {
   const [selectedRota, setSelectedRota] = useState<string>("");
   const [accordionValue, setAccordionValue] = useState<string>("0");
   const [selectedEntregaId, setSelectedEntregaId] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<string>("todas");
   const enderecoInputsRef = useRef<{ [key: number]: HTMLInputElement | null }>({});
   const autocompletesRef = useRef<{ [key: number]: google.maps.places.Autocomplete | null }>({});
 
@@ -247,6 +249,24 @@ export default function EntregasIntermunicipais() {
     queryKey: ["/api/entregas-intermunicipais"],
     refetchInterval: 5000, // Atualiza a cada 5 segundos
   });
+
+  // Filtrar entregas baseado no status selecionado
+  const entregasFiltradas = entregas.filter((entrega) => {
+    if (statusFilter === "todas") return true;
+    if (statusFilter === "aguardando_motorista") return entrega.status === "aguardando_motorista";
+    // Concluídas = status "concluida"
+    if (statusFilter === "concluidas") return entrega.status === "concluida";
+    if (statusFilter === "canceladas") return entrega.status === "cancelada";
+    return true;
+  });
+
+  // Contadores por status
+  const contadores = {
+    todas: entregas.length,
+    aguardando_motorista: entregas.filter(e => e.status === "aguardando_motorista").length,
+    concluidas: entregas.filter(e => e.status === "concluida").length,
+    canceladas: entregas.filter(e => e.status === "cancelada").length,
+  };
 
   // Buscar detalhes da entrega selecionada
   const { data: entregaDetalhes, isLoading: loadingDetalhes } = useQuery<EntregaDetalhes>({
@@ -316,6 +336,24 @@ export default function EntregasIntermunicipais() {
       toast({
         title: "Erro",
         description: error.message || "Erro ao cancelar entrega",
+        variant: "destructive"
+      });
+    },
+  });
+
+  // Mutation para relançar entrega cancelada
+  const relaunchMutation = useMutation({
+    mutationFn: async (id: string) => {
+      return await apiRequest("POST", `/api/entregas-intermunicipais/${id}/relaunch`, {});
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/entregas-intermunicipais"] });
+      toast({ title: "Sucesso!", description: "Entrega relançada com sucesso" });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Erro",
+        description: error.message || "Erro ao relançar entrega",
         variant: "destructive"
       });
     },
@@ -596,12 +634,30 @@ export default function EntregasIntermunicipais() {
 
       {/* Lista de Entregas */}
       <Card className="shadow-sm border-slate-200">
-        <CardHeader className="px-6 py-4 border-b border-slate-100 flex flex-row items-center justify-between bg-white rounded-t-lg">
-          <div className="space-y-1">
-            <CardTitle className="text-base font-medium">Entregas Intermunicipais</CardTitle>
-            <CardDescription>
-              Mostrando {entregas.length > 0 ? 1 : 0}-{entregas.length} de {entregas.length} entregas filtradas ({entregas.length} total)
-            </CardDescription>
+        <CardHeader className="px-6 py-4 border-b border-slate-100 bg-white rounded-t-lg">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <CardTitle className="text-base font-medium">Entregas Intermunicipais</CardTitle>
+              <CardDescription>
+                Mostrando {entregasFiltradas.length} de {entregas.length} entregas
+              </CardDescription>
+            </div>
+
+            {/* Filtro de Status */}
+            <div className="flex items-center gap-2">
+              <Filter className="h-4 w-4 text-slate-500" />
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger className="w-[220px]">
+                  <SelectValue placeholder="Filtrar por status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="todas">Todas ({contadores.todas})</SelectItem>
+                  <SelectItem value="aguardando_motorista">Aguardando Motorista ({contadores.aguardando_motorista})</SelectItem>
+                  <SelectItem value="concluidas">Concluídas ({contadores.concluidas})</SelectItem>
+                  <SelectItem value="canceladas">Canceladas ({contadores.canceladas})</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </CardHeader>
         <CardContent className="p-0">
@@ -609,14 +665,20 @@ export default function EntregasIntermunicipais() {
             <div className="flex items-center justify-center py-16">
               <Loader2 className="h-8 w-8 animate-spin text-slate-400" />
             </div>
-          ) : entregas.length === 0 ? (
+          ) : entregasFiltradas.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-center">
               <div className="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center mb-4">
                 <Package className="h-8 w-8 text-slate-400" />
               </div>
-              <h3 className="text-lg font-medium text-slate-900 mb-1">Nenhuma entrega agendada</h3>
+              <h3 className="text-lg font-medium text-slate-900 mb-1">
+                {statusFilter === "todas"
+                  ? "Nenhuma entrega agendada"
+                  : `Nenhuma entrega ${statusFilter === "aguardando_motorista" ? "aguardando motorista" : statusFilter === "concluidas" ? "concluída" : "cancelada"}`}
+              </h3>
               <p className="text-sm text-slate-500 max-w-sm">
-                Clique em "Nova Entrega" para agendar uma entrega intermunicipal.
+                {statusFilter === "todas"
+                  ? 'Clique em "Nova Entrega" para agendar uma entrega intermunicipal.'
+                  : "Tente alterar o filtro para ver outras entregas."}
               </p>
             </div>
           ) : (
@@ -634,7 +696,7 @@ export default function EntregasIntermunicipais() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {entregas.map((entrega) => (
+                {entregasFiltradas.map((entrega) => (
                   <TableRow key={entrega.id} className="hover:bg-slate-50/50 transition-colors">
                     <TableCell className="font-mono text-xs text-slate-500 font-medium">{entrega.numeroPedido}</TableCell>
                     <TableCell>
@@ -667,6 +729,7 @@ export default function EntregasIntermunicipais() {
                           "font-medium border",
                           entrega.status === "aguardando_motorista" && "bg-amber-50 text-amber-700 border-amber-200",
                           entrega.status === "entregue" && "bg-green-50 text-green-700 border-green-200",
+                          entrega.status === "concluida" && "bg-green-50 text-green-700 border-green-200",
                           entrega.status === "em_transito" && "bg-blue-50 text-blue-700 border-blue-200",
                           entrega.status === "cancelada" && "bg-red-50 text-red-700 border-red-200"
                         )}
@@ -679,19 +742,40 @@ export default function EntregasIntermunicipais() {
                         {format(new Date(entrega.dataAgendada), "dd/MM/yyyy", { locale: ptBR })}
                       </div>
                     </TableCell>
-                    <TableCell className="text-right font-medium text-green-600">
-                      R$ {parseFloat(entrega.valorTotal).toFixed(2)}
+                    <TableCell className={cn(
+                      "text-right font-medium",
+                      entrega.status === "cancelada" ? "text-slate-400" : "text-green-600"
+                    )}>
+                      R$ {entrega.status === "cancelada" ? "0,00" : parseFloat(entrega.valorTotal).toFixed(2)}
                     </TableCell>
                     <TableCell className="text-center">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => setSelectedEntregaId(entrega.id)}
-                        title="Ver detalhes"
-                        className="h-8 w-8 text-slate-500 hover:text-blue-600"
-                      >
-                        <Eye className="h-4 w-4" />
-                      </Button>
+                      <div className="flex items-center justify-center gap-1">
+                        {entrega.status === "cancelada" && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => relaunchMutation.mutate(entrega.id)}
+                            disabled={relaunchMutation.isPending}
+                            title="Relançar entrega"
+                            className="h-8 w-8 text-slate-500 hover:text-green-600"
+                          >
+                            {relaunchMutation.isPending ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <RefreshCw className="h-4 w-4" />
+                            )}
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => setSelectedEntregaId(entrega.id)}
+                          title="Ver detalhes"
+                          className="h-8 w-8 text-slate-500 hover:text-blue-600"
+                        >
+                          <Eye className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -1327,8 +1411,11 @@ export default function EntregasIntermunicipais() {
                 </div>
                 <div>
                   <label className="text-sm font-medium text-muted-foreground">Valor Total</label>
-                  <p className="text-lg font-semibold text-green-600">
-                    R$ {parseFloat(entregaDetalhes.valorTotal).toFixed(2)}
+                  <p className={cn(
+                    "text-lg font-semibold",
+                    entregaDetalhes.status === "cancelada" ? "text-slate-400" : "text-green-600"
+                  )}>
+                    R$ {entregaDetalhes.status === "cancelada" ? "0,00" : parseFloat(entregaDetalhes.valorTotal).toFixed(2)}
                   </p>
                 </div>
                 <div>

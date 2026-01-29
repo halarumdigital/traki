@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { requests, settings } from "../shared/schema";
+import { requests, settings, entregasIntermunicipais } from "../shared/schema";
 import { and, eq, isNull, lt, sql } from "drizzle-orm";
 
 /**
@@ -60,15 +60,72 @@ export async function autoCancelPendingDeliveries() {
 }
 
 /**
+ * Cancela automaticamente entregas intermunicipais que foram criadas há mais de X minutos
+ * (configurável nas configurações) e ainda não foram aceitas por nenhum motorista
+ */
+export async function autoCancelPendingEntregasIntermunicipais() {
+  try {
+    // Buscar tempo de cancelamento configurado
+    const settingsData = await db.select().from(settings).limit(1);
+    const autoCancelTimeout = parseInt(String(settingsData[0]?.autoCancelTimeout || 30)); // Default 30 minutos
+
+    // Buscar entregas intermunicipais pendentes criadas há mais de X minutos (configurável)
+    // Entregas que ainda estão aguardando motorista (sem viagem associada)
+    const pendingEntregas = await db
+      .select({
+        id: entregasIntermunicipais.id,
+        numeroPedido: entregasIntermunicipais.numeroPedido,
+        createdAt: entregasIntermunicipais.createdAt,
+      })
+      .from(entregasIntermunicipais)
+      .where(
+        and(
+          // Status aguardando motorista
+          eq(entregasIntermunicipais.status, "aguardando_motorista"),
+          // Sem viagem associada (nenhum motorista aceitou)
+          isNull(entregasIntermunicipais.viagemId),
+          // Criada há mais de X minutos - usar SQL direto para comparação em UTC
+          sql`${entregasIntermunicipais.createdAt} < NOW() - INTERVAL '${sql.raw(autoCancelTimeout.toString())} minutes'`
+        )
+      );
+
+    if (pendingEntregas.length > 0) {
+      console.log(`⏰ Encontradas ${pendingEntregas.length} entregas intermunicipais para cancelar automaticamente (timeout: ${autoCancelTimeout} minutos)`);
+
+      // Cancelar cada entrega
+      for (const entrega of pendingEntregas) {
+        await db
+          .update(entregasIntermunicipais)
+          .set({
+            status: "cancelada",
+            updatedAt: new Date(),
+          })
+          .where(eq(entregasIntermunicipais.id, entrega.id));
+
+        console.log(
+          `✓ Entrega intermunicipal #${entrega.numeroPedido} cancelada automaticamente após ${autoCancelTimeout} minutos`
+        );
+      }
+
+      console.log(`✓ ${pendingEntregas.length} entregas intermunicipais canceladas automaticamente`);
+    }
+  } catch (error) {
+    console.error("❌ Erro ao cancelar entregas intermunicipais pendentes:", error);
+  }
+}
+
+/**
  * Inicia o job de auto-cancelamento que executa a cada 1 minuto
  */
 export function startAutoCancelJob() {
   // Executar imediatamente ao iniciar
   autoCancelPendingDeliveries();
+  autoCancelPendingEntregasIntermunicipais();
 
   // Executar a cada 1 minuto (60000ms)
   const interval = setInterval(() => {
     autoCancelPendingDeliveries();
+    autoCancelPendingEntregasIntermunicipais();
   }, 60000);
 
   console.log("✓ Job de auto-cancelamento de entregas iniciado (verifica a cada 1 minuto)");

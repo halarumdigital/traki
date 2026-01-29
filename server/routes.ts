@@ -4001,6 +4001,121 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // POST /api/entregas-intermunicipais/:id/relaunch - Relançar entrega cancelada
+  app.post("/api/entregas-intermunicipais/:id/relaunch", async (req, res) => {
+    try {
+      if (!req.session.userId && !req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+      const entrega = await storage.getEntregaIntermunicipal(id);
+
+      if (!entrega) {
+        return res.status(404).json({ message: "Entrega não encontrada" });
+      }
+
+      // Verificar se está cancelada
+      if (entrega.status !== "cancelada") {
+        return res.status(400).json({ message: "Apenas entregas canceladas podem ser relançadas" });
+      }
+
+      // Verificar permissão
+      let company;
+      if (!req.session.isAdmin) {
+        if (req.session.companyId) {
+          company = await storage.getCompany(req.session.companyId);
+        } else if (req.session.userId) {
+          company = await storage.getCompanyByUserId(req.session.userId);
+        }
+
+        if (!company || entrega.empresaId !== company.id) {
+          return res.status(403).json({ message: "Acesso negado" });
+        }
+      } else {
+        // Admin - buscar dados da empresa dona da entrega
+        company = await storage.getCompany(entrega.empresaId);
+      }
+
+      // Relançar a entrega - voltar para status inicial sem viagem associada e atualizar createdAt
+      console.log(`🔄 Relançando entrega ${id}...`);
+      await storage.updateEntregaIntermunicipal(id, {
+        status: "aguardando_motorista",
+        viagemId: null,
+        createdAt: new Date(), // Resetar o timer de auto-cancelamento
+      });
+      console.log(`✅ Entrega ${id} relançada com sucesso`);
+
+      // ===== NOTIFICAÇÃO: Enviar para motoristas que configuraram esta rota =====
+      try {
+        // Buscar dados da rota
+        const rota = await storage.getRotaIntermunicipal(entrega.rotaId);
+        if (!rota) {
+          console.log("⚠️ Rota não encontrada para enviar notificação");
+        } else {
+          // Buscar paradas da entrega
+          const paradas = await storage.getParadasByEntrega(id);
+
+          // Buscar configurações do sistema para timeout
+          const appSettings = await storage.getSettings();
+
+          // Buscar motoristas que configuraram capacidade para esta rota e data
+          const motoristasDisponiveis = await storage.getMotoristasComRotaConfigurada(
+            entrega.rotaId,
+            entrega.dataAgendada
+          );
+
+          if (motoristasDisponiveis && motoristasDisponiveis.length > 0) {
+            const fcmTokens = motoristasDisponiveis
+              .filter(m => m.fcmToken && m.fcmToken.trim() !== '')
+              .map(m => m.fcmToken!);
+
+            if (fcmTokens.length > 0) {
+              console.log(`📤 Enviando notificação de relançamento para ${fcmTokens.length} motorista(s)...`);
+
+              const numParadas = paradas.length || 1;
+              const descricaoParadas = numParadas > 1 ? `${numParadas} paradas` : "1 parada";
+
+              await sendPushToMultipleDevices(
+                fcmTokens,
+                "🚚 Entrega Intermunicipal Relançada!",
+                `${rota.nomeRota} • ${entrega.quantidadePacotes} pacote(s) • ${descricaoParadas} • ${new Date(entrega.dataAgendada).toLocaleDateString('pt-BR')}`,
+                {
+                  type: "nova_entrega_intermunicipal",
+                  entregaId: entrega.id,
+                  rotaId: entrega.rotaId,
+                  rotaNome: rota.nomeRota,
+                  dataAgendada: entrega.dataAgendada,
+                  quantidadePacotes: entrega.quantidadePacotes.toString(),
+                  numeroParadas: numParadas.toString(),
+                  pesoKg: entrega.pesoTotalKg?.toString() || "0",
+                  empresaNome: company?.name || "Empresa",
+                  enderecoColeta: entrega.enderecoColetaCompleto,
+                  enderecoEntrega: entrega.enderecoEntregaCompleto,
+                  acceptanceTimeout: appSettings?.driverAcceptanceTimeout?.toString() || "30",
+                }
+              );
+
+              console.log(`✅ Notificações de relançamento enviadas para motoristas`);
+            } else {
+              console.log("⚠️ Nenhum motorista tem FCM token registrado");
+            }
+          } else {
+            console.log("ℹ️ Nenhum motorista configurou capacidade para esta rota e data");
+          }
+        }
+      } catch (notifError) {
+        console.error("❌ Erro ao enviar notificação de relançamento:", notifError);
+        // Não falhar o relançamento por erro de notificação
+      }
+
+      return res.json({ message: "Entrega relançada com sucesso" });
+    } catch (error) {
+      console.error("Erro ao relançar entrega:", error);
+      return res.status(500).json({ message: "Erro ao relançar entrega" });
+    }
+  });
+
   // ========================================
   // VIAGENS INTERMUNICIPAIS ROUTES (Para Motoristas)
   // ========================================
