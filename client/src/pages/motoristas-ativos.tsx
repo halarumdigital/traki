@@ -228,7 +228,7 @@ export default function MotoristasAtivos() {
     subaccount: any;
     pixKey: string | null;
     pixKeyType: string | null;
-    balance: number;
+    wooviBalance: number;
     withdrawals: any[];
     splits: any[];
     totals: {
@@ -1372,7 +1372,7 @@ export default function MotoristasAtivos() {
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <Card>
                     <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                      <CardTitle className="text-sm font-medium">Subconta</CardTitle>
+                      <CardTitle className="text-sm font-medium">Subconta Woovi</CardTitle>
                       <CreditCard className="h-4 w-4 text-muted-foreground" />
                     </CardHeader>
                     <CardContent>
@@ -1384,7 +1384,7 @@ export default function MotoristasAtivos() {
                         )}
                       </div>
                       <p className="text-xs text-muted-foreground mt-1">
-                        {driverFinancial?.subaccount?.subaccountId || "ID não disponível"}
+                        {driverFinancial?.subaccount?.wooviSubaccountId || "ID não disponível"}
                       </p>
                     </CardContent>
                   </Card>
@@ -1406,13 +1406,13 @@ export default function MotoristasAtivos() {
 
                   <Card>
                     <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                      <CardTitle className="text-sm font-medium">Saldo na Conta</CardTitle>
+                      <CardTitle className="text-sm font-medium">Saldo na Conta Woovi</CardTitle>
                       <Wallet className="h-4 w-4 text-green-600" />
                     </CardHeader>
                     <CardContent>
                       <div className="text-2xl font-bold text-green-600">
                         {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
-                          (driverFinancial?.balance || 0) / 100
+                          (driverFinancial?.wooviBalance || 0) / 100
                         )}
                       </div>
                       <p className="text-xs text-muted-foreground">

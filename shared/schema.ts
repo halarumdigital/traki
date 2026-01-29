@@ -1836,6 +1836,99 @@ export const sessions = pgTable("session", {
 });
 
 // ========================================
+// WOOVI SUBACCOUNTS (Subcontas Woovi)
+// ========================================
+export const wooviSubaccounts = pgTable("woovi_subaccounts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Tipo de conta: 'company', 'driver', ou 'admin'
+  accountType: varchar("account_type", { length: 20 }).notNull(),
+
+  // Relacionamento com empresa ou entregador
+  companyId: varchar("company_id").references(() => companies.id, { onDelete: "cascade" }),
+  driverId: varchar("driver_id").references(() => drivers.id, { onDelete: "cascade" }),
+
+  // Dados da Woovi
+  pixKey: varchar("pix_key", { length: 255 }).notNull().unique(), // Chave PIX registrada
+  pixKeyType: varchar("pix_key_type", { length: 20 }).notNull(), // EMAIL, CPF, CNPJ, PHONE, EVP
+  wooviSubaccountId: varchar("woovi_subaccount_id", { length: 255 }), // ID retornado pela Woovi (se houver)
+
+  // Saldo virtual (cache do saldo da Woovi - atualizado periodicamente)
+  balanceCache: numeric("balance_cache", { precision: 10, scale: 2 }).default("0"),
+  lastBalanceUpdate: timestamp("last_balance_update"),
+
+  // Status
+  active: boolean("active").notNull().default(true),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertWooviSubaccountSchema = createInsertSchema(wooviSubaccounts, {
+  accountType: z.enum(["company", "driver", "admin"]),
+  pixKey: z.string().min(1, "Chave PIX é obrigatória"),
+  pixKeyType: z.enum(["EMAIL", "CPF", "CNPJ", "PHONE", "EVP"]),
+  companyId: z.string().optional(),
+  driverId: z.string().optional(),
+  wooviSubaccountId: z.string().optional(),
+  balanceCache: z.union([z.string(), z.number()]).transform(val => String(val)).optional(),
+  active: z.boolean().default(true),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type WooviSubaccount = typeof wooviSubaccounts.$inferSelect;
+export type InsertWooviSubaccount = z.infer<typeof insertWooviSubaccountSchema>;
+
+// ========================================
+// WOOVI CHARGES (Cobranças PIX - Recargas)
+// ========================================
+export const wooviCharges = pgTable("woovi_charges", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Empresa que solicitou a recarga
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  subaccountId: varchar("subaccount_id").notNull().references(() => wooviSubaccounts.id),
+
+  // Dados da Woovi
+  wooviChargeId: varchar("woovi_charge_id", { length: 255 }), // ID da cobrança retornado pela Woovi
+  correlationId: varchar("correlation_id", { length: 255 }).unique(), // ID único da cobrança
+
+  // Valor
+  value: numeric("value", { precision: 10, scale: 2 }).notNull(), // Valor em reais
+
+  // QR Code e BR Code
+  qrCode: text("qr_code"), // QR Code em base64
+  brCode: text("br_code"), // BR Code (copia e cola)
+
+  // Status: 'pending', 'paid', 'expired', 'cancelled'
+  status: varchar("status", { length: 20 }).notNull().default("pending"),
+
+  // Datas
+  paidAt: timestamp("paid_at"),
+  expiresAt: timestamp("expires_at"),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertWooviChargeSchema = createInsertSchema(wooviCharges, {
+  companyId: z.string().min(1, "Empresa é obrigatória"),
+  subaccountId: z.string().min(1, "Subconta é obrigatória"),
+  value: z.union([z.string(), z.number()]).transform(val => String(val)),
+  status: z.enum(["pending", "paid", "expired", "cancelled"]).default("pending"),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type WooviCharge = typeof wooviCharges.$inferSelect;
+export type InsertWooviCharge = z.infer<typeof insertWooviChargeSchema>;
+
+// ========================================
 // FINANCIAL TRANSACTIONS (Logs de Transações)
 // ========================================
 export const financialTransactions = pgTable("financial_transactions", {
@@ -1857,15 +1950,19 @@ export const financialTransactions = pgTable("financial_transactions", {
   driverId: varchar("driver_id").references(() => drivers.id),
   entregaId: varchar("entrega_id").references(() => entregasIntermunicipais.id), // Para entregas intermunicipais
   requestId: varchar("request_id").references(() => requests.id), // Para entregas rápidas (requests)
-  chargeId: varchar("charge_id"),
-  fromSubaccountId: varchar("from_subaccount_id"),
-  toSubaccountId: varchar("to_subaccount_id"),
+  chargeId: varchar("charge_id").references(() => wooviCharges.id),
+  fromSubaccountId: varchar("from_subaccount_id").references(() => wooviSubaccounts.id),
+  toSubaccountId: varchar("to_subaccount_id").references(() => wooviSubaccounts.id),
 
   // Valores
   amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
 
   // Status: 'pending', 'completed', 'failed'
   status: varchar("status", { length: 20 }).notNull().default("pending"),
+
+  // Dados da API Woovi
+  wooviTransactionId: varchar("woovi_transaction_id", { length: 255 }), // ID retornado pela Woovi
+  wooviResponse: json("woovi_response"), // Resposta completa da API
 
   // Descrição e observações
   description: text("description").notNull(),
@@ -1911,7 +2008,7 @@ export const companyBalanceBlocks = pgTable("company_balance_blocks", {
 
   // Empresa e subconta
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-  subaccountId: varchar("subaccount_id"),
+  subaccountId: varchar("subaccount_id").notNull().references(() => wooviSubaccounts.id),
 
   // Entrega relacionada
   entregaId: varchar("entrega_id").notNull().references(() => entregasIntermunicipais.id, { onDelete: "cascade" }),

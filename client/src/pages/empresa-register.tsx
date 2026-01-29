@@ -536,7 +536,7 @@ export default function EmpresaRegister() {
               </div>
             </div>
 
-            {/* Dados PIX */}
+            {/* Dados PIX (Woovi) */}
             <div className="space-y-4">
               <h3 className="text-lg font-semibold flex items-center gap-2">
                 <Wallet className="h-5 w-5" />
