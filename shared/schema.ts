@@ -380,6 +380,12 @@ export const drivers = pgTable("drivers", {
   blockedReason: text("blocked_reason"), // Motivo do bloqueio
   blockedByUserId: varchar("blocked_by_user_id").references(() => users.id), // Quem bloqueou
 
+  // Bloqueio de Entregas (pode usar o app, mas não recebe entregas)
+  deliveriesBlocked: boolean("deliveries_blocked").notNull().default(false), // Se está com entregas bloqueadas
+  deliveriesBlockedAt: timestamp("deliveries_blocked_at"), // Data do bloqueio de entregas
+  deliveriesBlockedReason: text("deliveries_blocked_reason"), // Motivo do bloqueio de entregas
+  deliveriesBlockedByUserId: varchar("deliveries_blocked_by_user_id").references(() => users.id), // Quem bloqueou as entregas
+
   // Documents
   uploadedDocuments: boolean("uploaded_documents").notNull().default(false),
 
@@ -1978,3 +1984,307 @@ export const insertNpsResponseItemSchema = createInsertSchema(npsResponseItems, 
 
 export type NpsResponseItem = typeof npsResponseItems.$inferSelect;
 export type InsertNpsResponseItem = z.infer<typeof insertNpsResponseItemSchema>;
+
+// ========================================
+// WALLETS (Carteiras Virtuais)
+// ========================================
+export const wallets = pgTable("wallets", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Relacionamento - pode ser empresa, entregador ou plataforma
+  // Para plataforma: usa ID fixo '00000000-0000-0000-0000-000000000001'
+  ownerId: varchar("owner_id").notNull(),
+  ownerType: varchar("owner_type", { length: 20 }).notNull(), // 'company', 'driver', 'platform'
+
+  // Saldos
+  availableBalance: numeric("available_balance", { precision: 15, scale: 2 }).notNull().default("0.00"),
+  blockedBalance: numeric("blocked_balance", { precision: 15, scale: 2 }).notNull().default("0.00"), // Saldo em processamento (ex: saque pendente)
+
+  // Controle
+  status: varchar("status", { length: 20 }).notNull().default("active"), // 'active', 'blocked', 'suspended'
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertWalletSchema = createInsertSchema(wallets, {
+  ownerId: z.string().min(1, "ID do proprietário é obrigatório"),
+  ownerType: z.enum(["company", "driver", "platform"]),
+  availableBalance: z.union([z.string(), z.number()]).transform(val => String(val)).optional(),
+  blockedBalance: z.union([z.string(), z.number()]).transform(val => String(val)).optional(),
+  status: z.enum(["active", "blocked", "suspended"]).default("active"),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type Wallet = typeof wallets.$inferSelect;
+export type InsertWallet = z.infer<typeof insertWalletSchema>;
+
+// ========================================
+// WALLET TRANSACTIONS (Transações da Carteira)
+// ========================================
+export const walletTransactions = pgTable("wallet_transactions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Wallet relacionada
+  walletId: varchar("wallet_id").notNull().references(() => wallets.id),
+
+  // Tipo de transação
+  type: varchar("type", { length: 30 }).notNull(),
+  // Tipos: 'recharge' (recarga), 'delivery_debit' (débito entrega), 'delivery_credit' (crédito entrega),
+  //        'commission' (comissão plataforma), 'withdrawal' (saque), 'refund' (estorno),
+  //        'manual_adjustment' (ajuste manual), 'weekly_charge' (cobrança pós-pago)
+
+  // Status
+  status: varchar("status", { length: 20 }).notNull().default("pending"),
+  // Status: 'pending', 'processing', 'completed', 'failed', 'cancelled', 'refunded'
+
+  // Valores
+  amount: numeric("amount", { precision: 15, scale: 2 }).notNull(),
+  previousBalance: numeric("previous_balance", { precision: 15, scale: 2 }).notNull(),
+  newBalance: numeric("new_balance", { precision: 15, scale: 2 }).notNull(),
+
+  // Referências (opcional - depende do tipo de transação)
+  requestId: varchar("request_id").references(() => requests.id), // Para entregas rápidas
+  intermunicipalDeliveryId: varchar("intermunicipal_delivery_id"), // Para entregas intermunicipais
+  chargeId: varchar("charge_id"), // Para recargas/cobranças
+  originalTransactionId: varchar("original_transaction_id"), // Para estornos
+
+  // Detalhes
+  description: text("description"),
+  metadata: json("metadata").$type<Record<string, unknown>>(),
+
+  // Auditoria
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  processedAt: timestamp("processed_at"),
+});
+
+export const insertWalletTransactionSchema = createInsertSchema(walletTransactions, {
+  walletId: z.string().min(1, "Wallet é obrigatória"),
+  type: z.enum([
+    "recharge", "delivery_debit", "delivery_credit", "commission",
+    "withdrawal", "refund", "manual_adjustment", "weekly_charge"
+  ]),
+  status: z.enum(["pending", "processing", "completed", "failed", "cancelled", "refunded"]).default("pending"),
+  amount: z.union([z.string(), z.number()]).transform(val => String(val)),
+  previousBalance: z.union([z.string(), z.number()]).transform(val => String(val)),
+  newBalance: z.union([z.string(), z.number()]).transform(val => String(val)),
+}).omit({
+  id: true,
+  createdAt: true,
+  processedAt: true,
+});
+
+export type WalletTransaction = typeof walletTransactions.$inferSelect;
+export type InsertWalletTransaction = z.infer<typeof insertWalletTransactionSchema>;
+
+// ========================================
+// CHARGES (Cobranças - PIX/Boleto via Asaas)
+// ========================================
+export const charges = pgTable("charges", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Relacionamentos
+  companyId: varchar("company_id").notNull().references(() => companies.id),
+  walletId: varchar("wallet_id").notNull().references(() => wallets.id),
+
+  // Dados Asaas
+  asaasId: varchar("asaas_id", { length: 100 }), // ID da cobrança no Asaas
+  asaasCustomerId: varchar("asaas_customer_id", { length: 100 }), // ID do cliente no Asaas
+
+  // Tipo e forma de pagamento
+  chargeType: varchar("charge_type", { length: 20 }).notNull(), // 'recharge' (recarga), 'weekly' (pós-pago semanal)
+  paymentMethod: varchar("payment_method", { length: 20 }).notNull(), // 'pix', 'boleto'
+
+  // Valores
+  amount: numeric("amount", { precision: 15, scale: 2 }).notNull(),
+  netAmount: numeric("net_amount", { precision: 15, scale: 2 }), // Valor após taxas do Asaas
+
+  // Datas
+  dueDate: timestamp("due_date").notNull(),
+  paidAt: timestamp("paid_at"),
+
+  // Status
+  status: varchar("status", { length: 30 }).notNull().default("pending"),
+  // Status: 'pending', 'waiting_payment', 'confirmed', 'overdue', 'cancelled', 'refunded'
+
+  // Dados do pagamento PIX
+  pixCopyPaste: text("pix_copy_paste"), // Código copia e cola
+  pixQrCodeUrl: text("pix_qrcode_url"), // QR Code em base64
+
+  // Dados do pagamento Boleto
+  boletoUrl: text("boleto_url"),
+  boletoBarcode: varchar("boleto_barcode", { length: 100 }),
+  boletoDigitableLine: varchar("boleto_digitable_line", { length: 100 }),
+
+  // Período (para pós-pago semanal)
+  periodStart: timestamp("period_start"),
+  periodEnd: timestamp("period_end"),
+
+  // Metadata
+  metadata: json("metadata").$type<Record<string, unknown>>(),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertChargeSchema = createInsertSchema(charges, {
+  companyId: z.string().min(1, "Empresa é obrigatória"),
+  walletId: z.string().min(1, "Wallet é obrigatória"),
+  chargeType: z.enum(["recharge", "weekly"]),
+  paymentMethod: z.enum(["pix", "boleto"]),
+  amount: z.union([z.string(), z.number()]).transform(val => String(val)),
+  status: z.enum(["pending", "waiting_payment", "confirmed", "overdue", "cancelled", "refunded"]).default("pending"),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type Charge = typeof charges.$inferSelect;
+export type InsertCharge = z.infer<typeof insertChargeSchema>;
+
+// ========================================
+// DELIVERY FINANCIALS (Vínculo Entregas com Financeiro - Split)
+// ========================================
+export const deliveryFinancials = pgTable("delivery_financials", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Referências da entrega (um ou outro)
+  requestId: varchar("request_id").references(() => requests.id), // Para entregas rápidas
+  intermunicipalDeliveryId: varchar("intermunicipal_delivery_id"), // Para entregas intermunicipais
+
+  // Participantes
+  companyId: varchar("company_id").notNull().references(() => companies.id),
+  driverId: varchar("driver_id").notNull().references(() => drivers.id),
+
+  // Valores do split
+  totalAmount: numeric("total_amount", { precision: 15, scale: 2 }).notNull(), // Valor total cobrado da empresa
+  driverAmount: numeric("driver_amount", { precision: 15, scale: 2 }).notNull(), // Parte do entregador
+  commissionAmount: numeric("commission_amount", { precision: 15, scale: 2 }).notNull(), // Parte da plataforma
+  commissionPercentage: numeric("commission_percentage", { precision: 5, scale: 2 }).notNull(), // % da comissão aplicada
+
+  // Transações relacionadas (preenchidas após processamento)
+  companyDebitTransactionId: varchar("company_debit_transaction_id").references(() => walletTransactions.id),
+  driverCreditTransactionId: varchar("driver_credit_transaction_id").references(() => walletTransactions.id),
+  commissionTransactionId: varchar("commission_transaction_id").references(() => walletTransactions.id),
+
+  // Cobrança (para pós-pago)
+  chargeId: varchar("charge_id").references(() => charges.id),
+
+  // Status
+  processed: boolean("processed").notNull().default(false),
+  processedAt: timestamp("processed_at"),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertDeliveryFinancialSchema = createInsertSchema(deliveryFinancials, {
+  companyId: z.string().min(1, "Empresa é obrigatória"),
+  driverId: z.string().min(1, "Entregador é obrigatório"),
+  totalAmount: z.union([z.string(), z.number()]).transform(val => String(val)),
+  driverAmount: z.union([z.string(), z.number()]).transform(val => String(val)),
+  commissionAmount: z.union([z.string(), z.number()]).transform(val => String(val)),
+  commissionPercentage: z.union([z.string(), z.number()]).transform(val => String(val)),
+}).omit({
+  id: true,
+  createdAt: true,
+  processedAt: true,
+});
+
+export type DeliveryFinancial = typeof deliveryFinancials.$inferSelect;
+export type InsertDeliveryFinancial = z.infer<typeof insertDeliveryFinancialSchema>;
+
+// ========================================
+// WITHDRAWALS (Saques dos Entregadores)
+// ========================================
+export const withdrawals = pgTable("withdrawals", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Entregador
+  driverId: varchar("driver_id").notNull().references(() => drivers.id),
+  walletId: varchar("wallet_id").notNull().references(() => wallets.id),
+
+  // Valores
+  amount: numeric("amount", { precision: 15, scale: 2 }).notNull(),
+  fee: numeric("fee", { precision: 15, scale: 2 }).notNull().default("0.00"), // Taxa de saque se houver
+  netAmount: numeric("net_amount", { precision: 15, scale: 2 }).notNull(), // Valor - taxa
+
+  // Dados PIX (chave do entregador)
+  pixKeyType: varchar("pix_key_type", { length: 20 }).notNull(), // 'cpf', 'cnpj', 'email', 'phone', 'evp'
+  pixKey: varchar("pix_key", { length: 100 }).notNull(),
+
+  // Asaas
+  asaasTransferId: varchar("asaas_transfer_id", { length: 100 }),
+
+  // Status
+  status: varchar("status", { length: 20 }).notNull().default("requested"),
+  // Status: 'requested', 'processing', 'completed', 'failed', 'cancelled'
+
+  failureReason: text("failure_reason"),
+
+  // Transação relacionada
+  transactionId: varchar("transaction_id").references(() => walletTransactions.id),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  processedAt: timestamp("processed_at"),
+});
+
+export const insertWithdrawalSchema = createInsertSchema(withdrawals, {
+  driverId: z.string().min(1, "Entregador é obrigatório"),
+  walletId: z.string().min(1, "Wallet é obrigatória"),
+  amount: z.union([z.string(), z.number()]).transform(val => String(val)),
+  fee: z.union([z.string(), z.number()]).transform(val => String(val)).optional(),
+  netAmount: z.union([z.string(), z.number()]).transform(val => String(val)),
+  pixKeyType: z.enum(["cpf", "cnpj", "email", "phone", "evp"]),
+  pixKey: z.string().min(1, "Chave PIX é obrigatória"),
+  status: z.enum(["requested", "processing", "completed", "failed", "cancelled"]).default("requested"),
+}).omit({
+  id: true,
+  createdAt: true,
+  processedAt: true,
+});
+
+export type Withdrawal = typeof withdrawals.$inferSelect;
+export type InsertWithdrawal = z.infer<typeof insertWithdrawalSchema>;
+
+// ========================================
+// WEBHOOKS LOG (Log de Webhooks do Asaas)
+// ========================================
+export const webhooksLog = pgTable("webhooks_log", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Identificação
+  provider: varchar("provider", { length: 50 }).notNull().default("asaas"),
+  eventType: varchar("event_type", { length: 100 }).notNull(),
+
+  // Dados recebidos
+  payload: json("payload").$type<Record<string, unknown>>().notNull(),
+  headers: json("headers").$type<Record<string, unknown>>(),
+
+  // Processamento
+  processed: boolean("processed").notNull().default(false),
+  processedAt: timestamp("processed_at"),
+  errorMessage: text("error_message"),
+
+  // Referências (preenchidas após processamento)
+  chargeId: varchar("charge_id").references(() => charges.id),
+  withdrawalId: varchar("withdrawal_id").references(() => withdrawals.id),
+
+  receivedAt: timestamp("received_at").notNull().defaultNow(),
+});
+
+export const insertWebhookLogSchema = createInsertSchema(webhooksLog, {
+  provider: z.string().default("asaas"),
+  eventType: z.string().min(1, "Tipo de evento é obrigatório"),
+  payload: z.record(z.unknown()),
+}).omit({
+  id: true,
+  receivedAt: true,
+  processedAt: true,
+});
+
+export type WebhookLog = typeof webhooksLog.$inferSelect;
+export type InsertWebhookLog = z.infer<typeof insertWebhookLogSchema>;

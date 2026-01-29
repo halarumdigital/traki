@@ -23,7 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Eye, User, MapPin, Truck, Loader2, CalendarIcon, Search, X, ChevronLeft, ChevronRight, Plus, XCircle, Clock, Package, RefreshCw, Ban, Star, AlertTriangle } from "lucide-react";
+import { Eye, User, MapPin, Truck, Loader2, CalendarIcon, Search, X, ChevronLeft, ChevronRight, Plus, XCircle, Clock, Package, RefreshCw, Ban, Star, AlertTriangle, Wallet, AlertCircle } from "lucide-react";
 import { useState, useMemo, useEffect, useRef } from "react";
 import {
   Dialog,
@@ -32,6 +32,16 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Accordion,
   AccordionContent,
@@ -160,6 +170,8 @@ export default function EmpresaEntregasEmAndamento() {
 
   // Novo modal de entrega
   const [newDeliveryOpen, setNewDeliveryOpen] = useState(false);
+  const [insufficientBalanceOpen, setInsufficientBalanceOpen] = useState(false);
+  const [balanceErrorDetails, setBalanceErrorDetails] = useState<{ available: string; required: string } | null>(null);
   const [deliveryForm, setDeliveryForm] = useState({
     pickupAddress: "",
     pickupNumber: "",
@@ -627,10 +639,26 @@ export default function EmpresaEntregasEmAndamento() {
       setRouteInfo(null);
     },
     onError: (error: any) => {
+      const errorMessage = error?.message || String(error) || "";
+
+      // Se for erro de saldo insuficiente, abre o modal
+      if (errorMessage.includes("402") || errorMessage.toLowerCase().includes("saldo")) {
+        const availableMatch = errorMessage.match(/Disponível: R\$ ([\d.,]+)/);
+        const requiredMatch = errorMessage.match(/Necessário: R\$ ([\d.,]+)/);
+
+        setNewDeliveryOpen(false);
+        setBalanceErrorDetails({
+          available: availableMatch ? availableMatch[1] : "0,00",
+          required: requiredMatch ? requiredMatch[1] : "0,00",
+        });
+        setInsufficientBalanceOpen(true);
+        return;
+      }
+
       toast({
         variant: "destructive",
         title: "Erro ao criar entrega",
-        description: error.message || "Ocorreu um erro ao criar a entrega.",
+        description: "Ocorreu um erro ao criar a entrega.",
       });
     },
   });
@@ -1414,8 +1442,21 @@ export default function EmpresaEntregasEmAndamento() {
                     </TableCell>
                     <TableCell>
                       <div className="font-medium text-slate-900">{delivery.customerName || "-"}</div>
-                      <div className="text-xs text-slate-500 truncate max-w-[200px]" title={delivery.pickupAddress}>
-                        {delivery.pickupAddress}
+                      <div className="text-xs text-slate-500 truncate max-w-[200px]" title={delivery.dropoffAddress}>
+                        {(() => {
+                          // Pegar apenas o primeiro endereço se houver múltiplos
+                          let address = delivery.dropoffAddress.split(" | ")[0];
+                          // Remover [nome do cliente], [WhatsApp: xxx], [Ref: xxx]
+                          address = address.replace(/\[WhatsApp:\s*[^\]]+\]\s*/gi, '');
+                          address = address.replace(/\[Ref:\s*[^\]]+\]\s*/gi, '');
+                          address = address.replace(/^\[[^\]]+\]\s*/, '');
+                          // Pegar apenas rua e número (antes da primeira vírgula após o número)
+                          const parts = address.trim().split(',');
+                          if (parts.length >= 2) {
+                            return `${parts[0].trim()}, ${parts[1].trim()}`;
+                          }
+                          return parts[0].trim();
+                        })()}
                       </div>
                     </TableCell>
                     <TableCell>
@@ -1473,14 +1514,26 @@ export default function EmpresaEntregasEmAndamento() {
                       {delivery.totalPrice ? formatCurrency(parseFloat(delivery.totalPrice)) : "-"}
                     </TableCell>
                     <TableCell className="text-center">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-slate-500 hover:text-blue-600"
-                        onClick={() => handleViewDetails(delivery)}
-                      >
-                        <Eye className="h-4 w-4" />
-                      </Button>
+                      <div className="flex items-center justify-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-slate-500 hover:text-blue-600"
+                          onClick={() => handleViewDetails(delivery)}
+                          title="Ver detalhes"
+                        >
+                          <Eye className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-slate-500 hover:text-red-600"
+                          onClick={() => handleCancelClick(delivery)}
+                          title="Cancelar entrega"
+                        >
+                          <XCircle className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -1755,20 +1808,36 @@ export default function EmpresaEntregasEmAndamento() {
           {deliveryToCancel && (
             <div className="space-y-4">
               <div className="p-4 bg-amber-50 border border-amber-200 rounded-md">
-                <p className="text-sm font-medium text-amber-900">
-                  Você tem certeza que deseja cancelar a entrega <span className="font-mono font-bold">{deliveryToCancel.requestNumber}</span>?
-                </p>
-                <p className="text-sm text-amber-700 mt-1">
-                  {deliveryAccepted ? (
-                    <>
-                      A entrega já foi aceita pelo entregador{" "}
-                      <span className="font-semibold">{deliveryToCancel.driverName || "o entregador"}</span>.{" "}
-                      {renderCancellationFeeDescription()}
-                    </>
-                  ) : (
-                    "Você não terá custo pois ela ainda não foi aceita."
-                  )}
-                </p>
+                {deliveryAccepted ? (
+                  <>
+                    <div className="flex items-center gap-2 mb-2">
+                      <AlertTriangle className="h-5 w-5 text-amber-600" />
+                      <p className="text-sm font-medium text-amber-900">
+                        Atenção: Taxa de cancelamento
+                      </p>
+                    </div>
+                    <p className="text-sm text-amber-700">
+                      O entregador aceitou a entrega e já está em deslocamento. Para cancelar a entrega será cobrada a taxa de{" "}
+                      {cancellationPreview?.isLoading ? (
+                        <span className="italic">calculando...</span>
+                      ) : cancellationPreview?.amount !== null && cancellationPreview?.amount !== undefined ? (
+                        <>
+                          <span className="font-semibold">{formatCurrency(cancellationPreview.amount)}</span>
+                          {cancellationPreview.appliedPercentage && (
+                            <> ({cancellationPreview.appliedPercentage}% do valor da entrega)</>
+                          )}
+                        </>
+                      ) : (
+                        <span className="font-semibold">taxa configurada</span>
+                      )}
+                      .
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-sm font-medium text-amber-900">
+                    Tem certeza que deseja cancelar a entrega <span className="font-mono font-bold">{deliveryToCancel.requestNumber}</span>?
+                  </p>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -2273,6 +2342,58 @@ export default function EmpresaEntregasEmAndamento() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Modal de Saldo Insuficiente */}
+      <AlertDialog open={insufficientBalanceOpen} onOpenChange={setInsufficientBalanceOpen}>
+        <AlertDialogContent className="max-w-md">
+          <AlertDialogHeader className="text-center sm:text-center">
+            <div className="mx-auto w-16 h-16 bg-orange-100 rounded-full flex items-center justify-center mb-4">
+              <Wallet className="h-8 w-8 text-orange-600" />
+            </div>
+            <AlertDialogTitle className="text-xl">Saldo Insuficiente</AlertDialogTitle>
+            <AlertDialogDescription className="text-center space-y-4">
+              <p className="text-muted-foreground">
+                Seu saldo atual não é suficiente para realizar esta entrega.
+              </p>
+
+              {balanceErrorDetails && (
+                <div className="bg-muted rounded-lg p-4 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-muted-foreground">Saldo disponível:</span>
+                    <span className="font-semibold text-red-600">R$ {balanceErrorDetails.available}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-muted-foreground">Valor necessário:</span>
+                    <span className="font-semibold">R$ {balanceErrorDetails.required}</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mt-4">
+                <p className="text-sm text-blue-800 flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 flex-shrink-0" />
+                  Recarga mínima: <strong>R$ 50,00</strong>
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-col sm:flex-col gap-2 mt-4">
+            <AlertDialogAction
+              onClick={() => {
+                setInsufficientBalanceOpen(false);
+                window.location.href = "/empresa/carteira";
+              }}
+              className="w-full bg-green-600 hover:bg-green-700"
+            >
+              <Wallet className="mr-2 h-4 w-4" />
+              Recarregar Agora
+            </AlertDialogAction>
+            <AlertDialogCancel className="w-full mt-0">
+              Voltar
+            </AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

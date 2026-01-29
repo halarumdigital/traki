@@ -24,6 +24,8 @@ import Indicacao from "@/pages/indicacao";
 import Notificacoes from "@/pages/notificacoes";
 import Empresas from "@/pages/empresas";
 import Financeiro from "@/pages/financeiro";
+import FinanceiroSaques from "@/pages/financeiro-saques";
+import AdminBoletos from "@/pages/admin-boletos";
 import Precos from "@/pages/precos";
 import RotasIntermunicipais from "@/pages/rotas-intermunicipais";
 import MotoristasAtivos from "@/pages/motoristas-ativos";
@@ -149,6 +151,8 @@ function Router() {
               <Route path="/notificacoes" component={Notificacoes} />
               <Route path="/empresas" component={Empresas} />
               <Route path="/financeiro" component={Financeiro} />
+              <Route path="/financeiro/saques" component={FinanceiroSaques} />
+              <Route path="/financeiro/boletos" component={AdminBoletos} />
               <Route path="/precos" component={Precos} />
               <Route path="/rotas-intermunicipais" component={RotasIntermunicipais} />
               <Route path="/motoristas/ativos" component={MotoristasAtivos} />

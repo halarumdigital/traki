@@ -6,6 +6,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { format } from "date-fns";
+import { ptBR } from "date-fns/locale";
+import { cn } from "@/lib/utils";
 import {
   Table,
   TableBody,
@@ -38,7 +43,14 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Pencil, Trash2, Plus, Eye, Star, Search, DollarSign, TrendingUp, MapPin, Wallet, ArrowDownToLine, ArrowUpFromLine, CreditCard, Key, Upload, X, Building2 } from "lucide-react";
+import { Pencil, Trash2, Plus, Eye, Star, Search, DollarSign, TrendingUp, MapPin, Wallet, ArrowDownToLine, ArrowUpFromLine, CreditCard, Key, Upload, X, Building2, MoreVertical, FileText, Loader2, Copy, ExternalLink, CheckCircle, CalendarIcon, LogIn } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { insertCompanySchema, type Company, type ServiceLocation } from "@shared/schema";
@@ -107,6 +119,27 @@ export default function Empresas() {
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
   const logoInputRef = useRef<HTMLInputElement>(null);
 
+  // Estados para modal de boleto manual
+  const [boletoDialogOpen, setBoletoDialogOpen] = useState(false);
+  const [boletoCompany, setBoletoCompany] = useState<Company | null>(null);
+  const [boletoDateFrom, setBoletoDateFrom] = useState<Date | undefined>(undefined);
+  const [boletoDateTo, setBoletoDateTo] = useState<Date | undefined>(undefined);
+  const [boletoResult, setBoletoResult] = useState<{
+    success: boolean;
+    message: string;
+    chargeId?: string;
+    deliveriesCount?: number;
+    totalAmount?: number;
+    charge?: {
+      id: string;
+      amount: string;
+      dueDate: string;
+      boletoUrl: string | null;
+      boletoBarcode: string | null;
+      pixCopyPaste: string | null;
+    };
+  } | null>(null);
+
   const { data: companies = [], isLoading } = useQuery<Company[]>({
     queryKey: ["/api/companies"],
   });
@@ -120,23 +153,143 @@ export default function Empresas() {
     enabled: !!viewingCompany?.id,
   });
 
-  const { data: companyFinancial } = useQuery<{
-    subaccount: any;
-    pixKey: string | null;
-    pixKeyType: string | null;
-    balance: number;
-    recharges: any[];
-    payments: any[];
+  const { data: companyWallet } = useQuery<{
+    wallet: {
+      id: string;
+      availableBalance: string;
+      blockedBalance: string;
+      status: string;
+    };
+    charges: Array<{
+      id: string;
+      amount: string;
+      paymentMethod: string;
+      status: string;
+      chargeType: string;
+      createdAt: string;
+      paidAt: string | null;
+      dueDate: string | null;
+      periodStart: string | null;
+      periodEnd: string | null;
+      boletoUrl: string | null;
+      boletoBarcode: string | null;
+      boletoDigitableLine: string | null;
+      pixCopyPaste: string | null;
+      deliveriesCount: number;
+    }>;
+    transactions: Array<{
+      id: string;
+      type: string;
+      amount: string;
+      description: string;
+      createdAt: string;
+    }>;
     totals: {
       totalRecharges: number;
-      totalPayments: number;
+      chargesCount: number;
+      confirmedCount: number;
     };
   }>({
-    queryKey: ["/api/companies", viewingCompany?.id, "financial"],
+    queryKey: ["/api/companies", viewingCompany?.id, "wallet"],
+    queryFn: async () => {
+      const response = await fetch(`/api/companies/${viewingCompany?.id}/wallet`, {
+        credentials: "include",
+      });
+      if (!response.ok) {
+        throw new Error("Erro ao buscar dados da wallet");
+      }
+      return response.json();
+    },
     enabled: !!viewingCompany?.id,
   });
 
-  const [financialView, setFinancialView] = useState<"recargas" | "pagamentos">("recargas");
+  // Query para entregas pendentes (quando abre modal de boleto)
+  const { data: pendingDeliveries, isLoading: isLoadingPending, refetch: refetchPending } = useQuery<{
+    count: number;
+    totalAmount: number;
+    completedNotRegistered?: number;
+    debug?: {
+      recentDeliveries: Array<{
+        id: string;
+        requestNumber: string;
+        status: string;
+        isCompleted: boolean | null;
+        completedAt: string | null;
+      }>;
+    };
+    deliveries: Array<{
+      id: string;
+      requestId: string | null;
+      totalAmount: string;
+      createdAt: string;
+    }>;
+  }>({
+    queryKey: ["/api/companies", boletoCompany?.id, "pending-deliveries", boletoDateFrom?.toISOString(), boletoDateTo?.toISOString()],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (boletoDateFrom) {
+        params.append("dateFrom", boletoDateFrom.toISOString());
+      }
+      if (boletoDateTo) {
+        params.append("dateTo", boletoDateTo.toISOString());
+      }
+      const queryString = params.toString();
+      const url = `/api/companies/${boletoCompany?.id}/pending-deliveries${queryString ? `?${queryString}` : ""}`;
+      const response = await fetch(url, {
+        credentials: "include",
+      });
+      if (!response.ok) {
+        throw new Error("Erro ao buscar entregas pendentes");
+      }
+      return response.json();
+    },
+    enabled: !!boletoCompany?.id && boletoDialogOpen,
+  });
+
+  // Mutation para gerar boleto manual
+  const generateBoletoMutation = useMutation({
+    mutationFn: async ({ companyId, dateFrom, dateTo }: { companyId: string; dateFrom?: Date; dateTo?: Date }) => {
+      const response = await fetch(`/api/companies/${companyId}/generate-weekly-charge`, {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          dateFrom: dateFrom?.toISOString(),
+          dateTo: dateTo?.toISOString(),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || "Erro ao gerar boleto");
+      }
+      return data;
+    },
+    onSuccess: (data) => {
+      setBoletoResult(data);
+      queryClient.invalidateQueries({ queryKey: ["/api/companies"] });
+      if (data.deliveriesCount > 0) {
+        toast({
+          title: "Boleto gerado com sucesso!",
+          description: `${data.deliveriesCount} entrega(s) incluída(s) no total de R$ ${data.totalAmount?.toFixed(2)}`,
+        });
+      }
+    },
+    onError: (error: Error) => {
+      setBoletoResult({
+        success: false,
+        message: error.message,
+      });
+      toast({
+        variant: "destructive",
+        title: "Erro ao gerar boleto",
+        description: error.message,
+      });
+    },
+  });
+
+  const [financialView, setFinancialView] = useState<"recargas" | "boletos" | "pagamentos">("recargas");
 
   // Cidades únicas para o filtro (agrupadas por nome, ignorando maiúsculas/minúsculas)
   const uniqueCities = Array.from(
@@ -508,6 +661,87 @@ export default function Empresas() {
     setViewingCompany(null);
   };
 
+  // Funções para modal de boleto manual
+  const handleOpenBoletoDialog = (company: Company) => {
+    setBoletoCompany(company);
+    setBoletoResult(null);
+
+    // Calcular datas automaticamente: De = último domingo, Até = próximo domingo
+    // Exemplo: Se hoje é quinta 29/01, deve mostrar de 25/01 (domingo) até 01/02 (domingo)
+    const today = new Date();
+    const dayOfWeek = today.getDay(); // 0 = domingo, 1 = segunda, ..., 6 = sábado
+
+    // Último domingo (se hoje for domingo, pega o domingo atual)
+    const lastSunday = new Date(today);
+    lastSunday.setDate(today.getDate() - dayOfWeek);
+    lastSunday.setHours(0, 0, 0, 0);
+
+    // Próximo domingo (7 dias após o último domingo)
+    const nextSunday = new Date(lastSunday);
+    nextSunday.setDate(lastSunday.getDate() + 7);
+    nextSunday.setHours(23, 59, 59, 999);
+
+    setBoletoDateFrom(lastSunday);
+    setBoletoDateTo(nextSunday);
+    setBoletoDialogOpen(true);
+  };
+
+  const handleCloseBoletoDialog = () => {
+    setBoletoDialogOpen(false);
+    setBoletoCompany(null);
+    setBoletoResult(null);
+    setBoletoDateFrom(undefined);
+    setBoletoDateTo(undefined);
+  };
+
+  const handleGenerateBoleto = () => {
+    if (boletoCompany) {
+      generateBoletoMutation.mutate({
+        companyId: boletoCompany.id,
+        dateFrom: boletoDateFrom,
+        dateTo: boletoDateTo,
+      });
+    }
+  };
+
+  const copyToClipboard = (text: string, label: string) => {
+    navigator.clipboard.writeText(text);
+    toast({
+      title: "Copiado!",
+      description: `${label} copiado para a área de transferência`,
+    });
+  };
+
+  const handleImpersonate = async (company: Company) => {
+    try {
+      const response = await fetch(`/api/admin/impersonate/${company.id}`, {
+        method: "POST",
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Erro ao gerar token");
+      }
+
+      const data = await response.json();
+
+      // Abrir nova aba com a URL de impersonate
+      window.open(`/api/impersonate/${data.token}`, "_blank");
+
+      toast({
+        title: "Nova aba aberta",
+        description: `Logando como ${company.name}...`,
+      });
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Erro",
+        description: error instanceof Error ? error.message : "Erro ao logar como empresa",
+      });
+    }
+  };
+
   return (
     <div className="w-full py-8 px-4">
       <Card>
@@ -601,7 +835,7 @@ export default function Empresas() {
                       )}
                     </TableCell>
                     <TableCell className="text-right">
-                      <div className="flex justify-end gap-2">
+                      <div className="flex justify-end gap-1">
                         <Button
                           variant="ghost"
                           size="sm"
@@ -614,16 +848,46 @@ export default function Empresas() {
                           variant="ghost"
                           size="sm"
                           onClick={() => handleOpenDialog(company)}
+                          title="Editar"
                         >
                           <Pencil className="h-4 w-4" />
                         </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDeleteClick(company)}
-                        >
-                          <Trash2 className="h-4 w-4 text-red-500" />
-                        </Button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="sm" title="Mais opções">
+                              <MoreVertical className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem
+                              onClick={() => handleImpersonate(company)}
+                              className="cursor-pointer"
+                            >
+                              <LogIn className="mr-2 h-4 w-4 text-green-600" />
+                              Logar como Empresa
+                            </DropdownMenuItem>
+                            {company.paymentType === "BOLETO" && (
+                              <>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  onClick={() => handleOpenBoletoDialog(company)}
+                                  className="cursor-pointer"
+                                >
+                                  <FileText className="mr-2 h-4 w-4 text-blue-600" />
+                                  Gerar Boleto Manual
+                                </DropdownMenuItem>
+                              </>
+                            )}
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              onClick={() => handleDeleteClick(company)}
+                              className="cursor-pointer text-red-600 focus:text-red-600"
+                            >
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              Excluir
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -1012,7 +1276,7 @@ export default function Empresas() {
 
       {/* Dialog de visualização da empresa */}
       <Dialog open={viewDialogOpen} onOpenChange={handleCloseViewDialog}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Visualizar Cadastro da Empresa</DialogTitle>
           </DialogHeader>
@@ -1270,61 +1534,61 @@ export default function Empresas() {
             </TabsContent>
 
             <TabsContent value="financeiro" className="space-y-6 mt-4">
-              {/* Informações da Subconta */}
+              {/* Informações do Wallet */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <Card>
                   <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                    <CardTitle className="text-sm font-medium">Subconta</CardTitle>
-                    <CreditCard className="h-4 w-4 text-muted-foreground" />
-                  </CardHeader>
-                  <CardContent>
-                    <div className="text-sm">
-                      {companyFinancial?.subaccount ? (
-                        <span className="text-green-600 font-medium">✓ Ativa</span>
-                      ) : (
-                        <span className="text-yellow-600 font-medium">✗ Não criada</span>
-                      )}
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {companyFinancial?.subaccount?.id || "ID não disponível"}
-                    </p>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                    <CardTitle className="text-sm font-medium">Chave PIX</CardTitle>
-                    <Key className="h-4 w-4 text-muted-foreground" />
-                  </CardHeader>
-                  <CardContent>
-                    <div className="text-sm font-medium truncate" title={companyFinancial?.pixKey || "-"}>
-                      {companyFinancial?.pixKey || "-"}
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Tipo: {companyFinancial?.pixKeyType || "-"}
-                    </p>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                    <CardTitle className="text-sm font-medium">Saldo na Conta</CardTitle>
+                    <CardTitle className="text-sm font-medium">Saldo Disponível</CardTitle>
                     <Wallet className="h-4 w-4 text-green-600" />
                   </CardHeader>
                   <CardContent>
                     <div className="text-2xl font-bold text-green-600">
                       {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
-                        (companyFinancial?.balance || 0) / 100
+                        parseFloat(companyWallet?.wallet?.availableBalance || "0")
                       )}
                     </div>
-                    <p className="text-xs text-muted-foreground">
-                      Saldo disponível
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Disponível para uso
+                    </p>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                    <CardTitle className="text-sm font-medium">Saldo Bloqueado</CardTitle>
+                    <CreditCard className="h-4 w-4 text-orange-500" />
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold text-orange-500">
+                      {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                        parseFloat(companyWallet?.wallet?.blockedBalance || "0")
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Em processamento
+                    </p>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                    <CardTitle className="text-sm font-medium">Total Recarregado</CardTitle>
+                    <ArrowDownToLine className="h-4 w-4 text-blue-600" />
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold text-blue-600">
+                      {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                        companyWallet?.totals?.totalRecharges || 0
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {companyWallet?.totals?.confirmedCount || 0} de {companyWallet?.totals?.chargesCount || 0} confirmadas
                     </p>
                   </CardContent>
                 </Card>
               </div>
 
-              {/* Seletor Recargas/Pagamentos */}
+              {/* Seletor Recargas/Boletos/Transações */}
               <div className="flex items-center gap-4 border-b pb-4">
                 <span className="text-sm font-medium">Visualizar:</span>
                 <div className="flex gap-2">
@@ -1338,13 +1602,22 @@ export default function Empresas() {
                     Recargas
                   </Button>
                   <Button
+                    variant={financialView === "boletos" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setFinancialView("boletos")}
+                    className="gap-2"
+                  >
+                    <FileText className="h-4 w-4" />
+                    Boletos
+                  </Button>
+                  <Button
                     variant={financialView === "pagamentos" ? "default" : "outline"}
                     size="sm"
                     onClick={() => setFinancialView("pagamentos")}
                     className="gap-2"
                   >
                     <ArrowUpFromLine className="h-4 w-4" />
-                    Pagamentos
+                    Transações
                   </Button>
                 </div>
               </div>
@@ -1359,7 +1632,7 @@ export default function Empresas() {
                     </h3>
                   </div>
                   <div className="max-h-[400px] overflow-y-auto">
-                    {!companyFinancial?.recharges || companyFinancial.recharges.length === 0 ? (
+                    {!companyWallet?.charges || companyWallet.charges.filter(c => c.chargeType === 'recharge').length === 0 ? (
                       <p className="text-muted-foreground text-center py-8">
                         Nenhuma recarga realizada ainda
                       </p>
@@ -1369,32 +1642,37 @@ export default function Empresas() {
                           <TableRow>
                             <TableHead>Data/Hora</TableHead>
                             <TableHead>Valor</TableHead>
-                            <TableHead>Descrição</TableHead>
+                            <TableHead>Método</TableHead>
                             <TableHead>Status</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {companyFinancial.recharges.map((recharge: any) => (
-                            <TableRow key={recharge.id}>
+                          {companyWallet.charges.filter(c => c.chargeType === 'recharge').map((charge) => (
+                            <TableRow key={charge.id}>
                               <TableCell className="font-medium">
-                                {new Date(recharge.createdAt).toLocaleString('pt-BR')}
+                                {new Date(charge.createdAt).toLocaleString('pt-BR')}
                               </TableCell>
                               <TableCell className="text-green-600 font-medium">
                                 + {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
-                                  parseFloat(recharge.amount || 0)
+                                  parseFloat(charge.amount || "0")
                                 )}
                               </TableCell>
-                              <TableCell className="max-w-[200px] truncate" title={recharge.description}>
-                                {recharge.description || "-"}
+                              <TableCell>
+                                <span className="text-xs px-2 py-1 rounded bg-gray-100">
+                                  {charge.paymentMethod === 'pix' ? 'PIX' :
+                                   charge.paymentMethod === 'boleto' ? 'Boleto' :
+                                   charge.paymentMethod}
+                                </span>
                               </TableCell>
                               <TableCell>
                                 <span className={`text-xs px-2 py-1 rounded ${
-                                  recharge.status === 'completed' ? 'bg-green-100 text-green-700' :
-                                  recharge.status === 'failed' ? 'bg-red-100 text-red-700' :
+                                  charge.status === 'confirmed' ? 'bg-green-100 text-green-700' :
+                                  charge.status === 'failed' || charge.status === 'cancelled' ? 'bg-red-100 text-red-700' :
                                   'bg-yellow-100 text-yellow-700'
                                 }`}>
-                                  {recharge.status === 'completed' ? 'Confirmada' :
-                                   recharge.status === 'failed' ? 'Falhou' :
+                                  {charge.status === 'confirmed' ? 'Confirmada' :
+                                   charge.status === 'failed' ? 'Falhou' :
+                                   charge.status === 'cancelled' ? 'Cancelada' :
                                    'Pendente'}
                                 </span>
                               </TableCell>
@@ -1404,15 +1682,15 @@ export default function Empresas() {
                       </Table>
                     )}
                   </div>
-                  {companyFinancial?.recharges && companyFinancial.recharges.length > 0 && (
+                  {companyWallet?.charges && companyWallet.charges.filter(c => c.chargeType === 'recharge').length > 0 && (
                     <div className="p-4 border-t bg-muted/50">
                       <div className="flex justify-between items-center">
                         <span className="text-sm text-muted-foreground">
-                          Total de recargas: {companyFinancial.recharges.length}
+                          Total de recargas: {companyWallet.charges.filter(c => c.chargeType === 'recharge').length}
                         </span>
                         <span className="font-semibold text-green-600">
-                          Total: {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
-                            companyFinancial.totals?.totalRecharges || 0
+                          Confirmado: {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                            companyWallet.totals?.totalRecharges || 0
                           )}
                         </span>
                       </div>
@@ -1421,60 +1699,103 @@ export default function Empresas() {
                 </div>
               )}
 
-              {/* Lista de Pagamentos para Entregadores */}
-              {financialView === "pagamentos" && (
+              {/* Lista de Boletos Semanais */}
+              {financialView === "boletos" && (
                 <div className="border rounded-lg">
                   <div className="p-4 border-b bg-muted/50">
                     <h3 className="font-semibold text-lg flex items-center gap-2">
-                      <ArrowUpFromLine className="h-5 w-5" />
-                      Pagamentos para Entregadores
+                      <FileText className="h-5 w-5" />
+                      Boletos Semanais
                     </h3>
                   </div>
                   <div className="max-h-[400px] overflow-y-auto">
-                    {!companyFinancial?.payments || companyFinancial.payments.length === 0 ? (
+                    {!companyWallet?.charges || companyWallet.charges.filter(c => c.chargeType === 'weekly').length === 0 ? (
                       <p className="text-muted-foreground text-center py-8">
-                        Nenhum pagamento realizado ainda
+                        Nenhum boleto semanal gerado ainda
                       </p>
                     ) : (
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            <TableHead>Data/Hora</TableHead>
+                            <TableHead>Período</TableHead>
                             <TableHead>Valor</TableHead>
-                            <TableHead>Nº Entrega</TableHead>
-                            <TableHead>Entregador</TableHead>
+                            <TableHead>Entregas</TableHead>
+                            <TableHead>Vencimento</TableHead>
                             <TableHead>Status</TableHead>
+                            <TableHead>Ações</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {companyFinancial.payments.map((payment: any) => (
-                            <TableRow key={payment.id}>
+                          {companyWallet.charges.filter(c => c.chargeType === 'weekly').map((charge) => (
+                            <TableRow key={charge.id}>
                               <TableCell className="font-medium">
-                                {new Date(payment.createdAt).toLocaleString('pt-BR')}
+                                {charge.periodStart && charge.periodEnd ? (
+                                  `${new Date(charge.periodStart).toLocaleDateString('pt-BR')} a ${new Date(charge.periodEnd).toLocaleDateString('pt-BR')}`
+                                ) : (
+                                  new Date(charge.createdAt).toLocaleDateString('pt-BR')
+                                )}
                               </TableCell>
-                              <TableCell className="text-red-600 font-medium">
-                                - {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
-                                  parseFloat(payment.amount || 0)
+                              <TableCell className="font-medium">
+                                {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                                  parseFloat(charge.amount || "0")
                                 )}
                               </TableCell>
                               <TableCell>
-                                <span className="font-mono text-xs bg-gray-100 px-2 py-1 rounded">
-                                  #{payment.entregaNumero || "-"}
+                                <span className="text-xs px-2 py-1 rounded bg-gray-100">
+                                  {charge.deliveriesCount || 0} entregas
                                 </span>
                               </TableCell>
-                              <TableCell className="max-w-[150px] truncate" title={payment.driverName}>
-                                {payment.driverName || "-"}
+                              <TableCell>
+                                {charge.dueDate ? new Date(charge.dueDate).toLocaleDateString('pt-BR') : '-'}
                               </TableCell>
                               <TableCell>
                                 <span className={`text-xs px-2 py-1 rounded ${
-                                  payment.status === 'completed' ? 'bg-green-100 text-green-700' :
-                                  payment.status === 'failed' ? 'bg-red-100 text-red-700' :
+                                  charge.status === 'confirmed' ? 'bg-green-100 text-green-700' :
+                                  charge.status === 'overdue' ? 'bg-red-100 text-red-700' :
+                                  charge.status === 'failed' || charge.status === 'cancelled' ? 'bg-red-100 text-red-700' :
                                   'bg-yellow-100 text-yellow-700'
                                 }`}>
-                                  {payment.status === 'completed' ? 'Concluído' :
-                                   payment.status === 'failed' ? 'Falhou' :
-                                   'Pendente'}
+                                  {charge.status === 'confirmed' ? 'Pago' :
+                                   charge.status === 'overdue' ? 'Vencido' :
+                                   charge.status === 'failed' ? 'Falhou' :
+                                   charge.status === 'cancelled' ? 'Cancelado' :
+                                   'Aguardando'}
                                 </span>
+                              </TableCell>
+                              <TableCell>
+                                <div className="flex gap-1">
+                                  {charge.boletoUrl && (
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => window.open(charge.boletoUrl!, '_blank')}
+                                      title="Abrir Boleto"
+                                    >
+                                      <ExternalLink className="h-4 w-4" />
+                                    </Button>
+                                  )}
+                                  {charge.boletoDigitableLine && (
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => copyToClipboard(charge.boletoDigitableLine!, 'Linha digitável')}
+                                      title="Copiar Linha Digitável"
+                                    >
+                                      <Copy className="h-4 w-4" />
+                                    </Button>
+                                  )}
+                                  {charge.pixCopyPaste && (
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => copyToClipboard(charge.pixCopyPaste!, 'PIX Copia e Cola')}
+                                      title="Copiar PIX"
+                                      className="text-green-600"
+                                    >
+                                      <Copy className="h-4 w-4" />
+                                    </Button>
+                                  )}
+                                </div>
                               </TableCell>
                             </TableRow>
                           ))}
@@ -1482,20 +1803,76 @@ export default function Empresas() {
                       </Table>
                     )}
                   </div>
-                  {companyFinancial?.payments && companyFinancial.payments.length > 0 && (
+                  {companyWallet?.charges && companyWallet.charges.filter(c => c.chargeType === 'weekly').length > 0 && (
                     <div className="p-4 border-t bg-muted/50">
                       <div className="flex justify-between items-center">
                         <span className="text-sm text-muted-foreground">
-                          Total de pagamentos: {companyFinancial.payments.length}
+                          Total de boletos: {companyWallet.charges.filter(c => c.chargeType === 'weekly').length}
                         </span>
-                        <span className="font-semibold text-red-600">
-                          Total: {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
-                            companyFinancial.totals?.totalPayments || 0
+                        <span className="font-semibold">
+                          Em aberto: {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                            companyWallet.charges
+                              .filter(c => c.chargeType === 'weekly' && c.status !== 'confirmed')
+                              .reduce((sum, c) => sum + parseFloat(c.amount || '0'), 0)
                           )}
                         </span>
                       </div>
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* Lista de Transações */}
+              {financialView === "pagamentos" && (
+                <div className="border rounded-lg">
+                  <div className="p-4 border-b bg-muted/50">
+                    <h3 className="font-semibold text-lg flex items-center gap-2">
+                      <ArrowUpFromLine className="h-5 w-5" />
+                      Histórico de Transações
+                    </h3>
+                  </div>
+                  <div className="max-h-[400px] overflow-y-auto">
+                    {!companyWallet?.transactions || companyWallet.transactions.length === 0 ? (
+                      <p className="text-muted-foreground text-center py-8">
+                        Nenhuma transação realizada ainda
+                      </p>
+                    ) : (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Data/Hora</TableHead>
+                            <TableHead>Tipo</TableHead>
+                            <TableHead>Valor</TableHead>
+                            <TableHead>Descrição</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {companyWallet.transactions.map((transaction) => (
+                            <TableRow key={transaction.id}>
+                              <TableCell className="font-medium">
+                                {new Date(transaction.createdAt).toLocaleString('pt-BR')}
+                              </TableCell>
+                              <TableCell>
+                                <span className={`text-xs px-2 py-1 rounded ${
+                                  transaction.type === 'credit' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                                }`}>
+                                  {transaction.type === 'credit' ? 'Crédito' : 'Débito'}
+                                </span>
+                              </TableCell>
+                              <TableCell className={transaction.type === 'credit' ? 'text-green-600 font-medium' : 'text-red-600 font-medium'}>
+                                {transaction.type === 'credit' ? '+' : '-'} {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                                  parseFloat(transaction.amount || "0")
+                                )}
+                              </TableCell>
+                              <TableCell className="max-w-[200px] truncate" title={transaction.description}>
+                                {transaction.description || "-"}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    )}
+                  </div>
                 </div>
               )}
             </TabsContent>
@@ -1532,6 +1909,292 @@ export default function Empresas() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Dialog de geração de boleto manual */}
+      <Dialog open={boletoDialogOpen} onOpenChange={handleCloseBoletoDialog}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5 text-blue-600" />
+              Gerar Boleto Manual
+            </DialogTitle>
+          </DialogHeader>
+
+          {!boletoResult ? (
+            // Estado inicial - mostrar entregas pendentes
+            <div className="space-y-4">
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <p className="text-sm text-blue-800">
+                  <strong>{boletoCompany?.name}</strong>
+                </p>
+                <p className="text-xs text-blue-600 mt-1">
+                  Modalidade: Pós-pago (Boleto Semanal)
+                </p>
+              </div>
+
+              {/* Filtros de data */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">De</Label>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="outline"
+                        className={cn(
+                          "w-full justify-start text-left font-normal",
+                          !boletoDateFrom && "text-muted-foreground"
+                        )}
+                      >
+                        <CalendarIcon className="mr-2 h-4 w-4" />
+                        {boletoDateFrom ? format(boletoDateFrom, "dd/MM/yyyy", { locale: ptBR }) : "Selecione"}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-auto p-0" align="start">
+                      <Calendar
+                        mode="single"
+                        selected={boletoDateFrom}
+                        onSelect={setBoletoDateFrom}
+                        locale={ptBR}
+                        initialFocus
+                      />
+                    </PopoverContent>
+                  </Popover>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Até</Label>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="outline"
+                        className={cn(
+                          "w-full justify-start text-left font-normal",
+                          !boletoDateTo && "text-muted-foreground"
+                        )}
+                      >
+                        <CalendarIcon className="mr-2 h-4 w-4" />
+                        {boletoDateTo ? format(boletoDateTo, "dd/MM/yyyy", { locale: ptBR }) : "Selecione"}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-auto p-0" align="start">
+                      <Calendar
+                        mode="single"
+                        selected={boletoDateTo}
+                        onSelect={setBoletoDateTo}
+                        locale={ptBR}
+                        initialFocus
+                      />
+                    </PopoverContent>
+                  </Popover>
+                </div>
+              </div>
+
+              {isLoadingPending ? (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : pendingDeliveries?.count === 0 ? (
+                <div className="text-center py-8">
+                  <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-3" />
+                  <p className="font-medium">Nenhuma entrega pendente</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Todas as entregas já foram cobradas ou não há entregas no período.
+                  </p>
+                  {pendingDeliveries?.completedNotRegistered && pendingDeliveries.completedNotRegistered > 0 && (
+                    <div className="mt-4 bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-left">
+                      <p className="text-sm text-yellow-800">
+                        <strong>Atenção:</strong> Há {pendingDeliveries.completedNotRegistered} entrega(s) concluída(s)
+                        da última semana que ainda não foram registradas no sistema financeiro.
+                        Isso pode indicar que o split não foi processado ao concluir as entregas.
+                      </p>
+                    </div>
+                  )}
+                  {/* Debug info - always show */}
+                  <div className="mt-4 bg-gray-50 border border-gray-200 rounded-lg p-3 text-left">
+                    <p className="text-xs font-medium text-gray-700 mb-2">Debug - Entregas desta empresa:</p>
+                    {pendingDeliveries?.debug?.recentDeliveries && pendingDeliveries.debug.recentDeliveries.length > 0 ? (
+                      <>
+                        <div className="space-y-1">
+                          {pendingDeliveries.debug.recentDeliveries.slice(0, 5).map((d) => (
+                            <div key={d.id} className="text-xs flex items-center justify-between gap-2">
+                              <span className="font-mono">#{d.requestNumber}</span>
+                              <div className="flex items-center gap-2">
+                                <span className={`px-2 py-0.5 rounded ${
+                                  d.status === 'completed' ? 'bg-green-100 text-green-700' :
+                                  d.status === 'cancelled' ? 'bg-red-100 text-red-700' :
+                                  d.status === 'in_progress' ? 'bg-blue-100 text-blue-700' :
+                                  'bg-yellow-100 text-yellow-700'
+                                }`}>
+                                  {d.status === 'completed' ? 'Concluída' :
+                                   d.status === 'cancelled' ? 'Cancelada' :
+                                   d.status === 'in_progress' ? 'Em andamento' :
+                                   'Pendente'}
+                                </span>
+                                {d.isCompleted && !d.completedAt && (
+                                  <span className="text-orange-600 text-[10px]">⚠️ Sem data</span>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        <p className="text-[10px] text-gray-500 mt-2">
+                          Apenas entregas "Concluídas" são incluídas no boleto.
+                        </p>
+                      </>
+                    ) : (
+                      <p className="text-xs text-gray-500">
+                        Nenhuma entrega encontrada na tabela <code>requests</code> para esta empresa.
+                      </p>
+                    )}
+                    <div className="mt-2 pt-2 border-t border-gray-200 text-[10px] text-gray-400 space-y-1">
+                      <p>Entregas não registradas (concluídas sem split): <strong>{pendingDeliveries?.completedNotRegistered || 0}</strong></p>
+                      <p>Entregas em deliveryFinancials: <strong>{pendingDeliveries?.count || 0}</strong></p>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="bg-muted rounded-lg p-4">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-sm text-muted-foreground">Entregas pendentes:</span>
+                      <span className="font-semibold">{pendingDeliveries?.count || 0}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm text-muted-foreground">Valor total:</span>
+                      <span className="font-semibold text-green-600">
+                        {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                          pendingDeliveries?.totalAmount || 0
+                        )}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                    <p className="text-sm text-yellow-800">
+                      O boleto será gerado com vencimento em <strong>2 dias</strong>.
+                      As entregas pendentes serão incluídas na cobrança.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <DialogFooter className="gap-2">
+                <Button variant="outline" onClick={handleCloseBoletoDialog}>
+                  Cancelar
+                </Button>
+                <Button
+                  onClick={handleGenerateBoleto}
+                  disabled={generateBoletoMutation.isPending || isLoadingPending || pendingDeliveries?.count === 0}
+                  className="bg-blue-600 hover:bg-blue-700"
+                >
+                  {generateBoletoMutation.isPending ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Gerando...
+                    </>
+                  ) : (
+                    <>
+                      <FileText className="mr-2 h-4 w-4" />
+                      Gerar Boleto
+                    </>
+                  )}
+                </Button>
+              </DialogFooter>
+            </div>
+          ) : (
+            // Resultado após gerar
+            <div className="space-y-4">
+              {boletoResult.success && boletoResult.deliveriesCount && boletoResult.deliveriesCount > 0 ? (
+                <>
+                  <div className="text-center py-4">
+                    <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-3" />
+                    <p className="font-medium text-lg">Boleto gerado com sucesso!</p>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      {boletoResult.deliveriesCount} entrega(s) incluída(s)
+                    </p>
+                  </div>
+
+                  <div className="bg-muted rounded-lg p-4 space-y-3">
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm text-muted-foreground">Valor total:</span>
+                      <span className="font-bold text-lg text-green-600">
+                        {new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(
+                          boletoResult.totalAmount || 0
+                        )}
+                      </span>
+                    </div>
+                    {boletoResult.charge?.dueDate && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm text-muted-foreground">Vencimento:</span>
+                        <span className="font-medium">
+                          {new Date(boletoResult.charge.dueDate).toLocaleDateString('pt-BR')}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Ações do boleto */}
+                  <div className="space-y-2">
+                    {boletoResult.charge?.boletoUrl && (
+                      <Button
+                        variant="outline"
+                        className="w-full justify-start"
+                        onClick={() => window.open(boletoResult.charge!.boletoUrl!, '_blank')}
+                      >
+                        <ExternalLink className="mr-2 h-4 w-4" />
+                        Abrir Boleto
+                      </Button>
+                    )}
+                    {boletoResult.charge?.boletoBarcode && (
+                      <Button
+                        variant="outline"
+                        className="w-full justify-start"
+                        onClick={() => copyToClipboard(boletoResult.charge!.boletoBarcode!, 'Código de barras')}
+                      >
+                        <Copy className="mr-2 h-4 w-4" />
+                        Copiar Código de Barras
+                      </Button>
+                    )}
+                    {boletoResult.charge?.pixCopyPaste && (
+                      <Button
+                        variant="outline"
+                        className="w-full justify-start"
+                        onClick={() => copyToClipboard(boletoResult.charge!.pixCopyPaste!, 'PIX Copia e Cola')}
+                      >
+                        <Copy className="mr-2 h-4 w-4" />
+                        Copiar PIX Copia e Cola
+                      </Button>
+                    )}
+                  </div>
+                </>
+              ) : boletoResult.success && boletoResult.deliveriesCount === 0 ? (
+                <div className="text-center py-8">
+                  <CheckCircle className="h-12 w-12 text-green-500 mx-auto mb-3" />
+                  <p className="font-medium">Nenhuma entrega pendente</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Não há entregas para incluir no boleto.
+                  </p>
+                </div>
+              ) : (
+                <div className="text-center py-8">
+                  <div className="h-12 w-12 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                    <X className="h-6 w-6 text-red-600" />
+                  </div>
+                  <p className="font-medium text-red-600">Erro ao gerar boleto</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    {boletoResult.message}
+                  </p>
+                </div>
+              )}
+
+              <DialogFooter>
+                <Button onClick={handleCloseBoletoDialog}>
+                  Fechar
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

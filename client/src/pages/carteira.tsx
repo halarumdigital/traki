@@ -38,7 +38,10 @@ import {
   Check,
   FileText,
   Calendar as CalendarIcon,
-  CreditCard
+  CreditCard,
+  QrCode,
+  Barcode,
+  ExternalLink
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { format } from "date-fns";
@@ -50,7 +53,8 @@ export default function Carteira() {
   const [rechargeDialogOpen, setRechargeDialogOpen] = useState(false);
   const [rechargeAmount, setRechargeAmount] = useState("");
   const [selectedPresetAmount, setSelectedPresetAmount] = useState<string>("");
-  const [qrCodeData, setQrCodeData] = useState<any>(null);
+  const [paymentMethod, setPaymentMethod] = useState<"PIX" | "BOLETO">("PIX");
+  const [paymentData, setPaymentData] = useState<any>(null);
   const [copied, setCopied] = useState(false);
   const [startDate, setStartDate] = useState<Date | undefined>();
   const [endDate, setEndDate] = useState<Date | undefined>();
@@ -77,12 +81,12 @@ export default function Carteira() {
       console.log("💰 Pagamento confirmado em tempo real:", data);
 
       // Atualizar saldo e transações
-      queryClient.invalidateQueries({ queryKey: ["/api/financial/company/balance"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/financial/company/transactions"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/financial/company/charges"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/empresa/wallet"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/empresa/wallet/statement"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/empresa/wallet/charges"] });
 
-      // Fechar modal de QR Code se estiver aberto
-      setQrCodeData(null);
+      // Fechar modal se estiver aberto
+      setPaymentData(null);
       setRechargeDialogOpen(false);
 
       // Notificar usuário
@@ -101,22 +105,27 @@ export default function Carteira() {
 
   // Buscar saldo (atualiza a cada 30 segundos como fallback)
   const { data: balanceData, isLoading: loadingBalance, refetch: refetchBalance } = useQuery({
-    queryKey: ["/api/financial/company/balance"],
+    queryKey: ["/api/empresa/wallet"],
     queryFn: async () => {
-      const response = await fetch("/api/financial/company/balance", {
+      const response = await fetch("/api/empresa/wallet", {
         credentials: "include",
       });
       if (!response.ok) throw new Error("Erro ao buscar saldo");
-      return response.json();
+      const data = await response.json();
+      // Adaptar formato para compatibilidade
+      return {
+        balance: parseFloat(data.availableBalance || "0"),
+        blockedBalance: parseFloat(data.blockedBalance || "0"),
+      };
     },
     refetchInterval: 30000,
   });
 
   // Buscar transações (atualiza a cada 30 segundos como fallback)
   const { data: transactionsData, isLoading: loadingTransactions } = useQuery({
-    queryKey: ["/api/financial/company/transactions"],
+    queryKey: ["/api/empresa/wallet/statement"],
     queryFn: async () => {
-      const response = await fetch("/api/financial/company/transactions", {
+      const response = await fetch("/api/empresa/wallet/statement", {
         credentials: "include",
       });
       if (!response.ok) return { transactions: [] };
@@ -127,11 +136,11 @@ export default function Carteira() {
 
   // Mutation para criar recarga
   const rechargeMutation = useMutation({
-    mutationFn: async (amount: number) => {
-      const res = await fetch("/api/financial/company/recharge", {
+    mutationFn: async ({ amount, method }: { amount: number; method: "PIX" | "BOLETO" }) => {
+      const res = await fetch("/api/empresa/wallet/recharge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ amount }),
+        body: JSON.stringify({ amount, paymentMethod: method }),
         credentials: "include",
       });
 
@@ -143,12 +152,34 @@ export default function Carteira() {
       return res.json();
     },
     onSuccess: (data) => {
-      setQrCodeData(data);
-      toast({
-        title: "QR Code gerado!",
-        description: "Escaneie o QR Code para realizar o pagamento",
-      });
-      queryClient.invalidateQueries({ queryKey: ["/api/financial/company/charges"] });
+      const charge = data.charge;
+
+      if (charge.paymentMethod === "PIX") {
+        setPaymentData({
+          type: "PIX",
+          qrCode: charge.pixQrCode ? `data:image/png;base64,${charge.pixQrCode}` : null,
+          copyPaste: charge.pixCopyPaste || null,
+          chargeId: charge.id,
+          amount: parseFloat(charge.amount),
+        });
+        toast({
+          title: "QR Code PIX gerado!",
+          description: "Escaneie o QR Code para realizar o pagamento",
+        });
+      } else {
+        setPaymentData({
+          type: "BOLETO",
+          boletoUrl: charge.boletoUrl || null,
+          boletoBarcode: charge.boletoBarcode || null,
+          chargeId: charge.id,
+          amount: parseFloat(charge.amount),
+        });
+        toast({
+          title: "Boleto gerado!",
+          description: "Copie o código de barras ou acesse o PDF",
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: ["/api/empresa/wallet/charges"] });
     },
     onError: (error: Error) => {
       toast({
@@ -159,17 +190,19 @@ export default function Carteira() {
     },
   });
 
+  const MIN_RECHARGE_AMOUNT = 50;
+
   const handleRecharge = () => {
     const amount = parseFloat(rechargeAmount || selectedPresetAmount);
-    if (isNaN(amount) || amount <= 0) {
+    if (isNaN(amount) || amount < MIN_RECHARGE_AMOUNT) {
       toast({
         title: "Valor inválido",
-        description: "Selecione ou digite um valor maior que zero",
+        description: `O valor mínimo para recarga é R$ ${MIN_RECHARGE_AMOUNT},00`,
         variant: "destructive",
       });
       return;
     }
-    rechargeMutation.mutate(amount);
+    rechargeMutation.mutate({ amount, method: paymentMethod });
   };
 
   const handlePresetAmountSelect = (value: string) => {
@@ -440,20 +473,64 @@ export default function Carteira() {
       </div>
 
       {/* Dialog de Recarga */}
-      <Dialog open={rechargeDialogOpen} onOpenChange={setRechargeDialogOpen}>
+      <Dialog open={rechargeDialogOpen} onOpenChange={(open) => {
+        setRechargeDialogOpen(open);
+        if (!open) {
+          setPaymentData(null);
+          setRechargeAmount("");
+          setSelectedPresetAmount("");
+          setPaymentMethod("PIX");
+        }
+      }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <CreditCard className="h-5 w-5" />
-              Nova Recarga via PIX
+              Nova Recarga
             </DialogTitle>
             <DialogDescription>
-              {qrCodeData ? "Escaneie o QR Code para pagar" : "Digite o valor que deseja adicionar ao saldo"}
+              {paymentData
+                ? paymentData.type === "PIX"
+                  ? "Escaneie o QR Code ou copie o código PIX"
+                  : "Copie o código de barras ou acesse o boleto"
+                : "Escolha o valor e a forma de pagamento"}
             </DialogDescription>
           </DialogHeader>
 
-          {!qrCodeData ? (
+          {!paymentData ? (
             <div className="space-y-6">
+              {/* Seleção do método de pagamento */}
+              <div>
+                <Label className="text-sm font-medium">Forma de Pagamento</Label>
+                <ToggleGroup
+                  type="single"
+                  value={paymentMethod}
+                  onValueChange={(value) => value && setPaymentMethod(value as "PIX" | "BOLETO")}
+                  className="justify-start mt-3"
+                >
+                  <ToggleGroupItem
+                    value="PIX"
+                    className="flex-1 gap-2 data-[state=on]:bg-green-600 data-[state=on]:text-white"
+                  >
+                    <QrCode className="h-4 w-4" />
+                    PIX
+                  </ToggleGroupItem>
+                  <ToggleGroupItem
+                    value="BOLETO"
+                    className="flex-1 gap-2 data-[state=on]:bg-blue-600 data-[state=on]:text-white"
+                  >
+                    <Barcode className="h-4 w-4" />
+                    Boleto
+                  </ToggleGroupItem>
+                </ToggleGroup>
+                <p className="text-xs text-muted-foreground mt-2">
+                  {paymentMethod === "PIX"
+                    ? "Pagamento instantâneo - crédito imediato após confirmação"
+                    : "Vencimento em 3 dias úteis - crédito após compensação"}
+                </p>
+              </div>
+
+              {/* Valores sugeridos */}
               <div>
                 <Label className="text-sm font-medium">Valores Sugeridos</Label>
                 <ToggleGroup
@@ -466,21 +543,23 @@ export default function Carteira() {
                     <ToggleGroupItem
                       key={amount}
                       value={amount.toString()}
-                      className="px-6 data-[state=on]:bg-blue-600 data-[state=on]:text-white"
+                      className="px-6 data-[state=on]:bg-slate-700 data-[state=on]:text-white"
                     >
                       R$ {amount}
                     </ToggleGroupItem>
                   ))}
                 </ToggleGroup>
               </div>
+
+              {/* Input de valor personalizado */}
               <div>
                 <Label htmlFor="amount" className="text-sm font-medium">Ou digite outro valor (R$)</Label>
                 <Input
                   id="amount"
                   type="number"
                   step="0.01"
-                  min="0"
-                  placeholder="0,00"
+                  min="50"
+                  placeholder="Mínimo R$ 50,00"
                   className="mt-2"
                   value={rechargeAmount}
                   onChange={(e) => {
@@ -490,36 +569,90 @@ export default function Carteira() {
                 />
               </div>
             </div>
-          ) : (
+          ) : paymentData.type === "PIX" ? (
+            /* Resultado PIX */
             <div className="space-y-4">
-              <div className="flex flex-col items-center gap-4 p-4 bg-muted/30 rounded-lg">
-                <img src={qrCodeData.qrCode} alt="QR Code PIX" className="w-52 h-52 rounded-lg shadow-sm" />
-                <p className="text-lg font-bold">
-                  {formatCurrency(qrCodeData.value / 100)}
+              <div className="flex flex-col items-center gap-4 p-4 bg-green-50 rounded-lg border border-green-200">
+                {paymentData.qrCode && (
+                  <img src={paymentData.qrCode} alt="QR Code PIX" className="w-52 h-52 rounded-lg shadow-sm bg-white p-2" />
+                )}
+                <p className="text-lg font-bold text-green-700">
+                  {formatCurrency(paymentData.amount)}
                 </p>
               </div>
-              <div>
-                <Label className="text-sm font-medium">Código PIX Copia e Cola</Label>
-                <div className="flex gap-2 mt-2">
-                  <Input
-                    value={qrCodeData.brCode}
-                    readOnly
-                    className="font-mono text-xs"
-                  />
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    onClick={() => copyToClipboard(qrCodeData.brCode)}
-                  >
-                    {copied ? <Check className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4" />}
-                  </Button>
+              {paymentData.copyPaste && (
+                <div>
+                  <Label className="text-sm font-medium">Código PIX Copia e Cola</Label>
+                  <div className="flex gap-2 mt-2">
+                    <Input
+                      value={paymentData.copyPaste}
+                      readOnly
+                      className="font-mono text-xs"
+                    />
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={() => copyToClipboard(paymentData.copyPaste)}
+                    >
+                      {copied ? <Check className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4" />}
+                    </Button>
+                  </div>
                 </div>
+              )}
+              <p className="text-xs text-center text-muted-foreground">
+                Após o pagamento, o saldo será creditado automaticamente
+              </p>
+            </div>
+          ) : (
+            /* Resultado Boleto */
+            <div className="space-y-4">
+              <div className="flex flex-col items-center gap-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                <Barcode className="h-16 w-16 text-blue-600" />
+                <p className="text-lg font-bold text-blue-700">
+                  {formatCurrency(paymentData.amount)}
+                </p>
+                <p className="text-sm text-blue-600">Vencimento: 3 dias úteis</p>
               </div>
+
+              {paymentData.boletoBarcode && (
+                <div>
+                  <Label className="text-sm font-medium">Linha Digitável</Label>
+                  <div className="flex gap-2 mt-2">
+                    <Input
+                      value={paymentData.boletoBarcode}
+                      readOnly
+                      className="font-mono text-xs"
+                    />
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={() => copyToClipboard(paymentData.boletoBarcode)}
+                    >
+                      {copied ? <Check className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4" />}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {paymentData.boletoUrl && (
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => window.open(paymentData.boletoUrl, "_blank")}
+                >
+                  <ExternalLink className="mr-2 h-4 w-4" />
+                  Visualizar Boleto em PDF
+                </Button>
+              )}
+
+              <p className="text-xs text-center text-muted-foreground">
+                O saldo será creditado após a compensação bancária (1-3 dias úteis)
+              </p>
             </div>
           )}
 
           <DialogFooter className="gap-2 sm:gap-0">
-            {!qrCodeData ? (
+            {!paymentData ? (
               <>
                 <Button variant="outline" onClick={() => setRechargeDialogOpen(false)}>
                   Cancelar
@@ -527,16 +660,20 @@ export default function Carteira() {
                 <Button
                   onClick={handleRecharge}
                   disabled={rechargeMutation.isPending}
-                  className="bg-blue-600 hover:bg-blue-700"
+                  className={paymentMethod === "PIX" ? "bg-green-600 hover:bg-green-700" : "bg-blue-600 hover:bg-blue-700"}
                 >
-                  {rechargeMutation.isPending ? "Gerando..." : "Gerar QR Code"}
+                  {rechargeMutation.isPending
+                    ? "Gerando..."
+                    : paymentMethod === "PIX"
+                    ? "Gerar QR Code PIX"
+                    : "Gerar Boleto"}
                 </Button>
               </>
             ) : (
               <Button
                 className="w-full"
                 onClick={() => {
-                  setQrCodeData(null);
+                  setPaymentData(null);
                   setRechargeAmount("");
                   setSelectedPresetAmount("");
                   setRechargeDialogOpen(false);

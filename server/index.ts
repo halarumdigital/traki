@@ -13,6 +13,7 @@ import { startScheduledDeliveriesJob } from "./scheduled-deliveries-job";
 import { startViagemRemindersJob } from "./viagens-intermunicipais-reminder-job";
 import { startPaymentSyncJob } from "./scheduled-payments-job";
 import { startHeartbeatJob } from "./driver-heartbeat-job";
+import { startWeeklyClosingJob, startOverdueCheckJob } from "./weekly-closing-job";
 
 const app = express();
 const httpServer = createServer(app);
@@ -128,5 +129,7 @@ app.use((req, res, next) => {
     startViagemRemindersJob();
     startPaymentSyncJob(io);
     startHeartbeatJob(io); // Verificar motoristas inativos a cada 30s
+    startWeeklyClosingJob(); // Fechamento semanal pós-pago (domingos 00:00)
+    startOverdueCheckJob(); // Verificar cobranças vencidas (diariamente 08:00)
   });
 })();

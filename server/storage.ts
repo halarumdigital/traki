@@ -90,9 +90,28 @@ import {
   type Promotion,
   type PromotionProgress,
   type InsertPromotionProgress,
+  // Wallet System
+  wallets,
+  walletTransactions,
+  charges,
+  deliveryFinancials,
+  withdrawals,
+  webhooksLog,
+  type Wallet,
+  type InsertWallet,
+  type WalletTransaction,
+  type InsertWalletTransaction,
+  type Charge,
+  type InsertCharge,
+  type DeliveryFinancial,
+  type InsertDeliveryFinancial,
+  type Withdrawal,
+  type InsertWithdrawal,
+  type WebhookLog,
+  type InsertWebhookLog,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, desc, sql, inArray, gt } from "drizzle-orm";
+import { eq, and, desc, sql, inArray, gt, ne, or, isNull } from "drizzle-orm";
 
 export interface IStorage {
   // ===== USERS =====
@@ -297,6 +316,46 @@ export interface IStorage {
   incrementPromotionProgress(driverId: string, deliveryDate: Date): Promise<void>;
   getActivePromotions(): Promise<Promotion[]>;
   getPromotionRanking(promotionId: string): Promise<{ driverId: string; deliveryCount: number; rank: number }[]>;
+
+  // ===== WALLETS =====
+  getWallet(id: string): Promise<Wallet | undefined>;
+  getWalletByOwner(ownerId: string, ownerType: string): Promise<Wallet | undefined>;
+  createWallet(data: InsertWallet): Promise<Wallet>;
+  updateWalletBalance(walletId: string, availableBalance: string, blockedBalance?: string): Promise<Wallet | undefined>;
+  getPlatformWallet(): Promise<Wallet | undefined>;
+
+  // ===== WALLET TRANSACTIONS =====
+  getWalletTransactions(walletId: string, limit?: number, offset?: number): Promise<WalletTransaction[]>;
+  getWalletTransaction(id: string): Promise<WalletTransaction | undefined>;
+  createWalletTransaction(data: InsertWalletTransaction): Promise<WalletTransaction>;
+  updateWalletTransaction(id: string, data: Partial<WalletTransaction>): Promise<WalletTransaction | undefined>;
+
+  // ===== CHARGES =====
+  getCharge(id: string): Promise<Charge | undefined>;
+  getChargeByAsaasId(asaasId: string): Promise<Charge | undefined>;
+  getChargesByCompany(companyId: string, limit?: number): Promise<Charge[]>;
+  getPendingWeeklyCharges(): Promise<Charge[]>;
+  getAllWeeklyCharges(limit?: number): Promise<(Charge & { companyName: string })[]>;
+  createCharge(data: InsertCharge): Promise<Charge>;
+  updateCharge(id: string, data: Partial<Charge>): Promise<Charge | undefined>;
+
+  // ===== DELIVERY FINANCIALS =====
+  getDeliveryFinancial(id: string): Promise<DeliveryFinancial | undefined>;
+  getDeliveryFinancialByRequest(requestId: string): Promise<DeliveryFinancial | undefined>;
+  getUnprocessedDeliveryFinancials(companyId: string): Promise<DeliveryFinancial[]>;
+  createDeliveryFinancial(data: InsertDeliveryFinancial): Promise<DeliveryFinancial>;
+  updateDeliveryFinancial(id: string, data: Partial<DeliveryFinancial>): Promise<DeliveryFinancial | undefined>;
+
+  // ===== WITHDRAWALS =====
+  getWithdrawal(id: string): Promise<Withdrawal | undefined>;
+  getWithdrawalsByDriver(driverId: string, limit?: number): Promise<Withdrawal[]>;
+  getDriverLastWithdrawal(driverId: string): Promise<Withdrawal | undefined>;
+  createWithdrawal(data: InsertWithdrawal): Promise<Withdrawal>;
+  updateWithdrawal(id: string, data: Partial<Withdrawal>): Promise<Withdrawal | undefined>;
+
+  // ===== WEBHOOKS LOG =====
+  createWebhookLog(data: InsertWebhookLog): Promise<WebhookLog>;
+  updateWebhookLog(id: string, data: Partial<WebhookLog>): Promise<WebhookLog | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -883,6 +942,8 @@ export class DatabaseStorage implements IStorage {
         hasCriminalRecords: drivers.hasCriminalRecords,
         criminalRecords: drivers.criminalRecords,
         criminalCheckDate: drivers.criminalCheckDate,
+        // Campo de bloqueio de entregas
+        deliveriesBlocked: drivers.deliveriesBlocked,
       })
       .from(drivers)
       .leftJoin(serviceLocations, eq(drivers.serviceLocationId, serviceLocations.id))
@@ -931,7 +992,8 @@ export class DatabaseStorage implements IStorage {
           eq(drivers.vehicleTypeId, vehicleTypeId),
           eq(drivers.available, true),
           eq(drivers.approve, true),
-          eq(drivers.active, true)
+          eq(drivers.active, true),
+          or(eq(drivers.deliveriesBlocked, false), isNull(drivers.deliveriesBlocked))
         )
       );
   }
@@ -1625,7 +1687,8 @@ export class DatabaseStorage implements IStorage {
           eq(entregadorRotas.ativa, true), // Rota ativa
           sql`${diaSemana} = ANY(${entregadorRotas.diasSemana})`, // Dia da semana configurado
           eq(drivers.approve, true), // Motorista aprovado
-          eq(drivers.available, true) // Motorista disponível
+          eq(drivers.available, true), // Motorista disponível
+          or(eq(drivers.deliveriesBlocked, false), isNull(drivers.deliveriesBlocked)) // Entregas não bloqueadas
         )
       );
 
@@ -2299,6 +2362,299 @@ export class DatabaseStorage implements IStorage {
           .where(eq(promotionProgress.id, progress.id));
       }
     }
+  }
+
+  // ========================================
+  // WALLETS
+  // ========================================
+
+  // ID fixo da plataforma
+  private PLATFORM_WALLET_OWNER_ID = "00000000-0000-0000-0000-000000000001";
+
+  async getWallet(id: string): Promise<Wallet | undefined> {
+    const [wallet] = await db.select().from(wallets).where(eq(wallets.id, id));
+    return wallet || undefined;
+  }
+
+  async getWalletByOwner(ownerId: string, ownerType: string): Promise<Wallet | undefined> {
+    const [wallet] = await db
+      .select()
+      .from(wallets)
+      .where(and(eq(wallets.ownerId, ownerId), eq(wallets.ownerType, ownerType)));
+    return wallet || undefined;
+  }
+
+  async createWallet(data: InsertWallet): Promise<Wallet> {
+    const [wallet] = await db.insert(wallets).values(data).returning();
+    return wallet;
+  }
+
+  async updateWalletBalance(walletId: string, availableBalance: string, blockedBalance?: string): Promise<Wallet | undefined> {
+    const updateData: Partial<Wallet> = {
+      availableBalance,
+      updatedAt: new Date(),
+    };
+    if (blockedBalance !== undefined) {
+      updateData.blockedBalance = blockedBalance;
+    }
+    const [wallet] = await db
+      .update(wallets)
+      .set(updateData)
+      .where(eq(wallets.id, walletId))
+      .returning();
+    return wallet || undefined;
+  }
+
+  async getPlatformWallet(): Promise<Wallet | undefined> {
+    return this.getWalletByOwner(this.PLATFORM_WALLET_OWNER_ID, "platform");
+  }
+
+  // ========================================
+  // WALLET TRANSACTIONS
+  // ========================================
+
+  async getWalletTransactions(walletId: string, limit = 50, offset = 0): Promise<WalletTransaction[]> {
+    return db
+      .select()
+      .from(walletTransactions)
+      .where(eq(walletTransactions.walletId, walletId))
+      .orderBy(desc(walletTransactions.createdAt))
+      .limit(limit)
+      .offset(offset);
+  }
+
+  async getWalletTransaction(id: string): Promise<WalletTransaction | undefined> {
+    const [transaction] = await db
+      .select()
+      .from(walletTransactions)
+      .where(eq(walletTransactions.id, id));
+    return transaction || undefined;
+  }
+
+  async createWalletTransaction(data: InsertWalletTransaction): Promise<WalletTransaction> {
+    const [transaction] = await db.insert(walletTransactions).values(data).returning();
+    return transaction;
+  }
+
+  async updateWalletTransaction(id: string, data: Partial<WalletTransaction>): Promise<WalletTransaction | undefined> {
+    const [transaction] = await db
+      .update(walletTransactions)
+      .set(data)
+      .where(eq(walletTransactions.id, id))
+      .returning();
+    return transaction || undefined;
+  }
+
+  // ========================================
+  // CHARGES
+  // ========================================
+
+  async getCharge(id: string): Promise<Charge | undefined> {
+    const [charge] = await db.select().from(charges).where(eq(charges.id, id));
+    return charge || undefined;
+  }
+
+  async getChargeByAsaasId(asaasId: string): Promise<Charge | undefined> {
+    // Primeiro busca pelo asaasId principal
+    const [charge] = await db
+      .select()
+      .from(charges)
+      .where(eq(charges.asaasId, asaasId));
+
+    if (charge) return charge;
+
+    // Se não encontrou, busca pelo pixAsaasId na metadata (para cobranças semanais pagas via PIX)
+    const [chargeByPix] = await db
+      .select()
+      .from(charges)
+      .where(sql`${charges.metadata}->>'pixAsaasId' = ${asaasId}`);
+
+    return chargeByPix || undefined;
+  }
+
+  async getChargesByCompany(companyId: string, limit = 50): Promise<Charge[]> {
+    return db
+      .select()
+      .from(charges)
+      .where(eq(charges.companyId, companyId))
+      .orderBy(desc(charges.createdAt))
+      .limit(limit);
+  }
+
+  async getPendingWeeklyCharges(): Promise<Charge[]> {
+    return db
+      .select()
+      .from(charges)
+      .where(
+        and(
+          eq(charges.chargeType, "weekly"),
+          eq(charges.status, "waiting_payment")
+        )
+      );
+  }
+
+  async getAllWeeklyCharges(limit = 100): Promise<(Charge & { companyName: string })[]> {
+    const result = await db
+      .select({
+        id: charges.id,
+        companyId: charges.companyId,
+        walletId: charges.walletId,
+        asaasId: charges.asaasId,
+        asaasCustomerId: charges.asaasCustomerId,
+        chargeType: charges.chargeType,
+        paymentMethod: charges.paymentMethod,
+        amount: charges.amount,
+        netAmount: charges.netAmount,
+        dueDate: charges.dueDate,
+        paidAt: charges.paidAt,
+        status: charges.status,
+        pixCopyPaste: charges.pixCopyPaste,
+        pixQrCodeUrl: charges.pixQrCodeUrl,
+        boletoUrl: charges.boletoUrl,
+        boletoBarcode: charges.boletoBarcode,
+        boletoDigitableLine: charges.boletoDigitableLine,
+        periodStart: charges.periodStart,
+        periodEnd: charges.periodEnd,
+        metadata: charges.metadata,
+        createdAt: charges.createdAt,
+        updatedAt: charges.updatedAt,
+        companyName: companies.name,
+      })
+      .from(charges)
+      .innerJoin(companies, eq(charges.companyId, companies.id))
+      .where(eq(charges.chargeType, "weekly"))
+      .orderBy(desc(charges.createdAt))
+      .limit(limit);
+    return result;
+  }
+
+  async createCharge(data: InsertCharge): Promise<Charge> {
+    const [charge] = await db.insert(charges).values(data).returning();
+    return charge;
+  }
+
+  async updateCharge(id: string, data: Partial<Charge>): Promise<Charge | undefined> {
+    const [charge] = await db
+      .update(charges)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(charges.id, id))
+      .returning();
+    return charge || undefined;
+  }
+
+  // ========================================
+  // DELIVERY FINANCIALS
+  // ========================================
+
+  async getDeliveryFinancial(id: string): Promise<DeliveryFinancial | undefined> {
+    const [financial] = await db
+      .select()
+      .from(deliveryFinancials)
+      .where(eq(deliveryFinancials.id, id));
+    return financial || undefined;
+  }
+
+  async getDeliveryFinancialByRequest(requestId: string): Promise<DeliveryFinancial | undefined> {
+    const [financial] = await db
+      .select()
+      .from(deliveryFinancials)
+      .where(eq(deliveryFinancials.requestId, requestId));
+    return financial || undefined;
+  }
+
+  async getUnprocessedDeliveryFinancials(companyId: string): Promise<DeliveryFinancial[]> {
+    return db
+      .select()
+      .from(deliveryFinancials)
+      .where(
+        and(
+          eq(deliveryFinancials.companyId, companyId),
+          eq(deliveryFinancials.processed, false)
+        )
+      );
+  }
+
+  async createDeliveryFinancial(data: InsertDeliveryFinancial): Promise<DeliveryFinancial> {
+    const [financial] = await db.insert(deliveryFinancials).values(data).returning();
+    return financial;
+  }
+
+  async updateDeliveryFinancial(id: string, data: Partial<DeliveryFinancial>): Promise<DeliveryFinancial | undefined> {
+    const [financial] = await db
+      .update(deliveryFinancials)
+      .set(data)
+      .where(eq(deliveryFinancials.id, id))
+      .returning();
+    return financial || undefined;
+  }
+
+  // ========================================
+  // WITHDRAWALS
+  // ========================================
+
+  async getWithdrawal(id: string): Promise<Withdrawal | undefined> {
+    const [withdrawal] = await db
+      .select()
+      .from(withdrawals)
+      .where(eq(withdrawals.id, id));
+    return withdrawal || undefined;
+  }
+
+  async getWithdrawalsByDriver(driverId: string, limit = 50): Promise<Withdrawal[]> {
+    return db
+      .select()
+      .from(withdrawals)
+      .where(eq(withdrawals.driverId, driverId))
+      .orderBy(desc(withdrawals.createdAt))
+      .limit(limit);
+  }
+
+  async getDriverLastWithdrawal(driverId: string): Promise<Withdrawal | undefined> {
+    // Busca último saque COMPLETADO (ignora failed e processing)
+    const [withdrawal] = await db
+      .select()
+      .from(withdrawals)
+      .where(
+        and(
+          eq(withdrawals.driverId, driverId),
+          eq(withdrawals.status, "completed")
+        )
+      )
+      .orderBy(desc(withdrawals.createdAt))
+      .limit(1);
+    return withdrawal || undefined;
+  }
+
+  async createWithdrawal(data: InsertWithdrawal): Promise<Withdrawal> {
+    const [withdrawal] = await db.insert(withdrawals).values(data).returning();
+    return withdrawal;
+  }
+
+  async updateWithdrawal(id: string, data: Partial<Withdrawal>): Promise<Withdrawal | undefined> {
+    const [withdrawal] = await db
+      .update(withdrawals)
+      .set(data)
+      .where(eq(withdrawals.id, id))
+      .returning();
+    return withdrawal || undefined;
+  }
+
+  // ========================================
+  // WEBHOOKS LOG
+  // ========================================
+
+  async createWebhookLog(data: InsertWebhookLog): Promise<WebhookLog> {
+    const [log] = await db.insert(webhooksLog).values(data).returning();
+    return log;
+  }
+
+  async updateWebhookLog(id: string, data: Partial<WebhookLog>): Promise<WebhookLog | undefined> {
+    const [log] = await db
+      .update(webhooksLog)
+      .set(data)
+      .where(eq(webhooksLog.id, id))
+      .returning();
+    return log || undefined;
   }
 }
 

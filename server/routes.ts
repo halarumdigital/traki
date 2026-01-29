@@ -2,7 +2,7 @@ import express, { type Express } from "express";
 import { createServer, type Server } from "http";
 import { Server as SocketIOServer } from "socket.io";
 import { storage } from "./storage";
-import { loginSchema, forgotPasswordSchema, resetPasswordSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications, cityPrices, settings, companyCancellationTypes, insertCompanyCancellationTypeSchema, promotions, insertPromotionSchema, companyDriverRatings, driverCompanyRatings, deliveryStops, faqs, insertFaqSchema, pushNotifications, referralSettings, driverReferrals, companyReferrals, ticketSubjects, insertTicketSubjectSchema, supportTickets, insertSupportTicketSchema, ticketReplies, insertTicketReplySchema, entregadorRotas, entregasIntermunicipais, rotasIntermunicipais, viagemColetas, viagemEntregas, users } from "@shared/schema";
+import { loginSchema, forgotPasswordSchema, resetPasswordSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications, cityPrices, settings, companyCancellationTypes, insertCompanyCancellationTypeSchema, promotions, insertPromotionSchema, companyDriverRatings, driverCompanyRatings, deliveryStops, faqs, insertFaqSchema, pushNotifications, referralSettings, driverReferrals, companyReferrals, ticketSubjects, insertTicketSubjectSchema, supportTickets, insertSupportTicketSchema, ticketReplies, insertTicketReplySchema, entregadorRotas, entregasIntermunicipais, rotasIntermunicipais, viagemColetas, viagemEntregas, users, deliveryFinancials } from "@shared/schema";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import { pool, db } from "./db";
@@ -18,6 +18,7 @@ import { initializeFirebase, sendPushNotification, sendPushToMultipleDevices } f
 import { sentryUserContext } from "./sentry-middleware";
 import { uploadToR2, deleteFromR2, isValidImage, isValidDocument, isValidFileSize } from "./r2-storage";
 import { r2ProxyHandler, transformR2Urls } from "./r2-proxy";
+import { processDeliverySplit, canCompanyRequestDelivery } from "./services/wallet/deliverySplitService";
 
 const PgSession = connectPgSimple(session);
 
@@ -191,6 +192,7 @@ declare module "express-session" {
     companyEmail?: string;
     companyName?: string;
     isCompany?: boolean;
+    isImpersonated?: boolean;
     driverId?: string;
     driverName?: string;
     driverMobile?: string;
@@ -698,6 +700,124 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ========================================
+  // ADMIN IMPERSONATE ROUTES (Logar como Empresa)
+  // ========================================
+
+  // Armazenamento temporário de tokens de impersonate (expira em 60 segundos)
+  const impersonateTokens = new Map<string, { companyId: string; createdAt: number }>();
+
+  // Limpar tokens expirados a cada 5 minutos
+  setInterval(() => {
+    const now = Date.now();
+    for (const [token, data] of impersonateTokens.entries()) {
+      if (now - data.createdAt > 60000) { // 60 segundos
+        impersonateTokens.delete(token);
+      }
+    }
+  }, 300000); // 5 minutos
+
+  // POST /api/admin/impersonate/:companyId - Gerar token para logar como empresa
+  app.post("/api/admin/impersonate/:companyId", async (req, res) => {
+    try {
+      // Verificar se é admin
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(403).json({ message: "Acesso negado. Apenas administradores." });
+      }
+
+      const { companyId } = req.params;
+
+      // Verificar se a empresa existe
+      const company = await storage.getCompany(companyId);
+      if (!company) {
+        return res.status(404).json({ message: "Empresa não encontrada" });
+      }
+
+      // Gerar token único
+      const token = crypto.randomBytes(32).toString("hex");
+
+      // Armazenar token com timestamp
+      impersonateTokens.set(token, {
+        companyId,
+        createdAt: Date.now(),
+      });
+
+      console.log(`🔑 Token de impersonate gerado para empresa ${company.name} por admin ${req.session.userName}`);
+
+      return res.json({
+        token,
+        url: `/impersonate/${token}`,
+        company: {
+          id: company.id,
+          name: company.name,
+        },
+      });
+    } catch (error) {
+      console.error("Erro ao gerar token de impersonate:", error);
+      return res.status(500).json({ message: "Erro ao gerar token" });
+    }
+  });
+
+  // GET /api/impersonate/:token - Validar token e criar sessão da empresa
+  app.get("/api/impersonate/:token", async (req, res) => {
+    try {
+      const { token } = req.params;
+
+      // Buscar token
+      const tokenData = impersonateTokens.get(token);
+      if (!tokenData) {
+        return res.status(401).json({ message: "Token inválido ou expirado" });
+      }
+
+      // Verificar se o token não expirou (60 segundos)
+      if (Date.now() - tokenData.createdAt > 60000) {
+        impersonateTokens.delete(token);
+        return res.status(401).json({ message: "Token expirado" });
+      }
+
+      // Remover token (uso único)
+      impersonateTokens.delete(token);
+
+      // Buscar empresa
+      const company = await storage.getCompany(tokenData.companyId);
+      if (!company) {
+        return res.status(404).json({ message: "Empresa não encontrada" });
+      }
+
+      // Limpar dados da sessão atual e criar sessão como empresa
+      // Limpar campos de admin
+      delete req.session.userId;
+      delete req.session.userEmail;
+      delete req.session.userName;
+      delete req.session.isAdmin;
+      delete req.session.driverId;
+      delete req.session.driverName;
+      delete req.session.driverMobile;
+      delete req.session.isDriver;
+
+      // Definir campos da empresa
+      req.session.companyId = company.id;
+      req.session.companyEmail = company.email;
+      req.session.companyName = company.name;
+      req.session.isCompany = true;
+      req.session.isImpersonated = true;
+
+      // Salvar sessão e redirecionar
+      req.session.save((err) => {
+        if (err) {
+          console.error("Erro ao salvar sessão:", err);
+          return res.status(500).json({ message: "Erro ao criar sessão" });
+        }
+
+        console.log(`✅ Admin logou como empresa: ${company.name}`);
+        return res.redirect("/empresa/dashboard");
+      });
+    } catch (error) {
+      console.error("Erro ao processar token de impersonate:", error);
+      return res.status(500).json({ message: "Erro ao processar token" });
+    }
+  });
+
+  // ========================================
   // COMPANY AUTH ROUTES
   // ========================================
 
@@ -956,6 +1076,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const company = newCompany[0];
       console.log("✅ Empresa criada:", company.name);
 
+      // Criar wallet para a empresa
+      console.log("💰 Criando wallet para a empresa...");
+      try {
+        await storage.createWallet({
+          ownerId: company.id,
+          ownerType: "company",
+          availableBalance: "0.00",
+          blockedBalance: "0.00",
+          status: "active",
+        });
+        console.log("✅ Wallet criada para empresa:", company.name);
+      } catch (walletError) {
+        console.error("⚠️ Erro ao criar wallet (empresa criada com sucesso):", walletError);
+        // Não falha o registro, apenas loga o erro
+      }
+
       // Se houve indicação, criar registro de indicação
       if (referrerDriverId && company) {
         console.log("💰 Criando registro de indicação de empresa...");
@@ -1081,6 +1217,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         WHERE d.active = true
           AND d.approve = true
           AND d.available = true
+          AND (d.deliveries_blocked = false OR d.deliveries_blocked IS NULL)
           AND d.fcm_token IS NOT NULL
           AND d.latitude IS NOT NULL
           AND d.longitude IS NOT NULL
@@ -1105,6 +1242,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         WHERE d.active = true
           AND d.approve = true
           AND d.available = true
+          AND (d.deliveries_blocked = false OR d.deliveries_blocked IS NULL)
           AND d.fcm_token IS NOT NULL
           AND d.latitude IS NOT NULL
           AND d.longitude IS NOT NULL
@@ -2895,6 +3033,326 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // GET /api/companies/:id/wallet - Buscar wallet e recargas de uma empresa (admin ou empresa)
+  app.get("/api/companies/:id/wallet", async (req, res) => {
+    try {
+      // Aceita admin (userId) ou empresa autenticada (companyId)
+      if (!req.session.userId && !req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+
+      // Se for empresa, só pode ver dados da própria empresa
+      if (req.session.companyId && req.session.companyId !== id) {
+        return res.status(403).json({ message: "Acesso negado" });
+      }
+
+      // Buscar empresa
+      const company = await storage.getCompany(id);
+      if (!company) {
+        return res.status(404).json({ message: "Empresa não encontrada" });
+      }
+
+      // Buscar wallet da empresa
+      let wallet = await storage.getWalletByOwner(id, "company");
+
+      // Se não tiver wallet, criar uma
+      if (!wallet) {
+        wallet = await storage.createWallet({
+          ownerId: id,
+          ownerType: "company",
+          availableBalance: "0.00",
+          blockedBalance: "0.00",
+          status: "active",
+        });
+      }
+
+      // Buscar recargas (charges)
+      const charges = await storage.getChargesByCompany(id, 50);
+
+      // Buscar transações da wallet
+      const transactions = await storage.getWalletTransactions(wallet.id, 50);
+
+      // Calcular totais
+      const confirmedCharges = charges.filter(c => c.status === "confirmed");
+      const totalRecharges = confirmedCharges.reduce((sum, c) => sum + parseFloat(c.amount), 0);
+
+      return res.json({
+        wallet: {
+          id: wallet.id,
+          availableBalance: wallet.availableBalance,
+          blockedBalance: wallet.blockedBalance,
+          status: wallet.status,
+        },
+        charges: charges.map(c => ({
+          id: c.id,
+          amount: c.amount,
+          paymentMethod: c.paymentMethod,
+          status: c.status,
+          chargeType: c.chargeType,
+          createdAt: c.createdAt,
+          paidAt: c.paidAt,
+          dueDate: c.dueDate,
+          periodStart: c.periodStart,
+          periodEnd: c.periodEnd,
+          boletoUrl: c.boletoUrl,
+          boletoBarcode: c.boletoBarcode,
+          boletoDigitableLine: c.boletoDigitableLine,
+          pixCopyPaste: c.pixCopyPaste,
+          deliveriesCount: (c.metadata as Record<string, unknown>)?.deliveriesCount || 0,
+        })),
+        transactions: transactions.map(t => ({
+          id: t.id,
+          type: t.type,
+          amount: t.amount,
+          description: t.description,
+          createdAt: t.createdAt,
+        })),
+        totals: {
+          totalRecharges,
+          chargesCount: charges.length,
+          confirmedCount: confirmedCharges.length,
+        },
+      });
+    } catch (error) {
+      console.error("Erro ao buscar wallet da empresa:", error);
+      return res.status(500).json({ message: "Erro ao buscar carteira" });
+    }
+  });
+
+  // POST /api/companies/:id/generate-weekly-charge - Gerar boleto manual para empresa
+  app.post("/api/companies/:id/generate-weekly-charge", async (req, res) => {
+    try {
+      console.log("📝 Gerar boleto - Session:", {
+        userId: req.session.userId,
+        companyId: req.session.companyId,
+        sessionID: req.sessionID,
+      });
+
+      // Aceita admin (userId) ou empresa autenticada (companyId)
+      if (!req.session.userId && !req.session.companyId) {
+        console.log("❌ Sessão não autenticada para gerar boleto");
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+
+      // Se for empresa, só pode gerar boleto para si mesma
+      if (req.session.companyId && req.session.companyId !== id) {
+        return res.status(403).json({ message: "Acesso negado" });
+      }
+      const { dateFrom, dateTo } = req.body;
+
+      // Parse dates if provided
+      const dateFilter = {
+        dateFrom: dateFrom ? new Date(dateFrom) : undefined,
+        dateTo: dateTo ? new Date(dateTo) : undefined,
+      };
+
+      // Buscar empresa
+      const company = await storage.getCompany(id);
+      if (!company) {
+        return res.status(404).json({ message: "Empresa não encontrada" });
+      }
+
+      // Verificar se é pós-pago
+      if (company.paymentType !== "BOLETO") {
+        return res.status(400).json({
+          message: "Esta empresa é pré-paga (PIX). Boletos semanais são apenas para empresas pós-pagas."
+        });
+      }
+
+      // Importar serviço de fechamento semanal
+      const { processCompanyWeeklyClosing } = await import("./services/wallet/weeklyClosingService");
+
+      // Processar fechamento com filtro de data
+      const result = await processCompanyWeeklyClosing(id, dateFilter);
+
+      if (!result.success) {
+        return res.status(400).json({
+          message: result.error || "Erro ao gerar boleto",
+          success: false,
+        });
+      }
+
+      // Se não houver entregas
+      if (result.deliveriesCount === 0) {
+        return res.json({
+          success: true,
+          message: "Nenhuma entrega pendente para cobrar",
+          deliveriesCount: 0,
+        });
+      }
+
+      // Buscar dados do boleto gerado
+      const charge = result.chargeId ? await storage.getCharge(result.chargeId) : null;
+
+      return res.json({
+        success: true,
+        message: `Boleto gerado com sucesso para ${result.deliveriesCount} entrega(s)`,
+        chargeId: result.chargeId,
+        deliveriesCount: result.deliveriesCount,
+        totalAmount: result.totalAmount,
+        charge: charge ? {
+          id: charge.id,
+          amount: charge.amount,
+          dueDate: charge.dueDate,
+          boletoUrl: charge.boletoUrl,
+          boletoBarcode: charge.boletoBarcode,
+          pixCopyPaste: charge.pixCopyPaste,
+        } : null,
+      });
+    } catch (error) {
+      console.error("Erro ao gerar boleto manual:", error);
+      const message = error instanceof Error ? error.message : "Erro ao gerar boleto";
+      return res.status(500).json({ message, success: false });
+    }
+  });
+
+  // GET /api/companies/:id/pending-deliveries - Buscar entregas pendentes de cobrança
+  app.get("/api/companies/:id/pending-deliveries", async (req, res) => {
+    try {
+      if (!req.session.userId && !req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+      const { dateFrom, dateTo } = req.query;
+
+      // Parse dates if provided
+      const dateFromParsed = dateFrom ? new Date(dateFrom as string) : undefined;
+      const dateToFinal = dateTo ? new Date(dateTo as string) : undefined;
+      // Set time to end of day for dateTo
+      if (dateToFinal) {
+        dateToFinal.setHours(23, 59, 59, 999);
+      }
+
+      // Buscar empresa
+      const company = await storage.getCompany(id);
+      if (!company) {
+        return res.status(404).json({ message: "Empresa não encontrada" });
+      }
+
+      // Buscar entregas não processadas da tabela deliveryFinancials
+      const { deliveryFinancials, requests, requestBills } = await import("@shared/schema");
+      const { and, eq, isNull, inArray, gte, lte, sql } = await import("drizzle-orm");
+
+      // Build conditions array
+      const conditions = [
+        eq(deliveryFinancials.companyId, id),
+        eq(deliveryFinancials.processed, false),
+        isNull(deliveryFinancials.chargeId),
+      ];
+
+      // Add date filters if provided
+      if (dateFromParsed) {
+        conditions.push(gte(deliveryFinancials.createdAt, dateFromParsed));
+      }
+      if (dateToFinal) {
+        conditions.push(lte(deliveryFinancials.createdAt, dateToFinal));
+      }
+
+      const pendingDeliveries = await db
+        .select()
+        .from(deliveryFinancials)
+        .where(and(...conditions));
+
+      // Se não há entregas em deliveryFinancials, verificar se há entregas concluídas
+      // da última semana que ainda não foram registradas
+      let completedDeliveriesNotRegistered: any[] = [];
+      if (pendingDeliveries.length === 0) {
+        // Buscar entregas concluídas da última semana que não estão em deliveryFinancials
+        const oneWeekAgo = new Date();
+        oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+
+        const completedDeliveries = await db
+          .select({
+            request: requests,
+            bill: requestBills,
+          })
+          .from(requests)
+          .leftJoin(requestBills, eq(requestBills.requestId, requests.id))
+          .leftJoin(deliveryFinancials, eq(deliveryFinancials.requestId, requests.id))
+          .where(
+            and(
+              eq(requests.companyId, id),
+              eq(requests.isCompleted, true), // Usar isCompleted em vez de status
+              isNull(deliveryFinancials.id) // Não está registrada ainda
+            )
+          );
+
+        completedDeliveriesNotRegistered = completedDeliveries;
+        console.log(`[DEBUG] Empresa ${id} - Entregas concluídas não registradas: ${completedDeliveries.length}`);
+      }
+
+      const totalAmount = pendingDeliveries.reduce(
+        (sum, d) => sum + parseFloat(d.totalAmount),
+        0
+      );
+
+      // Debug: buscar todas as entregas da empresa para entender o estado
+      const allCompanyDeliveries = await db
+        .select({
+          id: requests.id,
+          requestNumber: requests.requestNumber,
+          isCompleted: requests.isCompleted,
+          isCancelled: requests.isCancelled,
+          isDriverStarted: requests.isDriverStarted,
+          completedAt: requests.completedAt,
+          createdAt: requests.createdAt,
+        })
+        .from(requests)
+        .where(eq(requests.companyId, id))
+        .orderBy(sql`${requests.createdAt} DESC`)
+        .limit(10);
+
+      // Determinar status legível
+      const getDisplayStatus = (d: any) => {
+        if (d.isCompleted) return "completed";
+        if (d.isCancelled) return "cancelled";
+        if (d.isDriverStarted) return "in_progress";
+        return "pending";
+      };
+
+      console.log(`[DEBUG] Empresa ${id} - Entregas recentes:`, allCompanyDeliveries.map(d => ({
+        id: d.id,
+        num: d.requestNumber,
+        displayStatus: getDisplayStatus(d),
+        isCompleted: d.isCompleted,
+        completedAt: d.completedAt,
+      })));
+
+      return res.json({
+        count: pendingDeliveries.length,
+        totalAmount,
+        // Informação adicional para debug
+        completedNotRegistered: completedDeliveriesNotRegistered.length,
+        // Debug: entregas recentes da empresa
+        debug: {
+          recentDeliveries: allCompanyDeliveries.map(d => ({
+            id: d.id,
+            requestNumber: d.requestNumber,
+            status: getDisplayStatus(d),
+            isCompleted: d.isCompleted,
+            completedAt: d.completedAt,
+          })),
+        },
+        deliveries: pendingDeliveries.map(d => ({
+          id: d.id,
+          requestId: d.requestId,
+          totalAmount: d.totalAmount,
+          driverAmount: d.driverAmount,
+          commissionAmount: d.commissionAmount,
+          createdAt: d.createdAt,
+        })),
+      });
+    } catch (error) {
+      console.error("Erro ao buscar entregas pendentes:", error);
+      return res.status(500).json({ message: "Erro ao buscar entregas pendentes" });
+    }
+  });
+
   // ========================================
   // CITY PRICES (PREÇOS) ROUTES
   // ========================================
@@ -3423,6 +3881,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Valor por parada multiplicado pelo número de endereços
       const valorTotalParadas = valorParada * enderecosEntrega.length;
       const valorTotal = tarifaBase + (precoPorKm * distanciaKm) + valorTotalParadas;
+
+      // Verificar se empresa pode fazer entrega (saldo para PRE_PAGO)
+      const canRequest = await canCompanyRequestDelivery(company.id, valorTotal);
+      if (!canRequest.allowed) {
+        console.log(`❌ Empresa ${company.id} não pode fazer entrega intermunicipal: ${canRequest.reason}`);
+        return res.status(402).json({
+          message: canRequest.reason || "Saldo insuficiente para realizar esta entrega",
+          code: "INSUFFICIENT_BALANCE"
+        });
+      }
 
       // Gerar número de pedido único
       const numeroPedido = `INT-${Date.now()}-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
@@ -6270,6 +6738,74 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // GET /api/drivers/:id/financial - Buscar dados financeiros do motorista
+  app.get("/api/drivers/:id/financial", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+      const { wallets, walletTransactions, withdrawals } = await import("@shared/schema");
+      const { getDriverWallet } = await import("./services/wallet/walletService");
+
+      // Buscar motorista
+      const driver = await storage.getDriver(id);
+      if (!driver) {
+        return res.status(404).json({ message: "Motorista não encontrado" });
+      }
+
+      // Buscar wallet
+      const wallet = await getDriverWallet(id);
+
+      // Buscar saques
+      const driverWithdrawals = await db
+        .select()
+        .from(withdrawals)
+        .where(eq(withdrawals.driverId, id))
+        .orderBy(desc(withdrawals.createdAt))
+        .limit(50);
+
+      // Buscar splits (créditos de entregas)
+      const splits = await db
+        .select()
+        .from(walletTransactions)
+        .where(
+          and(
+            eq(walletTransactions.walletId, wallet.id),
+            eq(walletTransactions.type, "delivery_credit")
+          )
+        )
+        .orderBy(desc(walletTransactions.createdAt))
+        .limit(50);
+
+      // Calcular totais
+      const totalWithdrawals = driverWithdrawals
+        .filter(w => w.status === "completed")
+        .reduce((sum, w) => sum + parseFloat(w.amount), 0);
+
+      const totalSplits = splits
+        .filter(s => s.status === "completed")
+        .reduce((sum, s) => sum + parseFloat(s.amount), 0);
+
+      return res.json({
+        subaccount: null, // Não temos subconta
+        pixKey: driver.pixKey || null,
+        pixKeyType: driver.pixKeyType || null,
+        balance: parseFloat(wallet.availableBalance) * 100, // Frontend espera em centavos
+        withdrawals: driverWithdrawals,
+        splits: splits,
+        totals: {
+          totalWithdrawals,
+          totalSplits,
+        },
+      });
+    } catch (error) {
+      console.error("Erro ao buscar dados financeiros do motorista:", error);
+      return res.status(500).json({ message: "Erro ao buscar dados financeiros" });
+    }
+  });
+
   // POST /api/drivers - Criar novo motorista
   app.post("/api/drivers", async (req, res) => {
     try {
@@ -6326,6 +6862,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         referredById,
         totalDeliveries: 0,
       });
+
+      // Criar wallet para o motorista
+      console.log("💰 Criando wallet para o motorista...");
+      try {
+        await storage.createWallet({
+          ownerId: newDriver.id,
+          ownerType: "driver",
+          availableBalance: "0.00",
+          blockedBalance: "0.00",
+          status: "active",
+        });
+        console.log("✅ Wallet criada para motorista:", newDriver.name);
+      } catch (walletError) {
+        console.error("⚠️ Erro ao criar wallet (motorista criado com sucesso):", walletError);
+        // Não falha o registro, apenas loga o erro
+      }
 
       // Consultar processos criminais automaticamente se o CPF foi fornecido
       if (cpf && process.env.CELLEREIT_API_TOKEN) {
@@ -6854,6 +7406,82 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // POST /api/drivers/:id/block-deliveries - Bloquear entregas do motorista
+  app.post("/api/drivers/:id/block-deliveries", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+      const { reason } = req.body;
+
+      // Atualizar motorista para bloquear entregas
+      await storage.updateDriver(id, {
+        deliveriesBlocked: true,
+        deliveriesBlockedAt: new Date(),
+        deliveriesBlockedReason: reason || "Entregas bloqueadas pelo administrador",
+        deliveriesBlockedByUserId: req.session.userId
+      });
+
+      // Adicionar nota de bloqueio de entregas
+      if (reason) {
+        await storage.createDriverNote({
+          driverId: id,
+          userId: req.session.userId,
+          note: `Bloqueio de entregas: ${reason}`,
+          noteType: "block_deliveries",
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "Entregas bloqueadas com sucesso"
+      });
+    } catch (error) {
+      console.error("Erro ao bloquear entregas do motorista:", error);
+      return res.status(500).json({ message: "Erro ao bloquear entregas do motorista" });
+    }
+  });
+
+  // POST /api/drivers/:id/unblock-deliveries - Desbloquear entregas do motorista
+  app.post("/api/drivers/:id/unblock-deliveries", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+      const { reason } = req.body;
+
+      // Atualizar motorista para desbloquear entregas
+      await storage.updateDriver(id, {
+        deliveriesBlocked: false,
+        deliveriesBlockedAt: null,
+        deliveriesBlockedReason: null,
+        deliveriesBlockedByUserId: null
+      });
+
+      // Adicionar nota de desbloqueio de entregas
+      if (reason) {
+        await storage.createDriverNote({
+          driverId: id,
+          userId: req.session.userId,
+          note: `Desbloqueio de entregas: ${reason}`,
+          noteType: "unblock_deliveries",
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "Entregas desbloqueadas com sucesso"
+      });
+    } catch (error) {
+      console.error("Erro ao desbloquear entregas do motorista:", error);
+      return res.status(500).json({ message: "Erro ao desbloquear entregas do motorista" });
+    }
+  });
+
   // POST /api/drivers/:id/device - Salvar device_id (IMEI) do motorista
   app.post("/api/drivers/:id/device", async (req, res) => {
     try {
@@ -7362,13 +7990,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Usando DATE() com timezone America/Sao_Paulo para comparar corretamente o dia de hoje
       const deliveryStats = await pool.query(`
         SELECT
-          COUNT(*) FILTER (WHERE is_completed = false AND is_cancelled = false) AS "inProgress",
-          COUNT(*) FILTER (WHERE is_completed = true) AS "completed",
-          COUNT(*) FILTER (WHERE is_cancelled = true) AS "cancelled",
-          COUNT(*) FILTER (WHERE DATE(created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = DATE(NOW() AT TIME ZONE 'America/Sao_Paulo') AND is_completed = false AND is_cancelled = false) AS "todayInProgress",
-          COUNT(*) FILTER (WHERE DATE(completed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = DATE(NOW() AT TIME ZONE 'America/Sao_Paulo')) AS "todayCompleted",
-          COUNT(*) FILTER (WHERE DATE(cancelled_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = DATE(NOW() AT TIME ZONE 'America/Sao_Paulo')) AS "todayCancelled",
-          COALESCE(AVG(EXTRACT(EPOCH FROM (completed_at - created_at)) / 60) FILTER (WHERE is_completed = true AND completed_at >= NOW() - INTERVAL '7 days'), 0) AS "avgDeliveryTimeMinutes",
+          COUNT(*) FILTER (WHERE r.is_completed = false AND r.is_cancelled = false) AS "inProgress",
+          COUNT(*) FILTER (WHERE r.is_completed = true) AS "completed",
+          COUNT(*) FILTER (WHERE r.is_cancelled = true) AS "cancelled",
+          COUNT(*) FILTER (WHERE DATE(r.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = DATE(NOW() AT TIME ZONE 'America/Sao_Paulo') AND r.is_completed = false AND r.is_cancelled = false) AS "todayInProgress",
+          COUNT(*) FILTER (WHERE DATE(r.completed_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = DATE(NOW() AT TIME ZONE 'America/Sao_Paulo')) AS "todayCompleted",
+          COUNT(*) FILTER (WHERE DATE(r.cancelled_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo') = DATE(NOW() AT TIME ZONE 'America/Sao_Paulo')) AS "todayCancelled",
+          COALESCE(AVG(EXTRACT(EPOCH FROM (r.completed_at - r.created_at)) / 60) FILTER (WHERE r.is_completed = true AND r.completed_at >= NOW() - INTERVAL '7 days'), 0) AS "avgDeliveryTimeMinutes",
           COALESCE(SUM(rb.total_amount) FILTER (WHERE r.is_completed = true AND r.completed_at >= NOW() - INTERVAL '7 days'), 0) AS "weeklySpent"
         FROM requests r
         LEFT JOIN request_bills rb ON r.id = rb.request_id
@@ -8018,6 +8646,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   - Comissão admin (${adminCommissionPercentage}%): R$ ${adminCommission}
   - Valor motorista: R$ ${driverAmount}`);
 
+      // Verificar se empresa pode fazer entrega (saldo para PRE_PAGO)
+      const canRequest = await canCompanyRequestDelivery(req.session.companyId, totalPrice);
+      if (!canRequest.allowed) {
+        console.log(`❌ Empresa ${req.session.companyId} não pode fazer entrega: ${canRequest.reason}`);
+        return res.status(402).json({
+          message: canRequest.reason || "Saldo insuficiente para realizar esta entrega",
+          code: "INSUFFICIENT_BALANCE"
+        });
+      }
+
       // Create request
       // IMPORTANTE: O frontend envia distance em KM, mas o banco espera em METROS
       const totalDistanceInMeters = distance ? parseFloat(distance) * 1000 : null;
@@ -8231,6 +8869,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         WHERE available = true
           AND approve = true
           AND active = true
+          AND (deliveries_blocked = false OR deliveries_blocked IS NULL)
           AND fcm_token IS NOT NULL
           AND latitude IS NOT NULL
           AND longitude IS NOT NULL
@@ -8251,6 +8890,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         WHERE available = true
           AND approve = true
           AND active = true
+          AND (deliveries_blocked = false OR deliveries_blocked IS NULL)
           AND fcm_token IS NOT NULL
           AND latitude IS NOT NULL
           AND longitude IS NOT NULL
@@ -8501,13 +9141,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Calcular valor líquido para o motorista (após comissão)
       let driverAmount = null;
       let adminCommission = null;
+      let totalAmount = 0;
       if (bills && bills.length > 0) {
         const bill = bills[0];
         const settings = await storage.getSettings();
         const adminCommissionPercentage = settings?.adminCommissionPercentage || 20;
-        const totalAmount = parseFloat(bill.total_amount);
+        totalAmount = parseFloat(bill.total_amount);
         adminCommission = (totalAmount * (adminCommissionPercentage / 100)).toFixed(2);
         driverAmount = (totalAmount - parseFloat(adminCommission)).toFixed(2);
+      }
+
+      // Verificar se empresa pode fazer entrega (saldo para PRE_PAGO)
+      if (totalAmount > 0) {
+        const canRequest = await canCompanyRequestDelivery(req.session.companyId, totalAmount);
+        if (!canRequest.allowed) {
+          console.log(`❌ Empresa ${req.session.companyId} não pode relançar entrega: ${canRequest.reason}`);
+          return res.status(402).json({
+            message: canRequest.reason || "Saldo insuficiente para relançar esta entrega",
+            code: "INSUFFICIENT_BALANCE"
+          });
+        }
       }
 
       // Criar nova entrega
@@ -8644,6 +9297,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         WHERE available = true
           AND approve = true
           AND active = true
+          AND (deliveries_blocked = false OR deliveries_blocked IS NULL)
           AND fcm_token IS NOT NULL
           AND latitude IS NOT NULL
           AND longitude IS NOT NULL
@@ -9167,6 +9821,283 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // GET /api/admin/boletos - Lista todos os boletos semanais (Admin)
+  app.get("/api/admin/boletos", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(401).json({ message: "Acesso negado. Apenas administradores." });
+      }
+
+      const { status } = req.query;
+
+      // Buscar todos os charges do tipo weekly
+      const allCharges = await storage.getAllWeeklyCharges(200);
+
+      // Aplicar filtro de status se fornecido
+      let filteredCharges = allCharges;
+      if (status && status !== "all") {
+        const statusMap: Record<string, string[]> = {
+          open: ["pending", "waiting_payment"],
+          paid: ["confirmed"],
+          overdue: ["overdue"],
+        };
+        const targetStatuses = statusMap[status as string] || [];
+        filteredCharges = allCharges.filter(c => targetStatuses.includes(c.status));
+      }
+
+      // Formatar para o frontend
+      const boletos = filteredCharges.map(charge => {
+        const metadata = charge.metadata as Record<string, unknown> | null;
+        const deliveriesCount = (metadata?.deliveriesCount as number) || 0;
+
+        // Formatar período
+        const periodStart = charge.periodStart ? new Date(charge.periodStart).toLocaleDateString("pt-BR") : "";
+        const periodEnd = charge.periodEnd ? new Date(charge.periodEnd).toLocaleDateString("pt-BR") : "";
+        const periodo = periodStart && periodEnd ? `${periodStart} a ${periodEnd}` : "";
+
+        // Mapear status
+        let frontendStatus: "open" | "paid" | "overdue" = "open";
+        if (charge.status === "confirmed") {
+          frontendStatus = "paid";
+        } else if (charge.status === "overdue") {
+          frontendStatus = "overdue";
+        }
+
+        return {
+          id: charge.id,
+          empresaId: charge.companyId,
+          empresaNome: charge.companyName,
+          periodo,
+          dataEmissao: new Date(charge.createdAt).toLocaleDateString("pt-BR"),
+          dataVencimento: new Date(charge.dueDate).toLocaleDateString("pt-BR"),
+          valor: parseFloat(charge.amount),
+          totalEntregas: deliveriesCount,
+          status: frontendStatus,
+          codigoBarras: charge.boletoBarcode,
+          linhaDigitavel: charge.boletoDigitableLine,
+          pdfUrl: charge.boletoUrl,
+          pixCopyPaste: charge.pixCopyPaste,
+          pixQrCodeUrl: charge.pixQrCodeUrl,
+        };
+      });
+
+      // Calcular totais
+      const totals = {
+        emAberto: allCharges
+          .filter(c => ["pending", "waiting_payment"].includes(c.status))
+          .reduce((sum, c) => sum + parseFloat(c.amount), 0),
+        atrasado: allCharges
+          .filter(c => c.status === "overdue")
+          .reduce((sum, c) => sum + parseFloat(c.amount), 0),
+        pago: allCharges
+          .filter(c => c.status === "confirmed")
+          .reduce((sum, c) => sum + parseFloat(c.amount), 0),
+      };
+
+      return res.json({ boletos, totals });
+    } catch (error) {
+      console.error("Erro ao buscar boletos admin:", error);
+      return res.status(500).json({ message: "Erro ao buscar boletos" });
+    }
+  });
+
+  // GET /api/admin/platform-wallet - Buscar wallet da plataforma e valores pendentes (Admin)
+  app.get("/api/admin/platform-wallet", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(401).json({ message: "Acesso negado. Apenas administradores." });
+      }
+
+      // Buscar wallet da plataforma
+      const platformWallet = await storage.getPlatformWallet();
+
+      if (!platformWallet) {
+        return res.status(404).json({ message: "Wallet da plataforma não encontrada" });
+      }
+
+      // Buscar valor pendente de liberação (entregas não processadas vinculadas a boletos semanais)
+      const pendingResult = await pool.query(`
+        SELECT
+          COALESCE(SUM(df.driver_amount::numeric), 0) as pending_driver_amount,
+          COALESCE(SUM(df.commission_amount::numeric), 0) as pending_commission_amount,
+          COUNT(*) as pending_deliveries_count
+        FROM delivery_financials df
+        INNER JOIN charges c ON df.charge_id = c.id
+        WHERE df.processed = false
+        AND c.charge_type = 'weekly'
+        AND c.status IN ('waiting_payment', 'pending')
+      `);
+
+      const pendingData = pendingResult.rows[0] || {
+        pending_driver_amount: 0,
+        pending_commission_amount: 0,
+        pending_deliveries_count: 0
+      };
+
+      // Buscar total já pago este mês para motoristas
+      const startOfMonth = new Date();
+      startOfMonth.setDate(1);
+      startOfMonth.setHours(0, 0, 0, 0);
+
+      const paidThisMonthResult = await pool.query(`
+        SELECT
+          COALESCE(SUM(df.driver_amount::numeric), 0) as paid_driver_amount,
+          COALESCE(SUM(df.commission_amount::numeric), 0) as paid_commission_amount,
+          COUNT(*) as paid_deliveries_count
+        FROM delivery_financials df
+        WHERE df.processed = true
+        AND df.processed_at >= $1
+      `, [startOfMonth]);
+
+      const paidThisMonth = paidThisMonthResult.rows[0] || {
+        paid_driver_amount: 0,
+        paid_commission_amount: 0,
+        paid_deliveries_count: 0
+      };
+
+      return res.json({
+        wallet: {
+          id: platformWallet.id,
+          availableBalance: parseFloat(platformWallet.availableBalance),
+          blockedBalance: parseFloat(platformWallet.blockedBalance),
+          status: platformWallet.status,
+        },
+        pending: {
+          driverAmount: parseFloat(pendingData.pending_driver_amount),
+          commissionAmount: parseFloat(pendingData.pending_commission_amount),
+          deliveriesCount: parseInt(pendingData.pending_deliveries_count),
+        },
+        paidThisMonth: {
+          driverAmount: parseFloat(paidThisMonth.paid_driver_amount),
+          commissionAmount: parseFloat(paidThisMonth.paid_commission_amount),
+          deliveriesCount: parseInt(paidThisMonth.paid_deliveries_count),
+        },
+      });
+    } catch (error) {
+      console.error("Erro ao buscar wallet da plataforma:", error);
+      return res.status(500).json({ message: "Erro ao buscar wallet da plataforma" });
+    }
+  });
+
+  // GET /api/admin/withdrawals - Listar todos os saques dos entregadores (Admin)
+  app.get("/api/admin/withdrawals", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(401).json({ message: "Acesso negado. Apenas administradores." });
+      }
+
+      const { search, status, limit = "50", offset = "0" } = req.query;
+
+      // Buscar todos os saques com dados do entregador
+      let query = `
+        SELECT
+          w.id,
+          w.driver_id as "driverId",
+          w.amount,
+          w.fee,
+          w.net_amount as "netAmount",
+          w.pix_key_type as "pixKeyType",
+          w.pix_key as "pixKey",
+          w.status,
+          w.failure_reason as "failureReason",
+          w.created_at as "createdAt",
+          w.processed_at as "processedAt",
+          d.name as "driverName",
+          d.cpf as "driverCpf",
+          d.mobile as "driverMobile"
+        FROM withdrawals w
+        INNER JOIN drivers d ON w.driver_id = d.id
+        WHERE 1=1
+      `;
+
+      const params: any[] = [];
+      let paramIndex = 1;
+
+      // Filtro de busca por nome ou chave pix
+      if (search && typeof search === 'string' && search.trim()) {
+        query += ` AND (
+          LOWER(d.name) LIKE LOWER($${paramIndex})
+          OR LOWER(w.pix_key) LIKE LOWER($${paramIndex})
+        )`;
+        params.push(`%${search.trim()}%`);
+        paramIndex++;
+      }
+
+      // Filtro de status
+      if (status && typeof status === 'string' && status.trim()) {
+        query += ` AND w.status = $${paramIndex}`;
+        params.push(status);
+        paramIndex++;
+      }
+
+      query += ` ORDER BY w.created_at DESC`;
+      query += ` LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+      params.push(parseInt(limit as string), parseInt(offset as string));
+
+      const result = await pool.query(query, params);
+
+      // Buscar total de registros (para paginação)
+      let countQuery = `
+        SELECT COUNT(*) as total
+        FROM withdrawals w
+        INNER JOIN drivers d ON w.driver_id = d.id
+        WHERE 1=1
+      `;
+
+      const countParams: any[] = [];
+      let countParamIndex = 1;
+
+      if (search && typeof search === 'string' && search.trim()) {
+        countQuery += ` AND (
+          LOWER(d.name) LIKE LOWER($${countParamIndex})
+          OR LOWER(w.pix_key) LIKE LOWER($${countParamIndex})
+        )`;
+        countParams.push(`%${search.trim()}%`);
+        countParamIndex++;
+      }
+
+      if (status && typeof status === 'string' && status.trim()) {
+        countQuery += ` AND w.status = $${countParamIndex}`;
+        countParams.push(status);
+      }
+
+      const countResult = await pool.query(countQuery, countParams);
+      const total = parseInt(countResult.rows[0]?.total || "0");
+
+      // Buscar totais por status
+      const totalsResult = await pool.query(`
+        SELECT
+          status,
+          COUNT(*) as count,
+          COALESCE(SUM(amount::numeric), 0) as total_amount
+        FROM withdrawals
+        GROUP BY status
+      `);
+
+      const statusTotals = totalsResult.rows.reduce((acc: any, row: any) => {
+        acc[row.status] = {
+          count: parseInt(row.count),
+          totalAmount: parseFloat(row.total_amount)
+        };
+        return acc;
+      }, {});
+
+      return res.json({
+        withdrawals: result.rows.map(row => ({
+          ...row,
+          amount: parseFloat(row.amount),
+          fee: parseFloat(row.fee || "0"),
+          netAmount: parseFloat(row.netAmount),
+        })),
+        total,
+        statusTotals,
+      });
+    } catch (error) {
+      console.error("Erro ao buscar saques:", error);
+      return res.status(500).json({ message: "Erro ao buscar saques" });
+    }
+  });
+
   // POST /api/admin/deliveries/:id/force-cancel-notification - Forçar notificação de cancelamento (Admin)
   app.post("/api/admin/deliveries/:id/force-cancel-notification", async (req, res) => {
     try {
@@ -9304,13 +10235,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Calcular valor líquido para o motorista (após comissão)
       let driverAmount = null;
       let adminCommission = null;
+      let totalAmountForValidation = 0;
       if (bills && bills.length > 0) {
         const bill = bills[0];
         const settings = await storage.getSettings();
         const adminCommissionPercentage = settings?.adminCommissionPercentage || 20;
-        const totalAmount = parseFloat(bill.total_amount);
-        adminCommission = (totalAmount * (adminCommissionPercentage / 100)).toFixed(2);
-        driverAmount = (totalAmount - parseFloat(adminCommission)).toFixed(2);
+        totalAmountForValidation = parseFloat(bill.total_amount);
+        adminCommission = (totalAmountForValidation * (adminCommissionPercentage / 100)).toFixed(2);
+        driverAmount = (totalAmountForValidation - parseFloat(adminCommission)).toFixed(2);
+      }
+
+      // Verificar se empresa pode fazer entrega (saldo para PRE_PAGO)
+      if (originalRequest.companyId && totalAmountForValidation > 0) {
+        const canRequest = await canCompanyRequestDelivery(originalRequest.companyId, totalAmountForValidation);
+        if (!canRequest.allowed) {
+          console.log(`❌ Empresa ${originalRequest.companyId} não pode relançar entrega (admin): ${canRequest.reason}`);
+          return res.status(402).json({
+            message: canRequest.reason || "Saldo insuficiente para relançar esta entrega",
+            code: "INSUFFICIENT_BALANCE"
+          });
+        }
       }
 
       // Criar nova entrega
@@ -9385,6 +10329,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         WHERE available = true
           AND approve = true
           AND active = true
+          AND (deliveries_blocked = false OR deliveries_blocked IS NULL)
           AND fcm_token IS NOT NULL
           AND latitude IS NOT NULL
           AND longitude IS NOT NULL
@@ -10106,6 +11051,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
         pixKey, // Chave PIX para receber pagamentos
         pixKeyType, // Tipo da chave PIX
       });
+
+      // Criar wallet para o motorista
+      console.log("💰 Criando wallet para o motorista...");
+      try {
+        await storage.createWallet({
+          ownerId: driver.id,
+          ownerType: "driver",
+          availableBalance: "0.00",
+          blockedBalance: "0.00",
+          status: "active",
+        });
+        console.log("✅ Wallet criada para motorista:", driver.name);
+      } catch (walletError) {
+        console.error("⚠️ Erro ao criar wallet (motorista criado com sucesso):", walletError);
+        // Não falha o registro, apenas loga o erro
+      }
 
       // Se foi indicado por alguém, criar registro na tabela de indicações
       if (referrerDriver) {
@@ -12917,6 +13878,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
               completedAt: new Date(),
             });
 
+            // Processar split de pagamento (wallet)
+            try {
+              const splitResult = await processDeliverySplit(deliveryId);
+              console.log(`💰 Split processado para entrega ${deliveryId}:`, splitResult);
+            } catch (splitError) {
+              console.error(`❌ Erro ao processar split da entrega ${deliveryId}:`, splitError);
+              // Não falha a requisição, apenas loga o erro
+            }
+
             // Verificar e atualizar indicações de empresas (se aplicável)
             if (request.companyId) {
               const { updateCompanyReferralProgress } = await import("./utils/referralUtils.js");
@@ -13108,6 +14078,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
           isCompleted: true,
           completedAt: new Date(),
         });
+
+        // Processar split de pagamento (wallet)
+        try {
+          const splitResult = await processDeliverySplit(deliveryId);
+          console.log(`💰 Split processado para entrega ${deliveryId}:`, splitResult);
+        } catch (splitError) {
+          console.error(`❌ Erro ao processar split da entrega ${deliveryId}:`, splitError);
+          // Não falha a requisição, apenas loga o erro
+        }
 
         // Verificar e atualizar indicações de empresas (se aplicável)
         if (request.companyId) {
@@ -13385,6 +14364,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Incrementar contador APENAS se não estava completada antes
       if (!wasAlreadyCompleted) {
+        // Processar split de pagamento (wallet)
+        try {
+          const splitResult = await processDeliverySplit(deliveryId);
+          console.log(`💰 Split processado para entrega ${deliveryId}:`, splitResult);
+        } catch (splitError) {
+          console.error(`❌ Erro ao processar split da entrega ${deliveryId}:`, splitError);
+          // Não falha a requisição, apenas loga o erro
+        }
+
         // Verificar e atualizar indicações de empresas (se aplicável)
         if (request.companyId) {
           const { updateCompanyReferralProgress } = await import("./utils/referralUtils.js");
@@ -13507,6 +14495,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Incrementar contador APENAS se não estava completada antes
       if (!wasAlreadyCompleted) {
+        // Processar split de pagamento (wallet)
+        try {
+          const splitResult = await processDeliverySplit(deliveryId);
+          console.log(`💰 Split processado para entrega ${deliveryId}:`, splitResult);
+        } catch (splitError) {
+          console.error(`❌ Erro ao processar split da entrega ${deliveryId}:`, splitError);
+          // Não falha a requisição, apenas loga o erro
+        }
+
         // Verificar e atualizar indicações de empresas (se aplicável)
         if (request.companyId) {
           const { updateCompanyReferralProgress } = await import("./utils/referralUtils.js");
@@ -14637,6 +15634,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({
         success: false,
         message: "Erro ao buscar FAQs"
+      });
+    }
+  });
+
+  // GET /api/public/cities - Listar cidades disponíveis para cadastro (público)
+  app.get("/api/public/cities", async (req, res) => {
+    try {
+      const cities = await db
+        .select({
+          id: serviceLocations.id,
+          name: serviceLocations.name,
+          state: serviceLocations.state,
+        })
+        .from(serviceLocations)
+        .where(eq(serviceLocations.active, true))
+        .orderBy(serviceLocations.name);
+
+      return res.json({
+        success: true,
+        data: cities
+      });
+    } catch (error) {
+      console.error("Erro ao buscar cidades:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Erro ao buscar cidades"
       });
     }
   });
@@ -16357,6 +17380,1048 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Erro ao registrar resposta:", error);
       return res.status(500).json({ message: "Erro ao registrar resposta" });
+    }
+  });
+
+  // ========================================
+  // WALLET - APIs de Carteira
+  // ========================================
+
+  // Importações dos serviços de wallet
+  const { getCompanyWallet, getDriverWallet, getWalletStatement } = await import("./services/wallet/walletService");
+  const { createPixRecharge, createBoletoRecharge, getCompanyCharges } = await import("./services/wallet/rechargeService");
+  const { canCompanyRequestDelivery } = await import("./services/wallet/deliverySplitService");
+  const { requestWithdrawal, getDriverWithdrawals, canWithdrawToday } = await import("./services/wallet/withdrawalService");
+  const { handleAsaasWebhook } = await import("./services/wallet/webhookHandler");
+
+  // GET /api/empresa/wallet - Saldo e dados da wallet da empresa
+  app.get("/api/empresa/wallet", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const wallet = await getCompanyWallet(req.session.companyId);
+
+      return res.json({
+        id: wallet.id,
+        availableBalance: wallet.availableBalance,
+        blockedBalance: wallet.blockedBalance,
+        status: wallet.status,
+      });
+    } catch (error) {
+      console.error("Erro ao buscar wallet:", error);
+      return res.status(500).json({ message: "Erro ao buscar carteira" });
+    }
+  });
+
+  // GET /api/empresa/wallet/statement - Extrato da wallet
+  app.get("/api/empresa/wallet/statement", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const wallet = await getCompanyWallet(req.session.companyId);
+      const { limit = "50", offset = "0" } = req.query;
+
+      const transactions = await getWalletStatement(wallet.id, {
+        limit: parseInt(limit as string),
+        offset: parseInt(offset as string),
+      });
+
+      return res.json({ transactions });
+    } catch (error) {
+      console.error("Erro ao buscar extrato:", error);
+      return res.status(500).json({ message: "Erro ao buscar extrato" });
+    }
+  });
+
+  // POST /api/empresa/wallet/recharge - Recarga unificada (PIX ou Boleto)
+  app.post("/api/empresa/wallet/recharge", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { amount, paymentMethod = "PIX" } = req.body;
+
+      if (!amount || amount < 50) {
+        return res.status(400).json({ message: "Valor mínimo de recarga é R$ 50,00" });
+      }
+
+      let result;
+      if (paymentMethod === "BOLETO") {
+        result = await createBoletoRecharge(req.session.companyId, amount);
+        return res.json({
+          charge: {
+            id: result.charge.id,
+            amount: result.charge.amount,
+            status: result.charge.status,
+            paymentMethod: "BOLETO",
+            boletoUrl: result.boleto.url,
+            boletoBarcode: result.boleto.digitableLine,
+          },
+        });
+      } else {
+        result = await createPixRecharge(req.session.companyId, amount);
+        return res.json({
+          charge: {
+            id: result.charge.id,
+            amount: result.charge.amount,
+            status: result.charge.status,
+            paymentMethod: "PIX",
+            pixQrCode: result.pix.qrCodeBase64,
+            pixCopyPaste: result.pix.copyPaste,
+          },
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao gerar recarga";
+      console.error("Erro ao gerar recarga:", error);
+      return res.status(400).json({ message });
+    }
+  });
+
+  // POST /api/empresa/wallet/recharge/pix - Recarga via PIX
+  app.post("/api/empresa/wallet/recharge/pix", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { amount } = req.body;
+
+      if (!amount || amount < 50) {
+        return res.status(400).json({ message: "Valor mínimo de recarga é R$ 50,00" });
+      }
+
+      const result = await createPixRecharge(req.session.companyId, amount);
+
+      return res.json({
+        chargeId: result.charge.id,
+        amount: result.charge.amount,
+        status: result.charge.status,
+        pix: result.pix,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao gerar recarga";
+      console.error("Erro ao gerar recarga PIX:", error);
+      return res.status(400).json({ message });
+    }
+  });
+
+  // POST /api/empresa/wallet/recharge/boleto - Recarga via Boleto
+  app.post("/api/empresa/wallet/recharge/boleto", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { amount } = req.body;
+
+      if (!amount || amount < 50) {
+        return res.status(400).json({ message: "Valor mínimo de recarga é R$ 50,00" });
+      }
+
+      const result = await createBoletoRecharge(req.session.companyId, amount);
+
+      return res.json({
+        chargeId: result.charge.id,
+        amount: result.charge.amount,
+        status: result.charge.status,
+        boleto: result.boleto,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao gerar recarga";
+      console.error("Erro ao gerar recarga Boleto:", error);
+      return res.status(400).json({ message });
+    }
+  });
+
+  // GET /api/empresa/wallet/charges - Lista cobranças
+  app.get("/api/empresa/wallet/charges", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { limit = "20" } = req.query;
+      const charges = await getCompanyCharges(req.session.companyId, {
+        limit: parseInt(limit as string),
+      });
+
+      return res.json({ charges });
+    } catch (error) {
+      console.error("Erro ao buscar cobranças:", error);
+      return res.status(500).json({ message: "Erro ao buscar cobranças" });
+    }
+  });
+
+  // GET /api/empresa/boletos - Lista boletos semanais da empresa
+  app.get("/api/empresa/boletos", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { status } = req.query;
+
+      // Buscar charges do tipo weekly
+      const allCharges = await storage.getChargesByCompany(req.session.companyId, 100);
+
+      // Filtrar apenas boletos semanais
+      let weeklyCharges = allCharges.filter(c => c.chargeType === "weekly");
+
+      // Aplicar filtro de status se fornecido
+      if (status && status !== "all") {
+        const statusMap: Record<string, string[]> = {
+          open: ["pending", "waiting_payment"],
+          paid: ["confirmed"],
+          overdue: ["overdue"],
+        };
+        const targetStatuses = statusMap[status as string] || [];
+        weeklyCharges = weeklyCharges.filter(c => targetStatuses.includes(c.status));
+      }
+
+      // Formatar para o frontend
+      const boletos = weeklyCharges.map(charge => {
+        const metadata = charge.metadata as Record<string, unknown> | null;
+        const deliveriesCount = (metadata?.deliveriesCount as number) || 0;
+
+        // Formatar período
+        const periodStart = charge.periodStart ? new Date(charge.periodStart).toLocaleDateString("pt-BR") : "";
+        const periodEnd = charge.periodEnd ? new Date(charge.periodEnd).toLocaleDateString("pt-BR") : "";
+        const periodo = periodStart && periodEnd ? `${periodStart} a ${periodEnd}` : "";
+
+        // Mapear status
+        let frontendStatus: "open" | "paid" | "overdue" = "open";
+        if (charge.status === "confirmed") {
+          frontendStatus = "paid";
+        } else if (charge.status === "overdue") {
+          frontendStatus = "overdue";
+        }
+
+        return {
+          id: charge.id,
+          periodo,
+          dataEmissao: new Date(charge.createdAt).toLocaleDateString("pt-BR"),
+          dataVencimento: new Date(charge.dueDate).toLocaleDateString("pt-BR"),
+          valor: parseFloat(charge.amount),
+          totalEntregas: deliveriesCount,
+          status: frontendStatus,
+          codigoBarras: charge.boletoBarcode,
+          linhaDigitavel: charge.boletoDigitableLine,
+          pdfUrl: charge.boletoUrl,
+          pixCopyPaste: charge.pixCopyPaste,
+          pixQrCodeUrl: charge.pixQrCodeUrl,
+        };
+      });
+
+      return res.json(boletos);
+    } catch (error) {
+      console.error("Erro ao buscar boletos:", error);
+      return res.status(500).json({ message: "Erro ao buscar boletos" });
+    }
+  });
+
+  // GET /api/empresa/wallet/can-request - Verifica se pode solicitar entrega
+  app.get("/api/empresa/wallet/can-request", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { estimatedAmount = "0" } = req.query;
+      const result = await canCompanyRequestDelivery(
+        req.session.companyId,
+        parseFloat(estimatedAmount as string)
+      );
+
+      return res.json(result);
+    } catch (error) {
+      console.error("Erro ao verificar permissão:", error);
+      return res.status(500).json({ message: "Erro ao verificar permissão" });
+    }
+  });
+
+  // ========================================
+  // WALLET - APIs do Motorista
+  // ========================================
+
+  // Helper para validar driver ID
+  const validateDriverId = (driverId: string | undefined): { valid: boolean; error?: string } => {
+    if (!driverId || driverId === "null" || driverId === "undefined" || driverId.trim() === "") {
+      return { valid: false, error: "Driver ID não fornecido ou inválido" };
+    }
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(driverId)) {
+      return { valid: false, error: "Driver ID com formato inválido" };
+    }
+    return { valid: true };
+  };
+
+  // GET /api/v1/driver/wallet - Saldo e dados da wallet do motorista
+  app.get("/api/v1/driver/wallet", async (req, res) => {
+    try {
+      // Pega o driverId do header (app mobile envia assim)
+      const driverId = req.headers["driver-id"] as string;
+
+      // Validação robusta do driver ID
+      if (!driverId || driverId === "null" || driverId === "undefined" || driverId.trim() === "") {
+        return res.status(401).json({ success: false, message: "Driver ID não fornecido ou inválido" });
+      }
+
+      // Validar formato UUID
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(driverId)) {
+        return res.status(400).json({ success: false, message: "Driver ID inválido" });
+      }
+
+      const wallet = await getDriverWallet(driverId);
+      const canWithdraw = await canWithdrawToday(driverId);
+
+      // Buscar dados do motorista para retornar chave PIX
+      const driver = await storage.getDriver(driverId);
+
+      // Log detalhado para debug
+      console.log(`💳 Wallet request for driver ${driverId}:`);
+      console.log(`   Balance: R$ ${wallet.availableBalance}`);
+      console.log(`   Can withdraw: ${canWithdraw.allowed}`);
+      console.log(`   Withdraw reason: ${canWithdraw.reason || "none"}`);
+      console.log(`   PIX key: ${driver?.pixKey || "not set"}`);
+      console.log(`   PIX key type: ${driver?.pixKeyType || "not set"}`);
+
+      return res.json({
+        success: true,
+        data: {
+          id: wallet.id,
+          availableBalance: wallet.availableBalance,
+          blockedBalance: wallet.blockedBalance,
+          status: wallet.status,
+          canWithdrawToday: canWithdraw.allowed,
+          withdrawMessage: canWithdraw.reason,
+          // Dados da chave PIX
+          pixKey: driver?.pixKey || null,
+          pixKeyType: driver?.pixKeyType || null,
+          hasPixKey: !!(driver?.pixKey && driver?.pixKeyType),
+        },
+      });
+    } catch (error) {
+      console.error("Erro ao buscar wallet:", error);
+      return res.status(500).json({ success: false, message: "Erro ao buscar carteira" });
+    }
+  });
+
+  // GET /api/v1/driver/wallet/statement - Extrato do motorista
+  app.get("/api/v1/driver/wallet/statement", async (req, res) => {
+    try {
+      const driverId = req.headers["driver-id"] as string;
+      const validation = validateDriverId(driverId);
+      if (!validation.valid) {
+        return res.status(401).json({ success: false, message: validation.error });
+      }
+
+      const wallet = await getDriverWallet(driverId);
+      const { limit = "50", offset = "0" } = req.query;
+
+      const transactions = await getWalletStatement(wallet.id, {
+        limit: parseInt(limit as string),
+        offset: parseInt(offset as string),
+      });
+
+      return res.json({ success: true, data: { transactions } });
+    } catch (error) {
+      console.error("Erro ao buscar extrato:", error);
+      return res.status(500).json({ success: false, message: "Erro ao buscar extrato" });
+    }
+  });
+
+  // POST /api/v1/driver/wallet/withdraw - Solicitar saque
+  app.post("/api/v1/driver/wallet/withdraw", async (req, res) => {
+    try {
+      const driverId = req.headers["driver-id"] as string;
+      const validation = validateDriverId(driverId);
+      if (!validation.valid) {
+        return res.status(401).json({ success: false, message: validation.error });
+      }
+
+      const { amount, pixKey, pixKeyType } = req.body;
+
+      if (!amount) {
+        return res.status(400).json({ success: false, message: "Valor é obrigatório" });
+      }
+
+      const withdrawal = await requestWithdrawal(
+        driverId,
+        parseFloat(amount),
+        pixKey && pixKeyType ? { key: pixKey, keyType: pixKeyType } : undefined
+      );
+
+      return res.json({
+        success: true,
+        message: "Saque solicitado com sucesso",
+        data: {
+          id: withdrawal.id,
+          amount: withdrawal.amount,
+          netAmount: withdrawal.netAmount,
+          fee: withdrawal.fee,
+          status: withdrawal.status,
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao solicitar saque";
+      console.error("Erro ao solicitar saque:", error);
+      return res.status(400).json({ success: false, message });
+    }
+  });
+
+  // GET /api/v1/driver/wallet/withdrawals - Lista saques do motorista
+  app.get("/api/v1/driver/wallet/withdrawals", async (req, res) => {
+    try {
+      const driverId = req.headers["driver-id"] as string;
+      const validation = validateDriverId(driverId);
+      if (!validation.valid) {
+        return res.status(401).json({ success: false, message: validation.error });
+      }
+
+      const { limit = "20" } = req.query;
+      const withdrawals = await getDriverWithdrawals(driverId, {
+        limit: parseInt(limit as string),
+      });
+
+      return res.json({ success: true, data: { withdrawals } });
+    } catch (error) {
+      console.error("Erro ao buscar saques:", error);
+      return res.status(500).json({ success: false, message: "Erro ao buscar saques" });
+    }
+  });
+
+  // GET /api/v1/driver/wallet/pending-earnings - Ganhos pendentes de liberação
+  app.get("/api/v1/driver/wallet/pending-earnings", async (req, res) => {
+    try {
+      const driverId = req.headers["driver-id"] as string;
+      const validation = validateDriverId(driverId);
+      if (!validation.valid) {
+        return res.status(401).json({ success: false, message: validation.error });
+      }
+
+      // Buscar entregas não processadas do motorista
+      const pendingDeliveries = await db
+        .select({
+          id: deliveryFinancials.id,
+          requestId: deliveryFinancials.requestId,
+          intermunicipalDeliveryId: deliveryFinancials.intermunicipalDeliveryId,
+          companyId: deliveryFinancials.companyId,
+          driverAmount: deliveryFinancials.driverAmount,
+          totalAmount: deliveryFinancials.totalAmount,
+          chargeId: deliveryFinancials.chargeId,
+          createdAt: deliveryFinancials.createdAt,
+          companyName: companies.name,
+          companyPaymentType: companies.paymentType,
+        })
+        .from(deliveryFinancials)
+        .innerJoin(companies, eq(companies.id, deliveryFinancials.companyId))
+        .where(
+          and(
+            eq(deliveryFinancials.driverId, driverId),
+            eq(deliveryFinancials.processed, false)
+          )
+        )
+        .orderBy(desc(deliveryFinancials.createdAt));
+
+      // Calcular total a liberar
+      const totalPending = pendingDeliveries.reduce(
+        (sum, d) => sum + parseFloat(d.driverAmount),
+        0
+      );
+
+      // Agrupar por empresa para mostrar resumo
+      const byCompany: Record<string, {
+        companyId: string;
+        companyName: string;
+        paymentType: string;
+        count: number;
+        total: number;
+        chargeId: string | null;
+        chargeStatus?: string;
+        chargeDueDate?: string;
+      }> = {};
+
+      for (const delivery of pendingDeliveries) {
+        if (!byCompany[delivery.companyId]) {
+          byCompany[delivery.companyId] = {
+            companyId: delivery.companyId,
+            companyName: delivery.companyName,
+            paymentType: delivery.companyPaymentType || "PRE_PAGO",
+            count: 0,
+            total: 0,
+            chargeId: delivery.chargeId,
+          };
+        }
+        byCompany[delivery.companyId].count++;
+        byCompany[delivery.companyId].total += parseFloat(delivery.driverAmount);
+      }
+
+      // Buscar informações das cobranças (para empresas pós-pago)
+      const companySummaries = await Promise.all(
+        Object.values(byCompany).map(async (company) => {
+          let estimatedReleaseDate: string | null = null;
+          let chargeStatus: string | null = null;
+
+          if (company.chargeId) {
+            // Buscar dados da cobrança
+            const charge = await storage.getCharge(company.chargeId);
+            if (charge) {
+              chargeStatus = charge.status;
+              // Se já tem cobrança, a data de liberação é quando a empresa pagar
+              if (charge.status === "waiting_payment") {
+                estimatedReleaseDate = `Aguardando pagamento (vence ${new Date(charge.dueDate).toLocaleDateString("pt-BR")})`;
+              } else if (charge.status === "overdue") {
+                estimatedReleaseDate = "Cobrança vencida - aguardando pagamento";
+              }
+            }
+          } else if (company.paymentType === "BOLETO") {
+            // Empresa pós-pago sem cobrança gerada ainda
+            // Próximo domingo é quando será gerado o boleto
+            const today = new Date();
+            const dayOfWeek = today.getDay();
+            const daysUntilSunday = dayOfWeek === 0 ? 7 : 7 - dayOfWeek;
+            const nextSunday = new Date(today);
+            nextSunday.setDate(today.getDate() + daysUntilSunday);
+            estimatedReleaseDate = `Boleto será gerado em ${nextSunday.toLocaleDateString("pt-BR")}`;
+          }
+
+          return {
+            ...company,
+            chargeStatus,
+            estimatedReleaseDate,
+          };
+        })
+      );
+
+      // Buscar número do pedido para cada entrega
+      const deliveriesWithDetails = await Promise.all(
+        pendingDeliveries.slice(0, 20).map(async (delivery) => {
+          let requestNumber: string | null = null;
+
+          if (delivery.requestId) {
+            const [request] = await db
+              .select({ requestNumber: requests.requestNumber })
+              .from(requests)
+              .where(eq(requests.id, delivery.requestId))
+              .limit(1);
+            requestNumber = request?.requestNumber || null;
+          }
+
+          return {
+            id: delivery.id,
+            requestId: delivery.requestId,
+            requestNumber,
+            intermunicipalDeliveryId: delivery.intermunicipalDeliveryId,
+            companyName: delivery.companyName,
+            driverAmount: delivery.driverAmount,
+            createdAt: delivery.createdAt,
+          };
+        })
+      );
+
+      return res.json({
+        success: true,
+        data: {
+          totalPending: totalPending.toFixed(2),
+          totalDeliveries: pendingDeliveries.length,
+          byCompany: companySummaries,
+          recentDeliveries: deliveriesWithDetails,
+          message: totalPending > 0
+            ? `Você tem R$ ${totalPending.toFixed(2)} a receber de ${pendingDeliveries.length} entrega(s)`
+            : "Você não tem ganhos pendentes no momento",
+        },
+      });
+    } catch (error) {
+      console.error("Erro ao buscar ganhos pendentes:", error);
+      return res.status(500).json({ success: false, message: "Erro ao buscar ganhos pendentes" });
+    }
+  });
+
+  // ========================================
+  // WEBHOOK - Asaas
+  // ========================================
+
+  // POST /api/empresa/wallet/charges/:chargeId/confirm - Confirmar pagamento manualmente (para testes)
+  app.post("/api/empresa/wallet/charges/:chargeId/confirm", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { chargeId } = req.params;
+      const { confirmRechargePayment } = await import("./services/wallet/rechargeService");
+      const { confirmWeeklyPayment } = await import("./services/wallet/weeklyClosingService");
+
+      // Buscar a cobrança
+      const charge = await storage.getCharge(chargeId);
+      if (!charge) {
+        return res.status(404).json({ message: "Cobrança não encontrada" });
+      }
+
+      // Verificar se pertence à empresa
+      if (charge.companyId !== req.session.companyId) {
+        return res.status(403).json({ message: "Acesso negado" });
+      }
+
+      const paymentData = {
+        paidAt: new Date(),
+        netValue: parseFloat(charge.amount),
+        asaasData: { manualConfirmation: true },
+      };
+
+      let result;
+      if (charge.chargeType === "weekly") {
+        // Cobrança semanal - credita entregadores
+        result = await confirmWeeklyPayment(chargeId, paymentData);
+        return res.json({
+          success: true,
+          message: `Fechamento semanal processado: ${result.deliveriesProcessed} entregas creditadas`,
+          charge: result.charge,
+          deliveriesProcessed: result.deliveriesProcessed,
+        });
+      } else {
+        // Recarga de wallet
+        result = await confirmRechargePayment(chargeId, paymentData);
+
+        // Emitir evento via Socket.IO
+        const io = (app as any).io;
+        if (io) {
+          io.to(`company-${req.session.companyId}`).emit(`payment:confirmed:${req.session.companyId}`, {
+            chargeId,
+            value: parseFloat(charge.amount),
+            newBalance: result.charge ? parseFloat(charge.amount) : 0,
+          });
+        }
+
+        return res.json({
+          success: true,
+          message: result.credited ? "Pagamento confirmado e saldo creditado" : "Pagamento já havia sido confirmado",
+          charge: result.charge,
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao confirmar pagamento";
+      console.error("Erro ao confirmar pagamento manualmente:", error);
+      return res.status(400).json({ message });
+    }
+  });
+
+  // POST /api/admin/charges/:chargeId/confirm - Confirmar pagamento manualmente (admin)
+  app.post("/api/admin/charges/:chargeId/confirm", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { chargeId } = req.params;
+      const { confirmRechargePayment } = await import("./services/wallet/rechargeService");
+      const { confirmWeeklyPayment } = await import("./services/wallet/weeklyClosingService");
+
+      // Buscar a cobrança
+      const charge = await storage.getCharge(chargeId);
+      if (!charge) {
+        return res.status(404).json({ message: "Cobrança não encontrada" });
+      }
+
+      console.log(`🔧 Confirmação manual de cobrança ${chargeId} (tipo: ${charge.chargeType})`);
+
+      const paymentData = {
+        paidAt: new Date(),
+        netValue: parseFloat(charge.amount),
+        asaasData: { manualConfirmation: true, confirmedBy: req.session.userId },
+      };
+
+      if (charge.chargeType === "weekly") {
+        // Cobrança semanal - credita entregadores
+        const result = await confirmWeeklyPayment(chargeId, paymentData);
+        return res.json({
+          success: true,
+          message: `Fechamento semanal processado: ${result.deliveriesProcessed} entregas creditadas`,
+          charge: result.charge,
+          deliveriesProcessed: result.deliveriesProcessed,
+        });
+      } else if (charge.chargeType === "recharge") {
+        // Recarga de wallet
+        const result = await confirmRechargePayment(chargeId, paymentData);
+        return res.json({
+          success: true,
+          message: result.credited ? "Recarga confirmada e saldo creditado" : "Recarga já havia sido confirmada",
+          charge: result.charge,
+        });
+      } else {
+        return res.status(400).json({ message: `Tipo de cobrança não suportado: ${charge.chargeType}` });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao confirmar pagamento";
+      console.error("Erro ao confirmar pagamento manualmente:", error);
+      return res.status(400).json({ message });
+    }
+  });
+
+  // GET /api/admin/charges/:chargeId - Detalhes da cobrança (admin)
+  app.get("/api/admin/charges/:chargeId", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { chargeId } = req.params;
+      const charge = await storage.getCharge(chargeId);
+
+      if (!charge) {
+        return res.status(404).json({ message: "Cobrança não encontrada" });
+      }
+
+      // Buscar entregas vinculadas se for cobrança semanal
+      let linkedDeliveries: any[] = [];
+      if (charge.chargeType === "weekly") {
+        linkedDeliveries = await db
+          .select()
+          .from(deliveryFinancials)
+          .where(eq(deliveryFinancials.chargeId, chargeId));
+      }
+
+      return res.json({
+        success: true,
+        charge,
+        linkedDeliveries: linkedDeliveries.map(d => ({
+          id: d.id,
+          requestId: d.requestId,
+          driverId: d.driverId,
+          driverAmount: d.driverAmount,
+          processed: d.processed,
+          processedAt: d.processedAt,
+        })),
+        summary: {
+          totalDeliveries: linkedDeliveries.length,
+          processedDeliveries: linkedDeliveries.filter(d => d.processed).length,
+          pendingDeliveries: linkedDeliveries.filter(d => !d.processed).length,
+          totalDriverAmount: linkedDeliveries.reduce((sum, d) => sum + parseFloat(d.driverAmount), 0),
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao buscar cobrança";
+      console.error("Erro ao buscar cobrança:", error);
+      return res.status(500).json({ message });
+    }
+  });
+
+  // GET /api/admin/wallets/duplicates - Encontrar wallets duplicadas
+  app.get("/api/admin/wallets/duplicates", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { wallets } = await import("@shared/schema");
+
+      // Buscar todas as wallets
+      const allWallets = await db.select().from(wallets);
+
+      // Agrupar por ownerId + ownerType
+      const groups: Record<string, typeof allWallets> = {};
+      for (const wallet of allWallets) {
+        const key = `${wallet.ownerId}:${wallet.ownerType}`;
+        if (!groups[key]) {
+          groups[key] = [];
+        }
+        groups[key].push(wallet);
+      }
+
+      // Encontrar duplicatas
+      const duplicates = Object.entries(groups)
+        .filter(([_, walletList]) => walletList.length > 1)
+        .map(([key, walletList]) => ({
+          key,
+          ownerId: walletList[0].ownerId,
+          ownerType: walletList[0].ownerType,
+          wallets: walletList.map(w => ({
+            id: w.id,
+            availableBalance: w.availableBalance,
+            blockedBalance: w.blockedBalance,
+            createdAt: w.createdAt,
+          })),
+        }));
+
+      return res.json({
+        success: true,
+        totalWallets: allWallets.length,
+        duplicatesFound: duplicates.length,
+        duplicates,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao buscar duplicatas";
+      console.error("Erro ao buscar duplicatas:", error);
+      return res.status(500).json({ message });
+    }
+  });
+
+  // POST /api/admin/wallets/merge-duplicates/:ownerId - Mesclar wallets duplicadas
+  app.post("/api/admin/wallets/merge-duplicates/:ownerId", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { ownerId } = req.params;
+      const { ownerType } = req.body;
+      const { wallets, walletTransactions } = await import("@shared/schema");
+
+      // Buscar todas as wallets deste owner
+      const ownerWallets = await db
+        .select()
+        .from(wallets)
+        .where(and(eq(wallets.ownerId, ownerId), eq(wallets.ownerType, ownerType || "driver")));
+
+      if (ownerWallets.length <= 1) {
+        return res.json({
+          success: true,
+          message: "Nenhuma duplicata encontrada para este owner",
+          wallets: ownerWallets,
+        });
+      }
+
+      console.log(`🔧 Mesclando ${ownerWallets.length} wallets duplicadas para ${ownerId}`);
+
+      // Calcular saldo total
+      let totalAvailable = 0;
+      let totalBlocked = 0;
+      for (const w of ownerWallets) {
+        totalAvailable += parseFloat(w.availableBalance);
+        totalBlocked += parseFloat(w.blockedBalance);
+      }
+
+      // Manter a wallet mais antiga (primeira criada)
+      const sortedWallets = ownerWallets.sort((a, b) =>
+        new Date(a.createdAt!).getTime() - new Date(b.createdAt!).getTime()
+      );
+      const primaryWallet = sortedWallets[0];
+      const walletsToDelete = sortedWallets.slice(1);
+
+      // Mover todas as transações para a wallet primária
+      for (const wallet of walletsToDelete) {
+        await db
+          .update(walletTransactions)
+          .set({ walletId: primaryWallet.id })
+          .where(eq(walletTransactions.walletId, wallet.id));
+
+        console.log(`   Transações movidas de ${wallet.id} para ${primaryWallet.id}`);
+      }
+
+      // Atualizar saldo da wallet primária
+      await db
+        .update(wallets)
+        .set({
+          availableBalance: totalAvailable.toFixed(2),
+          blockedBalance: totalBlocked.toFixed(2),
+          updatedAt: new Date(),
+        })
+        .where(eq(wallets.id, primaryWallet.id));
+
+      // Deletar wallets duplicadas
+      for (const wallet of walletsToDelete) {
+        await db.delete(wallets).where(eq(wallets.id, wallet.id));
+        console.log(`   Wallet duplicada deletada: ${wallet.id}`);
+      }
+
+      console.log(`✅ Mesclagem concluída. Wallet final: ${primaryWallet.id} com saldo R$ ${totalAvailable.toFixed(2)}`);
+
+      return res.json({
+        success: true,
+        message: `${walletsToDelete.length} wallets duplicadas mescladas`,
+        primaryWallet: {
+          id: primaryWallet.id,
+          availableBalance: totalAvailable.toFixed(2),
+          blockedBalance: totalBlocked.toFixed(2),
+        },
+        deletedWallets: walletsToDelete.map(w => w.id),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao mesclar wallets";
+      console.error("Erro ao mesclar wallets:", error);
+      return res.status(500).json({ message });
+    }
+  });
+
+  // GET /api/admin/driver/:driverId/wallet-debug - Debug da wallet do motorista
+  app.get("/api/admin/driver/:driverId/wallet-debug", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { driverId } = req.params;
+      const { walletTransactions } = await import("@shared/schema");
+
+      // Buscar motorista
+      const driver = await storage.getDriver(driverId);
+      if (!driver) {
+        return res.status(404).json({ message: "Motorista não encontrado" });
+      }
+
+      // Buscar wallet
+      const wallet = await getDriverWallet(driverId);
+
+      // Buscar transações da wallet
+      const transactions = await db
+        .select()
+        .from(walletTransactions)
+        .where(eq(walletTransactions.walletId, wallet.id))
+        .orderBy(desc(walletTransactions.createdAt))
+        .limit(50);
+
+      // Buscar registros financeiros de entregas
+      const driverFinancials = await db
+        .select()
+        .from(deliveryFinancials)
+        .where(eq(deliveryFinancials.driverId, driverId))
+        .orderBy(desc(deliveryFinancials.createdAt))
+        .limit(20);
+
+      return res.json({
+        success: true,
+        driver: {
+          id: driver.id,
+          name: driver.name,
+          email: driver.email,
+        },
+        wallet: {
+          id: wallet.id,
+          availableBalance: wallet.availableBalance,
+          blockedBalance: wallet.blockedBalance,
+          status: wallet.status,
+        },
+        transactions: transactions.map(t => ({
+          id: t.id,
+          type: t.type,
+          amount: t.amount,
+          description: t.description,
+          createdAt: t.createdAt,
+        })),
+        deliveryFinancials: driverFinancials.map(df => ({
+          id: df.id,
+          requestId: df.requestId,
+          companyId: df.companyId,
+          driverAmount: df.driverAmount,
+          processed: df.processed,
+          processedAt: df.processedAt,
+          chargeId: df.chargeId,
+          driverCreditTransactionId: df.driverCreditTransactionId,
+          createdAt: df.createdAt,
+        })),
+        summary: {
+          totalTransactions: transactions.length,
+          totalCredits: transactions.filter(t => t.type === 'delivery_credit').reduce((sum, t) => sum + parseFloat(t.amount), 0),
+          totalDebits: transactions.filter(t => t.type === 'withdrawal').reduce((sum, t) => sum + parseFloat(t.amount), 0),
+          pendingDeliveries: driverFinancials.filter(df => !df.processed).length,
+          processedDeliveries: driverFinancials.filter(df => df.processed).length,
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao buscar dados";
+      console.error("Erro ao buscar debug da wallet:", error);
+      return res.status(500).json({ message });
+    }
+  });
+
+  // GET /api/admin/company/:companyId/wallet-debug - Debug da wallet da empresa
+  app.get("/api/admin/company/:companyId/wallet-debug", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { companyId } = req.params;
+      const { walletTransactions } = await import("@shared/schema");
+
+      // Buscar empresa
+      const company = await storage.getCompany(companyId);
+      if (!company) {
+        return res.status(404).json({ message: "Empresa não encontrada" });
+      }
+
+      // Buscar wallet
+      const wallet = await getCompanyWallet(companyId);
+
+      // Buscar transações da wallet
+      const transactions = await db
+        .select()
+        .from(walletTransactions)
+        .where(eq(walletTransactions.walletId, wallet.id))
+        .orderBy(desc(walletTransactions.createdAt))
+        .limit(50);
+
+      // Buscar registros financeiros de entregas
+      const companyFinancials = await db
+        .select()
+        .from(deliveryFinancials)
+        .where(eq(deliveryFinancials.companyId, companyId))
+        .orderBy(desc(deliveryFinancials.createdAt))
+        .limit(20);
+
+      return res.json({
+        success: true,
+        company: {
+          id: company.id,
+          name: company.name,
+          email: company.email,
+          paymentType: company.paymentType,
+        },
+        wallet: {
+          id: wallet.id,
+          availableBalance: wallet.availableBalance,
+          blockedBalance: wallet.blockedBalance,
+          status: wallet.status,
+        },
+        transactions: transactions.map(t => ({
+          id: t.id,
+          type: t.type,
+          amount: t.amount,
+          description: t.description,
+          createdAt: t.createdAt,
+        })),
+        deliveryFinancials: companyFinancials.map(df => ({
+          id: df.id,
+          requestId: df.requestId,
+          driverId: df.driverId,
+          totalAmount: df.totalAmount,
+          driverAmount: df.driverAmount,
+          commissionAmount: df.commissionAmount,
+          processed: df.processed,
+          chargeId: df.chargeId,
+          createdAt: df.createdAt,
+        })),
+        message: company.paymentType === "PRE_PAGO"
+          ? "Empresa PRE_PAGO: precisa ter saldo para entregas serem processadas"
+          : "Empresa BOLETO: entregas ficam pendentes até pagamento do boleto",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao buscar dados";
+      console.error("Erro ao buscar debug da wallet:", error);
+      return res.status(500).json({ message });
+    }
+  });
+
+  // POST /api/webhooks/asaas - Webhook do Asaas
+  app.post("/api/webhooks/asaas", async (req, res) => {
+    try {
+      console.log("📨 Webhook Asaas recebido:", req.body.event);
+
+      const result = await handleAsaasWebhook(req.body, req.headers as Record<string, unknown>);
+
+      // Sempre retorna 200 para o Asaas não ficar retentando
+      return res.status(200).json({ received: true, ...result });
+    } catch (error) {
+      console.error("Erro no webhook Asaas:", error);
+      // Mesmo com erro, retorna 200 para evitar retentativas
+      return res.status(200).json({ received: true, error: "Erro interno" });
     }
   });
 

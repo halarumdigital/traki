@@ -99,17 +99,17 @@ export default function EmpresaDashboard() {
     queryKey: ["/api/empresa/auth/me"],
   });
 
-  // Buscar saldo da empresa
-  const { data: balanceData, refetch: refetchBalance, isLoading: isLoadingBalance } = useQuery({
-    queryKey: ["/api/financial/company/balance"],
+  // Buscar saldo da wallet da empresa
+  const { data: walletData, refetch: refetchBalance, isLoading: isLoadingBalance } = useQuery({
+    queryKey: ["/api/empresa/wallet"],
     queryFn: async () => {
-      const response = await fetch("/api/financial/company/balance", {
+      const response = await fetch("/api/empresa/wallet", {
         credentials: "include",
       });
       if (!response.ok) throw new Error("Erro ao buscar saldo");
       return response.json();
     },
-    refetchInterval: 60000,
+    refetchInterval: 30000,
   });
 
   // Buscar estatísticas do dashboard
@@ -210,18 +210,28 @@ export default function EmpresaDashboard() {
                     <Skeleton className="h-8 w-32" />
                   ) : (
                     <p className="text-2xl font-bold text-green-600 dark:text-green-400">
-                      {balanceData ? formatCurrency(balanceData.balance) : "R$ 0,00"}
+                      {walletData ? formatCurrency(parseFloat(walletData.availableBalance || "0")) : "R$ 0,00"}
                     </p>
                   )}
                 </div>
               </div>
-              <Button
-                onClick={handleRecharge}
-                className="bg-green-600 hover:bg-green-700 text-white"
-              >
-                <CreditCard className="h-4 w-4 mr-2" />
-                Recarregar
-              </Button>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Button
+                  onClick={handleRecharge}
+                  className="bg-green-600 hover:bg-green-700 text-white"
+                >
+                  <CreditCard className="h-4 w-4 mr-2" />
+                  Recarregar
+                </Button>
+                <Button
+                  onClick={() => setLocation("/empresa/entregas/em-andamento")}
+                  className="bg-blue-600 hover:bg-blue-700 text-white relative overflow-hidden"
+                >
+                  <span className="absolute inset-0 bg-white/20 animate-pulse rounded-md"></span>
+                  <Package className="h-4 w-4 mr-2" />
+                  NOVA ENTREGA
+                </Button>
+              </div>
             </div>
           </CardContent>
         </Card>

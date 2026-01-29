@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
-import { Eye, EyeOff, Lock, Mail, Loader2, User as UserIcon, Check, X, Phone, Building2, Wallet, Tag, MapPin } from "lucide-react";
+import { Eye, EyeOff, Lock, Mail, Loader2, User as UserIcon, Check, X, Phone, Building2, Tag, MapPin } from "lucide-react";
 import { useLocation, Link } from "wouter";
 
 const registerSchema = z.object({
@@ -24,14 +24,12 @@ const registerSchema = z.object({
   responsibleName: z.string().optional().or(z.literal("")),
   responsibleWhatsapp: z.string().optional().or(z.literal("")),
   responsibleEmail: z.string().email("Email do responsável inválido").optional().or(z.literal("")),
-  pixKeyType: z.enum(["EMAIL", "CPF", "CNPJ", "PHONE", "EVP"]).optional(),
-  pixKey: z.string().optional().or(z.literal("")),
   street: z.string().optional().or(z.literal("")),
   number: z.string().optional().or(z.literal("")),
   complement: z.string().optional().or(z.literal("")),
   neighborhood: z.string().optional().or(z.literal("")),
   cep: z.string().optional().or(z.literal("")),
-  city: z.string().optional().or(z.literal("")),
+  city: z.string().min(1, "Selecione uma cidade"),
   state: z.string().optional().or(z.literal("")),
   referralCode: z.string().optional().or(z.literal("")),
   password: z.string().min(8, "Senha deve ter pelo menos 8 caracteres"),
@@ -50,6 +48,12 @@ interface RegisterResponse {
     name: string;
     email: string;
   };
+}
+
+interface City {
+  id: string;
+  name: string;
+  state: string;
 }
 
 const calculatePasswordStrength = (password: string): number => {
@@ -113,8 +117,6 @@ export default function Register() {
       responsibleName: "",
       responsibleWhatsapp: "",
       responsibleEmail: "",
-      pixKeyType: undefined,
-      pixKey: "",
       street: "",
       number: "",
       complement: "",
@@ -129,6 +131,29 @@ export default function Register() {
   });
 
   const [cnpjLoading, setCnpjLoading] = useState(false);
+
+  // Buscar cidades disponíveis
+  const { data: citiesData } = useQuery<{ success: boolean; data: City[] }>({
+    queryKey: ["/api/public/cities"],
+    queryFn: async () => {
+      const res = await fetch("/api/public/cities");
+      if (!res.ok) throw new Error("Erro ao buscar cidades");
+      return res.json();
+    },
+  });
+
+  const cities = citiesData?.data || [];
+
+  // Atualizar estado automaticamente quando cidade é selecionada
+  const selectedCity = form.watch("city");
+  useEffect(() => {
+    if (selectedCity) {
+      const city = cities.find((c) => c.name === selectedCity);
+      if (city) {
+        form.setValue("state", city.state);
+      }
+    }
+  }, [selectedCity, cities, form]);
 
   const lookupCnpj = async (cnpj: string) => {
     const cleanCnpj = cnpj.replace(/\D/g, "");
@@ -146,8 +171,7 @@ export default function Register() {
       if (data.complemento) form.setValue("complement", data.complemento);
       if (data.cep) form.setValue("cep", data.cep);
       if (data.bairro) form.setValue("neighborhood", data.bairro);
-      if (data.municipio) form.setValue("city", data.municipio);
-      if (data.uf) form.setValue("state", data.uf);
+      // Cidade e estado são selecionados manualmente
 
       toast({
         title: "CNPJ encontrado!",
@@ -358,7 +382,7 @@ export default function Register() {
                   Endereço
                 </h3>
                 <p className="text-sm text-muted-foreground">
-                  O endereço é preenchido automaticamente ao informar o CNPJ
+                  Parte do endereço é preenchida automaticamente ao informar o CNPJ. Selecione a cidade manualmente.
                 </p>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -433,15 +457,26 @@ export default function Register() {
 
                   <div className="space-y-2">
                     <Label htmlFor="city" className="text-sm font-medium">
-                      Cidade
+                      Cidade *
                     </Label>
-                    <Input
+                    <select
                       id="city"
-                      placeholder="Cidade"
-                      className="h-12 text-base border-2 transition-all duration-200"
                       {...form.register("city")}
+                      className="flex h-12 w-full rounded-md border-2 border-input bg-background px-3 py-2 text-base ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200"
                       disabled={registerMutation.isPending}
-                    />
+                    >
+                      <option value="">Selecione a cidade</option>
+                      {cities.map((city) => (
+                        <option key={city.id} value={city.name}>
+                          {city.name} - {city.state}
+                        </option>
+                      ))}
+                    </select>
+                    {form.formState.errors.city && (
+                      <p className="text-sm font-medium text-destructive mt-2">
+                        {form.formState.errors.city.message}
+                      </p>
+                    )}
                   </div>
 
                   <div className="space-y-2">
@@ -452,9 +487,10 @@ export default function Register() {
                       id="state"
                       placeholder="UF"
                       maxLength={2}
-                      className="h-12 text-base border-2 transition-all duration-200 uppercase"
+                      className="h-12 text-base border-2 transition-all duration-200 uppercase bg-muted"
                       {...form.register("state")}
-                      disabled={registerMutation.isPending}
+                      disabled={true}
+                      readOnly
                     />
                   </div>
                 </div>
@@ -535,61 +571,6 @@ export default function Register() {
                     {form.formState.errors.responsibleEmail && (
                       <p className="text-sm font-medium text-destructive mt-2">
                         {form.formState.errors.responsibleEmail.message}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Dados PIX */}
-              <div className="space-y-4">
-                <h3 className="text-lg font-semibold flex items-center gap-2">
-                  <Wallet className="h-5 w-5" />
-                  Dados PIX
-                </h3>
-                <p className="text-sm text-muted-foreground">
-                  Configure uma chave PIX para recarregar a sua conta
-                </p>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="pixKeyType" className="text-sm font-medium">
-                      Tipo de Chave PIX
-                    </Label>
-                    <select
-                      id="pixKeyType"
-                      {...form.register("pixKeyType")}
-                      className="flex h-12 w-full rounded-md border-2 border-input bg-background px-3 py-2 text-base ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 transition-all duration-200"
-                      disabled={registerMutation.isPending}
-                    >
-                      <option value="">Selecione o tipo (opcional)</option>
-                      <option value="EMAIL">Email</option>
-                      <option value="CPF">CPF</option>
-                      <option value="CNPJ">CNPJ</option>
-                      <option value="PHONE">Telefone</option>
-                      <option value="EVP">Chave Aleatória</option>
-                    </select>
-                    {form.formState.errors.pixKeyType && (
-                      <p className="text-sm font-medium text-destructive mt-2">
-                        {form.formState.errors.pixKeyType.message}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="pixKey" className="text-sm font-medium">
-                      Chave PIX
-                    </Label>
-                    <Input
-                      id="pixKey"
-                      placeholder="Digite sua chave PIX"
-                      className="h-12 text-base border-2 transition-all duration-200"
-                      {...form.register("pixKey")}
-                      disabled={registerMutation.isPending}
-                    />
-                    {form.formState.errors.pixKey && (
-                      <p className="text-sm font-medium text-destructive mt-2">
-                        {form.formState.errors.pixKey.message}
                       </p>
                     )}
                   </div>

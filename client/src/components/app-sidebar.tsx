@@ -116,6 +116,27 @@ const menuItems = [
     icon: DollarSign,
   },
   {
+    title: "Financeiro",
+    icon: DollarSign,
+    items: [
+      {
+        title: "Carteira",
+        url: "/financeiro",
+        icon: DollarSign,
+      },
+      {
+        title: "Saques",
+        url: "/financeiro/saques",
+        icon: DollarSign,
+      },
+      {
+        title: "Boletos",
+        url: "/financeiro/boletos",
+        icon: DollarSign,
+      },
+    ],
+  },
+  {
     title: "Motoristas",
     icon: UserCog,
     items: [

@@ -29,7 +29,10 @@ import {
   ChevronRight,
   RotateCcw,
   Package,
-  XCircle as XCircleIcon
+  XCircle as XCircleIcon,
+  Wallet,
+  AlertCircle,
+  RefreshCw
 } from "lucide-react";
 import { useState, useMemo, useEffect } from "react";
 import {
@@ -39,6 +42,16 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
@@ -81,6 +94,8 @@ export default function EmpresaEntregasCanceladas() {
   const [, setLocation] = useLocation();
   const [selectedDelivery, setSelectedDelivery] = useState<Delivery | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [insufficientBalanceOpen, setInsufficientBalanceOpen] = useState(false);
+  const [balanceErrorDetails, setBalanceErrorDetails] = useState<{ available: string; required: string } | null>(null);
 
   // Filtros
   const [searchOrderNumber, setSearchOrderNumber] = useState("");
@@ -124,9 +139,23 @@ export default function EmpresaEntregasCanceladas() {
       setLocation("/empresa/entregas/em-andamento");
     },
     onError: (error: Error) => {
+      const errorMessage = error.message || "";
+
+      // Se for erro de saldo insuficiente, abre o modal
+      if (errorMessage.includes("402") || errorMessage.toLowerCase().includes("saldo")) {
+        const availableMatch = errorMessage.match(/Disponível: R\$ ([\d.,]+)/);
+        const requiredMatch = errorMessage.match(/Necessário: R\$ ([\d.,]+)/);
+        setBalanceErrorDetails({
+          available: availableMatch ? availableMatch[1] : "0,00",
+          required: requiredMatch ? requiredMatch[1] : "0,00",
+        });
+        setInsufficientBalanceOpen(true);
+        return;
+      }
+
       toast({
         title: "Erro ao relançar",
-        description: error.message,
+        description: errorMessage,
         variant: "destructive",
       });
     },
@@ -698,6 +727,58 @@ export default function EmpresaEntregasCanceladas() {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Modal de Saldo Insuficiente */}
+      <AlertDialog open={insufficientBalanceOpen} onOpenChange={setInsufficientBalanceOpen}>
+        <AlertDialogContent className="max-w-md">
+          <AlertDialogHeader className="text-center sm:text-center">
+            <div className="mx-auto w-16 h-16 bg-orange-100 rounded-full flex items-center justify-center mb-4">
+              <Wallet className="h-8 w-8 text-orange-600" />
+            </div>
+            <AlertDialogTitle className="text-xl">Saldo Insuficiente</AlertDialogTitle>
+            <AlertDialogDescription className="text-center space-y-4">
+              <p className="text-muted-foreground">
+                Seu saldo atual não é suficiente para relançar esta entrega.
+              </p>
+
+              {balanceErrorDetails && (
+                <div className="bg-muted rounded-lg p-4 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-muted-foreground">Saldo disponível:</span>
+                    <span className="font-semibold text-red-600">R$ {balanceErrorDetails.available}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-muted-foreground">Valor necessário:</span>
+                    <span className="font-semibold">R$ {balanceErrorDetails.required}</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mt-4">
+                <p className="text-sm text-blue-800 flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 flex-shrink-0" />
+                  Recarga mínima: <strong>R$ 50,00</strong>
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-col sm:flex-col gap-2 mt-4">
+            <AlertDialogAction
+              onClick={() => {
+                setInsufficientBalanceOpen(false);
+                setLocation("/empresa/carteira");
+              }}
+              className="w-full bg-green-600 hover:bg-green-700"
+            >
+              <Wallet className="mr-2 h-4 w-4" />
+              Recarregar Agora
+            </AlertDialogAction>
+            <AlertDialogCancel className="w-full mt-0">
+              Voltar
+            </AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

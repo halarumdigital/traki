@@ -11,7 +11,8 @@ import {
   RefreshCw,
   CreditCard,
   Copy,
-  ExternalLink
+  ExternalLink,
+  Building2
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -44,6 +45,8 @@ import { useToast } from "@/hooks/use-toast";
 
 interface Boleto {
   id: string;
+  empresaId: string;
+  empresaNome: string;
   periodo: string;
   dataEmissao: string;
   dataVencimento: string;
@@ -57,16 +60,25 @@ interface Boleto {
   pixQrCodeUrl?: string;
 }
 
-export default function EmpresaFinanceiro() {
+interface BoletosResponse {
+  boletos: Boleto[];
+  totals: {
+    emAberto: number;
+    atrasado: number;
+    pago: number;
+  };
+}
+
+export default function AdminBoletos() {
   const [statusFiltro, setStatusFiltro] = useState<string>("all");
   const [selectedBoleto, setSelectedBoleto] = useState<Boleto | null>(null);
   const { toast } = useToast();
 
-  // Buscar boletos semanais da empresa
-  const { data: boletos, isLoading, refetch } = useQuery<Boleto[]>({
-    queryKey: ["/api/empresa/boletos", statusFiltro],
+  // Buscar boletos semanais de todas as empresas
+  const { data, isLoading, refetch } = useQuery<BoletosResponse>({
+    queryKey: ["/api/admin/boletos", statusFiltro],
     queryFn: async () => {
-      const response = await fetch(`/api/empresa/boletos?status=${statusFiltro}`, {
+      const response = await fetch(`/api/admin/boletos?status=${statusFiltro}`, {
         credentials: "include",
       });
       if (!response.ok) throw new Error("Erro ao buscar boletos");
@@ -111,8 +123,8 @@ export default function EmpresaFinanceiro() {
   };
 
   const filteredBoletos = statusFiltro === "all"
-    ? boletos
-    : boletos?.filter(b => b.status === statusFiltro) || [];
+    ? data?.boletos
+    : data?.boletos?.filter(b => b.status === statusFiltro) || [];
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -122,12 +134,7 @@ export default function EmpresaFinanceiro() {
     });
   };
 
-  // Calcular totais
-  const totals = {
-    emAberto: boletos?.filter(b => b.status === "open").reduce((sum, b) => sum + b.valor, 0) || 0,
-    atrasado: boletos?.filter(b => b.status === "overdue").reduce((sum, b) => sum + b.valor, 0) || 0,
-    pago: boletos?.filter(b => b.status === "paid").reduce((sum, b) => sum + b.valor, 0) || 0,
-  };
+  const totals = data?.totals || { emAberto: 0, atrasado: 0, pago: 0 };
 
   return (
     <ScrollArea className="h-full">
@@ -137,10 +144,10 @@ export default function EmpresaFinanceiro() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
               <DollarSign className="h-6 w-6" />
-              Financeiro
+              Financeiro - Boletos
             </h1>
             <p className="text-muted-foreground mt-1">
-              Gerencie seus boletos semanais e pagamentos
+              Boletos semanais de todas as empresas
             </p>
           </div>
           <Button variant="outline" size="sm" onClick={() => refetch()}>
@@ -194,7 +201,7 @@ export default function EmpresaFinanceiro() {
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
                 <CardTitle className="text-base font-medium">Boletos Semanais</CardTitle>
-                <CardDescription>Lista de boletos gerados por semana</CardDescription>
+                <CardDescription>Lista de boletos gerados por semana de todas as empresas</CardDescription>
               </div>
               <Select value={statusFiltro} onValueChange={setStatusFiltro}>
                 <SelectTrigger className="w-[180px]">
@@ -221,7 +228,8 @@ export default function EmpresaFinanceiro() {
               <Table>
                 <TableHeader>
                   <TableRow className="bg-muted/50">
-                    <TableHead className="font-semibold pl-6">Período</TableHead>
+                    <TableHead className="font-semibold pl-6">Empresa</TableHead>
+                    <TableHead className="font-semibold">Período</TableHead>
                     <TableHead className="font-semibold">Data Emissão</TableHead>
                     <TableHead className="font-semibold">Vencimento</TableHead>
                     <TableHead className="font-semibold text-center">Total Entregas</TableHead>
@@ -233,7 +241,13 @@ export default function EmpresaFinanceiro() {
                 <TableBody>
                   {filteredBoletos.map((boleto) => (
                     <TableRow key={boleto.id} className="hover:bg-muted/30 transition-colors">
-                      <TableCell className="pl-6 font-medium">
+                      <TableCell className="pl-6">
+                        <div className="flex items-center gap-2">
+                          <Building2 className="h-4 w-4 text-muted-foreground" />
+                          <span className="font-medium">{boleto.empresaNome}</span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="font-medium">
                         {boleto.periodo}
                       </TableCell>
                       <TableCell>
@@ -269,7 +283,7 @@ export default function EmpresaFinanceiro() {
                               onClick={() => setSelectedBoleto(boleto)}
                             >
                               <CreditCard className="mr-1 h-4 w-4" />
-                              Pagar
+                              Ver
                             </Button>
                           )}
                           {boleto.pdfUrl && (
@@ -300,7 +314,7 @@ export default function EmpresaFinanceiro() {
                 <p className="text-sm text-muted-foreground/70 max-w-sm">
                   {statusFiltro !== "all"
                     ? `Não há boletos com status "${statusFiltro === "open" ? "em aberto" : statusFiltro === "paid" ? "pago" : "atrasado"}"`
-                    : "Não há boletos gerados para sua empresa ainda"}
+                    : "Não há boletos gerados ainda"}
                 </p>
               </div>
             )}
@@ -315,8 +329,8 @@ export default function EmpresaFinanceiro() {
               <div>
                 <p className="text-sm font-medium text-amber-900">Sobre os Boletos</p>
                 <p className="text-sm text-amber-700/80 mt-1">
-                  Os boletos são gerados semanalmente com base nas entregas realizadas.
-                  O pagamento deve ser feito até a data de vencimento para evitar juros e multas.
+                  Os boletos são gerados semanalmente com base nas entregas realizadas por cada empresa.
+                  Boletos atrasados podem gerar juros e multas.
                 </p>
               </div>
             </div>
@@ -324,13 +338,13 @@ export default function EmpresaFinanceiro() {
         </Card>
       </div>
 
-      {/* Modal de Pagamento */}
+      {/* Modal de Detalhes */}
       <Dialog open={!!selectedBoleto} onOpenChange={(open) => !open && setSelectedBoleto(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Pagar Boleto</DialogTitle>
+            <DialogTitle>Detalhes do Boleto</DialogTitle>
             <DialogDescription>
-              Período: {selectedBoleto?.periodo}
+              {selectedBoleto?.empresaNome} - {selectedBoleto?.periodo}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">

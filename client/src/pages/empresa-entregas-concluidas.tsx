@@ -427,7 +427,25 @@ export default function EmpresaEntregasConcluidas() {
                       {delivery.requestNumber || delivery.id.substring(0, 8)}
                     </TableCell>
                     <TableCell>
-                      <div className="font-medium text-slate-900">{delivery.customerName || "-"}</div>
+                      {delivery.customerName && (
+                        <div className="font-medium text-slate-900">{delivery.customerName}</div>
+                      )}
+                      <div className="text-xs text-slate-500 truncate max-w-[200px]" title={delivery.dropoffAddress}>
+                        {(() => {
+                          // Pegar apenas o primeiro endereço se houver múltiplos
+                          let address = delivery.dropoffAddress.split(" | ")[0];
+                          // Remover [nome do cliente], [WhatsApp: xxx], [Ref: xxx]
+                          address = address.replace(/\[WhatsApp:\s*[^\]]+\]\s*/gi, '');
+                          address = address.replace(/\[Ref:\s*[^\]]+\]\s*/gi, '');
+                          address = address.replace(/^\[[^\]]+\]\s*/, '');
+                          // Pegar apenas rua e número (antes da primeira vírgula após o número)
+                          const parts = address.trim().split(',');
+                          if (parts.length >= 2) {
+                            return `${parts[0].trim()}, ${parts[1].trim()}`;
+                          }
+                          return parts[0].trim();
+                        })()}
+                      </div>
                     </TableCell>
                     <TableCell>
                       {delivery.driverName ? (

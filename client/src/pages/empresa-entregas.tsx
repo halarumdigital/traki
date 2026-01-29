@@ -29,13 +29,23 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Accordion,
   AccordionContent,
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Eye, Clock, User, DollarSign, Package, MapPin, Loader2, X, RefreshCw, Ban, Phone, Info } from "lucide-react";
+import { Plus, Eye, Clock, User, DollarSign, Package, MapPin, Loader2, X, RefreshCw, Ban, Phone, Info, Wallet, AlertCircle } from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
@@ -106,6 +116,16 @@ export default function EmpresaEntregas() {
   const [newDeliveryOpen, setNewDeliveryOpen] = useState(false);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [deliveryToCancel, setDeliveryToCancel] = useState<Delivery | null>(null);
+  const [insufficientBalanceOpen, setInsufficientBalanceOpen] = useState(false);
+  const [balanceErrorDetails, setBalanceErrorDetails] = useState<{ available: string; required: string } | null>(null);
+
+  // Debug: Monitorar mudanças no estado do modal
+  useEffect(() => {
+    console.log("🔵 ESTADO DO MODAL MUDOU:", { insufficientBalanceOpen, balanceErrorDetails });
+    if (insufficientBalanceOpen) {
+      console.log("🟢🟢🟢 MODAL DEVERIA ESTAR ABERTO AGORA! 🟢🟢🟢");
+    }
+  }, [insufficientBalanceOpen, balanceErrorDetails]);
 
   // Form state
   const [deliveryForm, setDeliveryForm] = useState({
@@ -537,11 +557,19 @@ export default function EmpresaEntregas() {
       setNewDeliveryOpen(false);
     },
     onError: (error: any) => {
-      toast({
-        variant: "destructive",
-        title: "Erro ao criar entrega",
-        description: error.message || "Ocorreu um erro ao criar a entrega.",
+      const errorMessage = error?.message || String(error) || "";
+
+      // Extrai valores se possível
+      const availableMatch = errorMessage.match(/Disponível: R\$ ([\d.,]+)/);
+      const requiredMatch = errorMessage.match(/Necessário: R\$ ([\d.,]+)/);
+
+      // SEMPRE abre o modal de saldo para qualquer erro (teste)
+      setNewDeliveryOpen(false);
+      setBalanceErrorDetails({
+        available: availableMatch ? availableMatch[1] : "0,00",
+        required: requiredMatch ? requiredMatch[1] : "0,00",
       });
+      setInsufficientBalanceOpen(true);
     },
   });
 
@@ -557,10 +585,28 @@ export default function EmpresaEntregas() {
       });
     },
     onError: (error: any) => {
+      const errorMessage = error?.message || String(error) || "";
+
+      // Extrai valores se possível
+      const availableMatch = errorMessage.match(/Disponível: R\$ ([\d.,]+)/);
+      const requiredMatch = errorMessage.match(/Necessário: R\$ ([\d.,]+)/);
+
+      // Se for erro 402 (saldo insuficiente), abre o modal
+      if (errorMessage.includes("402") || errorMessage.toLowerCase().includes("saldo")) {
+        // Define os detalhes e abre o modal de saldo insuficiente
+        setBalanceErrorDetails({
+          available: availableMatch ? availableMatch[1] : "0,00",
+          required: requiredMatch ? requiredMatch[1] : "0,00",
+        });
+        setInsufficientBalanceOpen(true);
+        return;
+      }
+
+      // Para outros erros, mostra toast
       toast({
         variant: "destructive",
         title: "Erro ao relançar entrega",
-        description: error.message || "Ocorreu um erro ao relançar a entrega.",
+        description: "Ocorreu um erro ao relançar a entrega.",
       });
     },
   });
@@ -860,29 +906,7 @@ export default function EmpresaEntregas() {
   };
 
   const handleSubmitDelivery = async () => {
-    // VERSÃO 3.0 - FORÇAR ATUALIZAÇÃO
-    const timestamp = new Date().toISOString();
-    window.alert(`⚠️ VERSÃO 3.0 - TIMESTAMP: ${timestamp}\n\nDADOS DOS PONTOS:\n\n${deliveryPoints.map((p, i) =>
-      `📍 Ponto ${i+1}:\n` +
-      `  Nome: ${p.customerName || '❌ VAZIO'}\n` +
-      `  WhatsApp: ${p.customerWhatsapp || '❌ VAZIO'}\n` +
-      `  Referência: ${p.reference || '❌ VAZIO'}\n` +
-      `  Endereço: ${p.address || '❌ VAZIO'}`
-    ).join('\n\n')}\n\n⚠️ Se você viu este popup com timestamp, o código foi atualizado!`);
-
-    // Log no console também
-    console.error(`🔴🔴🔴 VERSÃO 3.0 DO CÓDIGO - TIMESTAMP: ${timestamp} 🔴🔴🔴`);
-    console.log('🚀 ====== SUBMIT INICIADO ======');
-    console.log('📋 Estado COMPLETO de deliveryPoints:', JSON.stringify(deliveryPoints, null, 2));
-    console.log('🔍 Verificando campos importantes:');
-    deliveryPoints.forEach((point, idx) => {
-      console.log(`   Ponto ${idx + 1}:`, {
-        customerName: point.customerName,
-        customerWhatsapp: point.customerWhatsapp,
-        reference: point.reference,
-        address: point.address
-      });
-    });
+    console.log('🚀 Submit entrega iniciado');
 
     // Validation
     const hasDeliveryPoint = deliveryPoints.some(point => point.address);
@@ -1751,32 +1775,6 @@ export default function EmpresaEntregas() {
                   )}
                 </Button>
               </div>
-
-              {/* Botões de Ação */}
-              <div className="flex gap-2 pt-4 border-t">
-                <Button
-                  variant="outline"
-                  onClick={() => setNewDeliveryOpen(false)}
-                  disabled={createDeliveryMutation.isPending}
-                  className="flex-1 h-9"
-                >
-                  Cancelar
-                </Button>
-                <Button
-                  onClick={handleSubmitDelivery}
-                  disabled={createDeliveryMutation.isPending}
-                  className="flex-1 h-9"
-                >
-                  {createDeliveryMutation.isPending ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Criando...
-                    </>
-                  ) : (
-                    "Criar Entrega"
-                  )}
-                </Button>
-              </div>
             </div>
 
             {/* Right Side - Map */}
@@ -1847,6 +1845,58 @@ export default function EmpresaEntregas() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Modal de Saldo Insuficiente */}
+      <AlertDialog open={insufficientBalanceOpen} onOpenChange={setInsufficientBalanceOpen}>
+        <AlertDialogContent className="max-w-md">
+          <AlertDialogHeader className="text-center sm:text-center">
+            <div className="mx-auto w-16 h-16 bg-orange-100 rounded-full flex items-center justify-center mb-4">
+              <Wallet className="h-8 w-8 text-orange-600" />
+            </div>
+            <AlertDialogTitle className="text-xl">Saldo Insuficiente</AlertDialogTitle>
+            <AlertDialogDescription className="text-center space-y-4">
+              <p className="text-muted-foreground">
+                Seu saldo atual não é suficiente para realizar esta entrega.
+              </p>
+
+              {balanceErrorDetails && (
+                <div className="bg-muted rounded-lg p-4 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-muted-foreground">Saldo disponível:</span>
+                    <span className="font-semibold text-red-600">R$ {balanceErrorDetails.available}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-muted-foreground">Valor necessário:</span>
+                    <span className="font-semibold">R$ {balanceErrorDetails.required}</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mt-4">
+                <p className="text-sm text-blue-800 flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 flex-shrink-0" />
+                  Recarga mínima: <strong>R$ 50,00</strong>
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-col sm:flex-col gap-2 mt-4">
+            <AlertDialogAction
+              onClick={() => {
+                setInsufficientBalanceOpen(false);
+                window.location.href = "/empresa/carteira";
+              }}
+              className="w-full bg-green-600 hover:bg-green-700"
+            >
+              <Wallet className="mr-2 h-4 w-4" />
+              Recarregar Agora
+            </AlertDialogAction>
+            <AlertDialogCancel className="w-full mt-0">
+              Voltar
+            </AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

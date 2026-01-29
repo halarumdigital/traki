@@ -45,7 +45,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Pencil, Trash2, Plus, Eye, Ban, MessageSquare, Search, Users, UserCheck, Star, Circle, DollarSign, TrendingUp, MapPin, ArrowUpDown, ArrowUp, ArrowDown, Wallet, ArrowDownToLine, ArrowUpFromLine, CreditCard, Key } from "lucide-react";
+import { Pencil, Trash2, Plus, Eye, Ban, MessageSquare, Search, Users, UserCheck, Star, Circle, DollarSign, TrendingUp, MapPin, ArrowUpDown, ArrowUp, ArrowDown, Wallet, ArrowDownToLine, ArrowUpFromLine, CreditCard, Key, PackageX, PackageCheck } from "lucide-react";
 import { useForm } from "react-hook-form";
 import type { VehicleType, Brand, VehicleModel } from "@shared/schema";
 
@@ -68,6 +68,7 @@ type Driver = {
   available: boolean;
   rating: number | string | null;
   serviceLocationId: string;
+  deliveriesBlocked?: boolean;
 };
 
 type FormData = {
@@ -244,6 +245,8 @@ export default function MotoristasAtivos() {
   const [newComment, setNewComment] = useState("");
   const [blockReason, setBlockReason] = useState("");
   const [showBlockDialog, setShowBlockDialog] = useState(false);
+  const [blockDeliveriesReason, setBlockDeliveriesReason] = useState("");
+  const [showBlockDeliveriesDialog, setShowBlockDeliveriesDialog] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
 
   // Filtrar modelos baseado na marca selecionada
@@ -527,6 +530,82 @@ export default function MotoristasAtivos() {
     },
   });
 
+  const blockDeliveriesMutation = useMutation({
+    mutationFn: async ({ driverId, reason }: { driverId: string; reason: string }) => {
+      const response = await fetch(`/api/drivers/${driverId}/block-deliveries`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Erro ao bloquear entregas");
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/drivers"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/drivers", viewingDriver?.id, "notes"] });
+      // Atualizar o viewingDriver para refletir o bloqueio
+      if (viewingDriver) {
+        setViewingDriver({ ...viewingDriver, deliveriesBlocked: true });
+      }
+      toast({
+        title: "Sucesso",
+        description: "Entregas bloqueadas com sucesso",
+      });
+      setShowBlockDeliveriesDialog(false);
+      setBlockDeliveriesReason("");
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Erro",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const unblockDeliveriesMutation = useMutation({
+    mutationFn: async ({ driverId, reason }: { driverId: string; reason: string }) => {
+      const response = await fetch(`/api/drivers/${driverId}/unblock-deliveries`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.message || "Erro ao desbloquear entregas");
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/drivers"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/drivers", viewingDriver?.id, "notes"] });
+      // Atualizar o viewingDriver para refletir o desbloqueio
+      if (viewingDriver) {
+        setViewingDriver({ ...viewingDriver, deliveriesBlocked: false });
+      }
+      toast({
+        title: "Sucesso",
+        description: "Entregas desbloqueadas com sucesso",
+      });
+      setShowBlockDeliveriesDialog(false);
+      setBlockDeliveriesReason("");
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Erro",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleOpenDialog = (driver?: Driver) => {
     if (driver) {
       setEditingDriver(driver);
@@ -608,6 +687,16 @@ export default function MotoristasAtivos() {
   const handleBlockDriver = () => {
     if (!viewingDriver) return;
     blockMutation.mutate({ driverId: viewingDriver.id, reason: blockReason });
+  };
+
+  const handleBlockDeliveries = () => {
+    if (!viewingDriver) return;
+    blockDeliveriesMutation.mutate({ driverId: viewingDriver.id, reason: blockDeliveriesReason });
+  };
+
+  const handleUnblockDeliveries = () => {
+    if (!viewingDriver) return;
+    unblockDeliveriesMutation.mutate({ driverId: viewingDriver.id, reason: blockDeliveriesReason });
   };
 
   return (
@@ -1063,6 +1152,33 @@ export default function MotoristasAtivos() {
                       {serviceLocations.find((l: any) => l.id === viewingDriver.serviceLocationId)?.name || "-"}
                     </p>
                   </div>
+                  <div>
+                    <Label className="text-muted-foreground flex items-center gap-1">
+                      <Key className="h-3 w-3" />
+                      Chave PIX
+                    </Label>
+                    <p className="font-medium">
+                      {driverFinancial?.pixKey || "-"}
+                    </p>
+                    {driverFinancial?.pixKeyType && (
+                      <p className="text-xs text-muted-foreground">
+                        Tipo: {driverFinancial.pixKeyType}
+                      </p>
+                    )}
+                  </div>
+                  <div>
+                    <Label className="text-muted-foreground flex items-center gap-1">
+                      {viewingDriver.deliveriesBlocked ? (
+                        <PackageX className="h-3 w-3 text-orange-600" />
+                      ) : (
+                        <PackageCheck className="h-3 w-3 text-green-600" />
+                      )}
+                      Status de Entregas
+                    </Label>
+                    <p className={`font-medium ${viewingDriver.deliveriesBlocked ? "text-orange-600" : "text-green-600"}`}>
+                      {viewingDriver.deliveriesBlocked ? "Entregas Bloqueadas" : "Recebendo Entregas"}
+                    </p>
+                  </div>
                 </div>
               </div>
 
@@ -1204,6 +1320,10 @@ export default function MotoristasAtivos() {
                             ? "border-red-300 bg-red-50"
                             : note.noteType === "unblock"
                             ? "border-green-300 bg-green-50"
+                            : note.noteType === "block_deliveries"
+                            ? "border-orange-300 bg-orange-50"
+                            : note.noteType === "unblock_deliveries"
+                            ? "border-teal-300 bg-teal-50"
                             : "border-gray-200"
                         }`}
                       >
@@ -1216,6 +1336,10 @@ export default function MotoristasAtivos() {
                                   ? "bg-red-600 text-white"
                                   : note.noteType === "unblock"
                                   ? "bg-green-600 text-white"
+                                  : note.noteType === "block_deliveries"
+                                  ? "bg-orange-600 text-white"
+                                  : note.noteType === "unblock_deliveries"
+                                  ? "bg-teal-600 text-white"
                                   : note.noteType === "warning"
                                   ? "bg-yellow-600 text-white"
                                   : "bg-gray-600 text-white"
@@ -1225,6 +1349,10 @@ export default function MotoristasAtivos() {
                                 ? "Bloqueio"
                                 : note.noteType === "unblock"
                                 ? "Desbloqueio"
+                                : note.noteType === "block_deliveries"
+                                ? "Bloqueio de Entregas"
+                                : note.noteType === "unblock_deliveries"
+                                ? "Desbloqueio de Entregas"
                                 : note.noteType === "warning"
                                 ? "Aviso"
                                 : "Comentário"}
@@ -1599,15 +1727,36 @@ export default function MotoristasAtivos() {
               </TabsContent>
             </Tabs>
           )}
-          <DialogFooter className="flex justify-between">
-            <Button
-              variant="destructive"
-              onClick={() => setShowBlockDialog(true)}
-              disabled={!viewingDriver?.active}
-            >
-              <Ban className="mr-2 h-4 w-4" />
-              Bloquear Motorista
-            </Button>
+          <DialogFooter className="flex flex-col sm:flex-row gap-2 sm:justify-between">
+            <div className="flex flex-col sm:flex-row gap-2">
+              <Button
+                variant="destructive"
+                onClick={() => setShowBlockDialog(true)}
+                disabled={!viewingDriver?.active}
+              >
+                <Ban className="mr-2 h-4 w-4" />
+                Bloquear Motorista
+              </Button>
+              {viewingDriver?.deliveriesBlocked ? (
+                <Button
+                  variant="outline"
+                  className="border-green-600 text-green-600 hover:bg-green-50"
+                  onClick={() => setShowBlockDeliveriesDialog(true)}
+                >
+                  <PackageCheck className="mr-2 h-4 w-4" />
+                  Desbloquear Entregas
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  className="border-orange-600 text-orange-600 hover:bg-orange-50"
+                  onClick={() => setShowBlockDeliveriesDialog(true)}
+                >
+                  <PackageX className="mr-2 h-4 w-4" />
+                  Bloquear Entregas
+                </Button>
+              )}
+            </div>
             <Button variant="outline" onClick={handleCloseViewDialog}>
               Fechar
             </Button>
@@ -1646,6 +1795,59 @@ export default function MotoristasAtivos() {
             >
               {blockMutation.isPending ? "Bloqueando..." : "Bloquear"}
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Dialog de confirmação de bloqueio/desbloqueio de entregas */}
+      <AlertDialog open={showBlockDeliveriesDialog} onOpenChange={setShowBlockDeliveriesDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {viewingDriver?.deliveriesBlocked ? "Desbloquear Entregas" : "Bloquear Entregas"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {viewingDriver?.deliveriesBlocked
+                ? `Tem certeza que deseja desbloquear as entregas do motorista "${viewingDriver?.name}"? Ele voltará a receber entregas normalmente.`
+                : `Tem certeza que deseja bloquear as entregas do motorista "${viewingDriver?.name}"? Ele poderá continuar usando o aplicativo normalmente, mas nenhuma entrega será atribuída a ele.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="my-4">
+            <Label htmlFor="blockDeliveriesReason">
+              {viewingDriver?.deliveriesBlocked ? "Motivo do desbloqueio" : "Motivo do bloqueio"}
+            </Label>
+            <Textarea
+              id="blockDeliveriesReason"
+              value={blockDeliveriesReason}
+              onChange={(e) => setBlockDeliveriesReason(e.target.value)}
+              placeholder={viewingDriver?.deliveriesBlocked
+                ? "Descreva o motivo do desbloqueio..."
+                : "Descreva o motivo do bloqueio..."}
+              rows={3}
+              className="mt-2"
+            />
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setBlockDeliveriesReason("")}>
+              Cancelar
+            </AlertDialogCancel>
+            {viewingDriver?.deliveriesBlocked ? (
+              <AlertDialogAction
+                onClick={handleUnblockDeliveries}
+                className="bg-green-600 hover:bg-green-700"
+                disabled={unblockDeliveriesMutation.isPending}
+              >
+                {unblockDeliveriesMutation.isPending ? "Desbloqueando..." : "Desbloquear Entregas"}
+              </AlertDialogAction>
+            ) : (
+              <AlertDialogAction
+                onClick={handleBlockDeliveries}
+                className="bg-orange-600 hover:bg-orange-700"
+                disabled={blockDeliveriesMutation.isPending}
+              >
+                {blockDeliveriesMutation.isPending ? "Bloqueando..." : "Bloquear Entregas"}
+              </AlertDialogAction>
+            )}
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

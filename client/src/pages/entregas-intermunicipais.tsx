@@ -28,6 +28,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Form,
   FormControl,
   FormField,
@@ -57,7 +67,7 @@ import { cn } from "@/lib/utils";
 import { useForm, useFieldArray } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { PlusCircle, Package, Trash2, Calendar, MapPin, Clock, Ruler, Eye, Phone, Building2, User, Loader2, Route, Filter, RefreshCw } from "lucide-react";
+import { PlusCircle, Package, Trash2, Calendar, MapPin, Clock, Ruler, Eye, Phone, Building2, User, Loader2, Route, Filter, RefreshCw, Wallet, AlertCircle } from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import "@/styles/google-maps-fix.css";
@@ -231,6 +241,8 @@ export default function EntregasIntermunicipais() {
   const [accordionValue, setAccordionValue] = useState<string>("0");
   const [selectedEntregaId, setSelectedEntregaId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("todas");
+  const [insufficientBalanceOpen, setInsufficientBalanceOpen] = useState(false);
+  const [balanceErrorDetails, setBalanceErrorDetails] = useState<{ available: string; required: string } | null>(null);
   const enderecoInputsRef = useRef<{ [key: number]: HTMLInputElement | null }>({});
   const autocompletesRef = useRef<{ [key: number]: google.maps.places.Autocomplete | null }>({});
 
@@ -315,9 +327,45 @@ export default function EntregasIntermunicipais() {
       form.reset();
     },
     onError: (error: any) => {
+      console.log("🔴 ERRO CRIAR INTERMUNICIPAL:", error);
+      console.log("🔴 error.message:", error?.message);
+
+      // Tenta parsear o erro JSON da resposta
+      let errorData: any = {};
+      try {
+        const errorText = error?.message || String(error) || "";
+        console.log("🔴 errorText para parsing:", errorText);
+        const jsonMatch = errorText.match(/\{[\s\S]*\}/);
+        console.log("🔴 jsonMatch:", jsonMatch);
+        if (jsonMatch) {
+          errorData = JSON.parse(jsonMatch[0]);
+          console.log("🔴 errorData parseado:", errorData);
+        }
+      } catch (parseError) {
+        console.log("🔴 Erro ao parsear JSON:", parseError);
+        errorData = { message: error?.message || String(error) };
+      }
+
+      console.log("🔴 errorData final:", errorData);
+      console.log("🔴 errorData.code:", errorData.code);
+
+      // Verifica se é erro de saldo insuficiente
+      if (errorData.code === "INSUFFICIENT_BALANCE" || errorData.message?.includes("Saldo insuficiente")) {
+        console.log("🟢 DETECTADO SALDO INSUFICIENTE (intermunicipal) - ABRINDO MODAL");
+        const availableMatch = errorData.message?.match(/Disponível: R\$ ([\d.,]+)/);
+        const requiredMatch = errorData.message?.match(/Necessário: R\$ ([\d.,]+)/);
+        setBalanceErrorDetails({
+          available: availableMatch ? availableMatch[1] : "0,00",
+          required: requiredMatch ? requiredMatch[1] : "0,00",
+        });
+        setInsufficientBalanceOpen(true);
+        setIsDialogOpen(false);
+        return;
+      }
+
       toast({
         title: "Erro",
-        description: error.message || "Erro ao agendar entrega",
+        description: errorData.message || "Erro ao agendar entrega",
         variant: "destructive"
       });
     },
@@ -351,9 +399,38 @@ export default function EntregasIntermunicipais() {
       toast({ title: "Sucesso!", description: "Entrega relançada com sucesso" });
     },
     onError: (error: any) => {
+      console.log("🔴 ERRO RELANÇAR INTERMUNICIPAL:", error);
+
+      // Tenta parsear o erro JSON da resposta
+      let errorData: any = {};
+      try {
+        const errorText = error?.message || String(error) || "";
+        const jsonMatch = errorText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          errorData = JSON.parse(jsonMatch[0]);
+        }
+      } catch {
+        errorData = { message: error?.message || String(error) };
+      }
+
+      console.log("🔴 errorData (relançar intermunicipal):", errorData);
+
+      // Verifica se é erro de saldo insuficiente
+      if (errorData.code === "INSUFFICIENT_BALANCE" || errorData.message?.includes("Saldo insuficiente")) {
+        console.log("🟢 DETECTADO SALDO INSUFICIENTE (relançar intermunicipal) - ABRINDO MODAL");
+        const availableMatch = errorData.message?.match(/Disponível: R\$ ([\d.,]+)/);
+        const requiredMatch = errorData.message?.match(/Necessário: R\$ ([\d.,]+)/);
+        setBalanceErrorDetails({
+          available: availableMatch ? availableMatch[1] : "0,00",
+          required: requiredMatch ? requiredMatch[1] : "0,00",
+        });
+        setInsufficientBalanceOpen(true);
+        return;
+      }
+
       toast({
         title: "Erro",
-        description: error.message || "Erro ao relançar entrega",
+        description: errorData.message || "Erro ao relançar entrega",
         variant: "destructive"
       });
     },
@@ -1493,6 +1570,58 @@ export default function EntregasIntermunicipais() {
           ) : null}
         </DialogContent>
       </Dialog>
+
+      {/* Modal de Saldo Insuficiente */}
+      <AlertDialog open={insufficientBalanceOpen} onOpenChange={setInsufficientBalanceOpen}>
+        <AlertDialogContent className="max-w-md">
+          <AlertDialogHeader className="text-center sm:text-center">
+            <div className="mx-auto w-16 h-16 bg-orange-100 rounded-full flex items-center justify-center mb-4">
+              <Wallet className="h-8 w-8 text-orange-600" />
+            </div>
+            <AlertDialogTitle className="text-xl">Saldo Insuficiente</AlertDialogTitle>
+            <AlertDialogDescription className="text-center space-y-4">
+              <p className="text-muted-foreground">
+                Seu saldo atual não é suficiente para realizar esta entrega.
+              </p>
+
+              {balanceErrorDetails && (
+                <div className="bg-muted rounded-lg p-4 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-muted-foreground">Saldo disponível:</span>
+                    <span className="font-semibold text-red-600">R$ {balanceErrorDetails.available}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-muted-foreground">Valor necessário:</span>
+                    <span className="font-semibold">R$ {balanceErrorDetails.required}</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mt-4">
+                <p className="text-sm text-blue-800 flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 flex-shrink-0" />
+                  Recarga mínima: <strong>R$ 50,00</strong>
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-col sm:flex-col gap-2 mt-4">
+            <AlertDialogAction
+              onClick={() => {
+                setInsufficientBalanceOpen(false);
+                window.location.href = "/empresa/carteira";
+              }}
+              className="w-full bg-green-600 hover:bg-green-700"
+            >
+              <Wallet className="mr-2 h-4 w-4" />
+              Recarregar Agora
+            </AlertDialogAction>
+            <AlertDialogCancel className="w-full mt-0">
+              Voltar
+            </AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

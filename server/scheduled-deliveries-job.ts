@@ -124,6 +124,7 @@ export async function processScheduledDeliveries() {
            WHERE active = true
              AND available = true
              AND approve = true
+             AND (deliveries_blocked = false OR deliveries_blocked IS NULL)
              AND latitude IS NOT NULL
              AND longitude IS NOT NULL
              AND fcm_token IS NOT NULL`
