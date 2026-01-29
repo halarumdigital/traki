@@ -1045,6 +1045,7 @@ export const promotions = pgTable("promotions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   type: varchar("type", { length: 50 }).notNull().default("complete_and_win"), // complete_and_win | top_performer
   name: varchar("name", { length: 255 }).notNull(),
+  serviceLocationId: varchar("service_location_id").references(() => serviceLocations.id), // Cidade onde a promoção é válida
   validDates: text("valid_dates").notNull(), // Array de datas específicas: "2025-11-11,2025-11-12,2025-11-15"
   rule: text("rule").notNull(), // Descrição da regra da promoção
   deliveryQuantity: integer("delivery_quantity"), // Para complete_and_win: meta de entregas; Para top_performer: não usado
@@ -1058,6 +1059,7 @@ export const promotions = pgTable("promotions", {
 export const insertPromotionSchema = createInsertSchema(promotions, {
   type: z.enum(["complete_and_win", "top_performer"]).default("complete_and_win"),
   name: z.string().min(1, "Nome da promoção é obrigatório"),
+  serviceLocationId: z.string().min(1, "Selecione a cidade onde a promoção é válida"),
   validDates: z.string().min(1, "Selecione pelo menos uma data"),
   rule: z.string().min(1, "Descrição da regra é obrigatória"),
   deliveryQuantity: z.number().int().min(1, "Quantidade deve ser maior que 0").nullable().optional(),

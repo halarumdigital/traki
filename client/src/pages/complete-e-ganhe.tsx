@@ -20,7 +20,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Pencil, Trash2, Plus, Gift, Calendar as CalendarIcon, Award, Trophy } from "lucide-react";
-import { insertPromotionSchema, type Promotion } from "@shared/schema";
+import { insertPromotionSchema, type Promotion, type ServiceLocation } from "@shared/schema";
+import { MapPin } from "lucide-react";
 
 const formSchema = insertPromotionSchema.extend({
   validDatesArray: z.array(z.date()).min(1, "Selecione pelo menos uma data"),
@@ -42,11 +43,16 @@ export default function CompleteEGanhePage() {
     queryKey: ["/api/promotions"],
   });
 
+  const { data: cities } = useQuery<ServiceLocation[]>({
+    queryKey: ["/api/service-locations"],
+  });
+
   const form = useForm<FormData>({
     resolver: zodResolver(formSchema),
     defaultValues: {
       type: "complete_and_win",
       name: "",
+      serviceLocationId: "",
       validDatesArray: [],
       rule: "",
       deliveryQuantity: 1,
@@ -164,6 +170,7 @@ export default function CompleteEGanhePage() {
     form.reset({
       type: promotion.type || "complete_and_win",
       name: promotion.name,
+      serviceLocationId: promotion.serviceLocationId || "",
       validDatesArray: dates,
       rule: promotion.rule,
       deliveryQuantity: promotion.deliveryQuantity || undefined,
@@ -185,6 +192,7 @@ export default function CompleteEGanhePage() {
     form.reset({
       type: "complete_and_win",
       name: "",
+      serviceLocationId: "",
       validDatesArray: [],
       rule: "",
       deliveryQuantity: 1,
@@ -286,6 +294,37 @@ export default function CompleteEGanhePage() {
                           {...field}
                         />
                       </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="serviceLocationId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="text-base flex items-center gap-2">
+                        <MapPin className="h-4 w-4" />
+                        Cidade
+                      </FormLabel>
+                      <Select onValueChange={field.onChange} value={field.value || ""}>
+                        <FormControl>
+                          <SelectTrigger className="h-11">
+                            <SelectValue placeholder="Selecione a cidade" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {cities?.map((city) => (
+                            <SelectItem key={city.id} value={city.id}>
+                              {city.name} - {city.state}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormDescription>
+                        Cidade onde a promoção estará ativa e válida
+                      </FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -524,6 +563,7 @@ export default function CompleteEGanhePage() {
                   <TableRow className="bg-muted/50">
                     <TableHead className="font-semibold">Tipo</TableHead>
                     <TableHead className="font-semibold">Promoção</TableHead>
+                    <TableHead className="font-semibold">Cidade</TableHead>
                     <TableHead className="font-semibold">Datas Válidas</TableHead>
                     <TableHead className="font-semibold">Detalhes</TableHead>
                     <TableHead className="font-semibold">Status</TableHead>
@@ -558,6 +598,14 @@ export default function CompleteEGanhePage() {
                                 {promotion.rule}
                               </div>
                             </div>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <MapPin className="h-4 w-4 text-muted-foreground" />
+                            <span className="text-sm">
+                              {cities?.find(c => c.id === promotion.serviceLocationId)?.name || "Não definida"}
+                            </span>
                           </div>
                         </TableCell>
                         <TableCell>

@@ -11711,6 +11711,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ message: "Não autenticado" });
       }
 
+      // Buscar dados do motorista para obter a cidade
+      const [driverData] = await db
+        .select({ serviceLocationId: drivers.serviceLocationId })
+        .from(drivers)
+        .where(eq(drivers.id, driverId))
+        .limit(1);
+
+      if (!driverData) {
+        return res.status(404).json({ message: "Motorista não encontrado" });
+      }
+
+      const driverCityId = driverData.serviceLocationId;
+
       // Buscar todas as promoções ativas
       const activePromotions = await db
         .select()
@@ -11721,11 +11734,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const today = new Date().toISOString().split('T')[0];
       const currentMonth = today.substring(0, 7); // YYYY-MM
 
-      // Filtrar promoções válidas do mês atual (qualquer data do mês)
+      // Filtrar promoções válidas do mês atual e da cidade do motorista
       const validPromotions = activePromotions.filter(promo => {
         const validDates = promo.validDates.split(',');
-        // Retorna true se pelo menos uma data for do mês atual
-        return validDates.some(date => date.substring(0, 7) === currentMonth);
+        // Verifica se pelo menos uma data é do mês atual
+        const isValidMonth = validDates.some(date => date.substring(0, 7) === currentMonth);
+
+        // Verifica se a promoção é da cidade do motorista ou válida em todas as cidades (sem cidade definida)
+        const isValidCity = !promo.serviceLocationId || promo.serviceLocationId === driverCityId;
+
+        return isValidMonth && isValidCity;
       });
 
       // Buscar progresso do motorista para cada promoção
