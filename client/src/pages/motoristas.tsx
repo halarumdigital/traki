@@ -565,7 +565,7 @@ export default function Motoristas() {
 
               {/* Dados PIX */}
               <div className="border-b pb-4">
-                <h3 className="font-semibold mb-3">Dados PIX (Woovi)</h3>
+                <h3 className="font-semibold mb-3">Dados PIX</h3>
                 <p className="text-sm text-muted-foreground mb-3">
                   Cadastre uma chave PIX para receber pagamentos das entregas
                 </p>
