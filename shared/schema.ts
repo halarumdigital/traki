@@ -2290,3 +2290,48 @@ export const insertWebhookLogSchema = createInsertSchema(webhooksLog, {
 
 export type WebhookLog = typeof webhooksLog.$inferSelect;
 export type InsertWebhookLog = z.infer<typeof insertWebhookLogSchema>;
+
+// ========================================
+// APP VERSION (Controle de Versão do App)
+// ========================================
+export const appVersion = pgTable("app_version", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Versão mínima obrigatória (formato: 1.0.0)
+  minVersion: varchar("min_version", { length: 20 }).notNull(),
+
+  // Versão atual/recomendada (formato: 1.0.0)
+  currentVersion: varchar("current_version", { length: 20 }).notNull(),
+
+  // URL da loja para atualização
+  storeUrl: varchar("store_url", { length: 500 }),
+
+  // Mensagem a ser exibida quando atualização é obrigatória
+  updateMessage: text("update_message").default("Uma nova versão do aplicativo está disponível. Por favor, atualize para continuar usando."),
+
+  // Se a atualização é obrigatória
+  forceUpdate: boolean("force_update").notNull().default(true),
+
+  active: boolean("active").notNull().default(true),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertAppVersionSchema = createInsertSchema(appVersion, {
+  minVersion: z.string().min(1, "Versão mínima é obrigatória").regex(/^\d+\.\d+\.\d+$/, "Formato inválido. Use: X.X.X"),
+  currentVersion: z.string().min(1, "Versão atual é obrigatória").regex(/^\d+\.\d+\.\d+$/, "Formato inválido. Use: X.X.X"),
+  storeUrl: z.string().url("URL inválida").optional().nullable(),
+  updateMessage: z.string().optional(),
+  forceUpdate: z.boolean().optional(),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateAppVersionSchema = insertAppVersionSchema.partial();
+
+export type AppVersion = typeof appVersion.$inferSelect;
+export type InsertAppVersion = z.infer<typeof insertAppVersionSchema>;
+export type UpdateAppVersion = z.infer<typeof updateAppVersionSchema>;

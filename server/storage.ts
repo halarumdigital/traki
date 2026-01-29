@@ -109,6 +109,10 @@ import {
   type InsertWithdrawal,
   type WebhookLog,
   type InsertWebhookLog,
+  // App Version
+  appVersion,
+  type AppVersion,
+  type InsertAppVersion,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, desc, sql, inArray, gt, ne, or, isNull } from "drizzle-orm";
@@ -356,6 +360,11 @@ export interface IStorage {
   // ===== WEBHOOKS LOG =====
   createWebhookLog(data: InsertWebhookLog): Promise<WebhookLog>;
   updateWebhookLog(id: string, data: Partial<WebhookLog>): Promise<WebhookLog | undefined>;
+
+  // ===== APP VERSION =====
+  getAppVersion(): Promise<AppVersion | undefined>;
+  createAppVersion(data: InsertAppVersion): Promise<AppVersion>;
+  updateAppVersion(id: string, data: Partial<AppVersion>): Promise<AppVersion | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2655,6 +2664,36 @@ export class DatabaseStorage implements IStorage {
       .where(eq(webhooksLog.id, id))
       .returning();
     return log || undefined;
+  }
+
+  // ========================================
+  // APP VERSION (Controle de Versão)
+  // ========================================
+
+  async getAppVersion(): Promise<AppVersion | undefined> {
+    const [version] = await db
+      .select()
+      .from(appVersion)
+      .where(eq(appVersion.active, true))
+      .limit(1);
+    return version || undefined;
+  }
+
+  async createAppVersion(data: InsertAppVersion): Promise<AppVersion> {
+    // Desativa versões anteriores
+    await db.update(appVersion).set({ active: false });
+
+    const [version] = await db.insert(appVersion).values(data).returning();
+    return version;
+  }
+
+  async updateAppVersion(id: string, data: Partial<AppVersion>): Promise<AppVersion | undefined> {
+    const [version] = await db
+      .update(appVersion)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(appVersion.id, id))
+      .returning();
+    return version || undefined;
   }
 }
 

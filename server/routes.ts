@@ -18443,6 +18443,145 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ========================================
+  // APP VERSION - Controle de Versão do App
+  // ========================================
+
+  // Endpoint PÚBLICO para o app Flutter verificar a versão
+  app.get("/api/app/version", async (req, res) => {
+    try {
+      const version = await storage.getAppVersion();
+
+      if (!version) {
+        // Se não houver configuração, retorna que não precisa atualizar
+        return res.json({
+          needsUpdate: false,
+          forceUpdate: false,
+          minVersion: "1.0.0",
+          currentVersion: "1.0.0",
+          updateMessage: null,
+          storeUrl: null,
+        });
+      }
+
+      // Função helper para comparar versões semânticas
+      const compareVersions = (v1: string, v2: string): number => {
+        const parts1 = v1.split(".").map(Number);
+        const parts2 = v2.split(".").map(Number);
+        for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+          const p1 = parts1[i] || 0;
+          const p2 = parts2[i] || 0;
+          if (p1 > p2) return 1;
+          if (p1 < p2) return -1;
+        }
+        return 0;
+      };
+
+      // Pega a versão do app enviada no header ou query
+      const appCurrentVersion = (req.headers["x-app-version"] as string) || (req.query.version as string) || "0.0.0";
+
+      // Verifica se precisa atualizar
+      const needsUpdate = compareVersions(appCurrentVersion, version.minVersion) < 0;
+
+      return res.json({
+        needsUpdate,
+        forceUpdate: needsUpdate && version.forceUpdate,
+        minVersion: version.minVersion,
+        currentVersion: version.currentVersion,
+        updateMessage: needsUpdate ? version.updateMessage : null,
+        storeUrl: version.storeUrl,
+      });
+    } catch (error) {
+      console.error("Erro ao verificar versão do app:", error);
+      return res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  });
+
+  // Endpoints ADMIN para gerenciar versão do app
+  app.get("/api/configuracoes/app-version", async (req, res) => {
+    if (!req.session?.userId) {
+      return res.status(401).json({ message: "Não autorizado" });
+    }
+
+    try {
+      const version = await storage.getAppVersion();
+      return res.json(version || null);
+    } catch (error) {
+      console.error("Erro ao buscar configuração de versão:", error);
+      return res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  });
+
+  app.post("/api/configuracoes/app-version", async (req, res) => {
+    if (!req.session?.userId) {
+      return res.status(401).json({ message: "Não autorizado" });
+    }
+
+    try {
+      const { minVersion, currentVersion, storeUrl, updateMessage, forceUpdate } = req.body;
+
+      if (!minVersion || !currentVersion) {
+        return res.status(400).json({ message: "Versão mínima e versão atual são obrigatórias" });
+      }
+
+      // Valida formato das versões
+      const versionRegex = /^\d+\.\d+\.\d+$/;
+      if (!versionRegex.test(minVersion) || !versionRegex.test(currentVersion)) {
+        return res.status(400).json({ message: "Formato de versão inválido. Use: X.X.X" });
+      }
+
+      const version = await storage.createAppVersion({
+        minVersion,
+        currentVersion,
+        storeUrl: storeUrl || null,
+        updateMessage: updateMessage || "Uma nova versão do aplicativo está disponível. Por favor, atualize para continuar usando.",
+        forceUpdate: forceUpdate !== false,
+      });
+
+      return res.status(201).json(version);
+    } catch (error) {
+      console.error("Erro ao criar configuração de versão:", error);
+      return res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  });
+
+  app.put("/api/configuracoes/app-version/:id", async (req, res) => {
+    if (!req.session?.userId) {
+      return res.status(401).json({ message: "Não autorizado" });
+    }
+
+    try {
+      const { id } = req.params;
+      const { minVersion, currentVersion, storeUrl, updateMessage, forceUpdate } = req.body;
+
+      // Valida formato das versões se fornecidas
+      const versionRegex = /^\d+\.\d+\.\d+$/;
+      if (minVersion && !versionRegex.test(minVersion)) {
+        return res.status(400).json({ message: "Formato de versão mínima inválido. Use: X.X.X" });
+      }
+      if (currentVersion && !versionRegex.test(currentVersion)) {
+        return res.status(400).json({ message: "Formato de versão atual inválido. Use: X.X.X" });
+      }
+
+      const version = await storage.updateAppVersion(id, {
+        ...(minVersion && { minVersion }),
+        ...(currentVersion && { currentVersion }),
+        ...(storeUrl !== undefined && { storeUrl }),
+        ...(updateMessage !== undefined && { updateMessage }),
+        ...(forceUpdate !== undefined && { forceUpdate }),
+      });
+
+      if (!version) {
+        return res.status(404).json({ message: "Configuração não encontrada" });
+      }
+
+      return res.json(version);
+    } catch (error) {
+      console.error("Erro ao atualizar configuração de versão:", error);
+      return res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  });
+
   // Configurar Socket.IO
   const io = new SocketIOServer(httpServer, {
     cors: {

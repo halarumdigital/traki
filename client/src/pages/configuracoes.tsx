@@ -51,7 +51,7 @@ import {
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Settings, Save, Plus, Pencil, Trash2 } from "lucide-react";
+import { Settings, Save, Plus, Pencil, Trash2, Smartphone } from "lucide-react";
 
 const configuracaoSchema = z.object({
   // Driver Assignment
@@ -151,6 +151,228 @@ const mockSettings: ConfiguracaoForm = {
   smtpFromName: null,
   smtpSecure: null,
 };
+
+// Schema para versão do app
+const appVersionSchema = z.object({
+  minVersion: z.string().min(1, "Versão mínima é obrigatória").regex(/^\d+\.\d+\.\d+$/, "Formato inválido. Use: X.X.X"),
+  currentVersion: z.string().min(1, "Versão atual é obrigatória").regex(/^\d+\.\d+\.\d+$/, "Formato inválido. Use: X.X.X"),
+  storeUrl: z.string().url("URL inválida").optional().or(z.literal("")),
+  updateMessage: z.string().optional(),
+  forceUpdate: z.boolean(),
+});
+
+type AppVersionForm = z.infer<typeof appVersionSchema>;
+
+// Componente de Versão do App
+function AppVersionSettings() {
+  const { toast } = useToast();
+
+  // Buscar configuração atual
+  const { data: appVersion, isLoading } = useQuery({
+    queryKey: ["/api/configuracoes/app-version"],
+  });
+
+  const form = useForm<AppVersionForm>({
+    resolver: zodResolver(appVersionSchema),
+    defaultValues: {
+      minVersion: "1.0.0",
+      currentVersion: "1.0.0",
+      storeUrl: "",
+      updateMessage: "Uma nova versão do aplicativo está disponível. Por favor, atualize para continuar usando.",
+      forceUpdate: true,
+    },
+  });
+
+  // Atualizar form quando dados chegarem
+  useEffect(() => {
+    if (appVersion) {
+      form.reset({
+        minVersion: appVersion.minVersion || "1.0.0",
+        currentVersion: appVersion.currentVersion || "1.0.0",
+        storeUrl: appVersion.storeUrl || "",
+        updateMessage: appVersion.updateMessage || "Uma nova versão do aplicativo está disponível. Por favor, atualize para continuar usando.",
+        forceUpdate: appVersion.forceUpdate ?? true,
+      });
+    }
+  }, [appVersion, form]);
+
+  // Mutation para criar
+  const createMutation = useMutation({
+    mutationFn: async (data: AppVersionForm) => {
+      return await apiRequest("POST", "/api/configuracoes/app-version", {
+        ...data,
+        storeUrl: data.storeUrl || null,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/configuracoes/app-version"] });
+      toast({
+        title: "Sucesso!",
+        description: "Configuração de versão criada com sucesso",
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Erro",
+        description: error.message || "Erro ao criar configuração",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Mutation para atualizar
+  const updateMutation = useMutation({
+    mutationFn: async (data: AppVersionForm) => {
+      return await apiRequest("PUT", `/api/configuracoes/app-version/${appVersion.id}`, {
+        ...data,
+        storeUrl: data.storeUrl || null,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/configuracoes/app-version"] });
+      toast({
+        title: "Sucesso!",
+        description: "Configuração de versão atualizada com sucesso",
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Erro",
+        description: error.message || "Erro ao atualizar configuração",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const onSubmit = (data: AppVersionForm) => {
+    if (appVersion?.id) {
+      updateMutation.mutate(data);
+    } else {
+      createMutation.mutate(data);
+    }
+  };
+
+  if (isLoading) {
+    return <p>Carregando...</p>;
+  }
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-lg font-semibold flex items-center gap-2">
+          <Smartphone className="h-5 w-5" />
+          Controle de Versão do App
+        </h3>
+        <p className="text-sm text-muted-foreground">
+          Configure a versão mínima obrigatória do aplicativo. Usuários com versões anteriores serão obrigados a atualizar.
+        </p>
+      </div>
+
+      <Form {...form}>
+        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <FormField
+              control={form.control}
+              name="minVersion"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Versão Mínima Obrigatória</FormLabel>
+                  <FormControl>
+                    <Input placeholder="1.0.0" {...field} />
+                  </FormControl>
+                  <FormDescription>
+                    Versão mínima que o usuário precisa ter instalada
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="currentVersion"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Versão Atual na Loja</FormLabel>
+                  <FormControl>
+                    <Input placeholder="1.0.0" {...field} />
+                  </FormControl>
+                  <FormDescription>
+                    Versão mais recente disponível na loja
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+
+          <FormField
+            control={form.control}
+            name="storeUrl"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>URL da Loja (Google Play)</FormLabel>
+                <FormControl>
+                  <Input placeholder="https://play.google.com/store/apps/details?id=com.seuapp" {...field} />
+                </FormControl>
+                <FormDescription>
+                  Link para abrir a página do app na loja
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="updateMessage"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Mensagem de Atualização</FormLabel>
+                <FormControl>
+                  <Textarea
+                    placeholder="Uma nova versão do aplicativo está disponível..."
+                    {...field}
+                    rows={3}
+                  />
+                </FormControl>
+                <FormDescription>
+                  Mensagem exibida quando o usuário precisa atualizar
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="forceUpdate"
+            render={({ field }) => (
+              <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4 bg-amber-50 border-amber-200">
+                <div className="space-y-0.5">
+                  <FormLabel className="text-base font-semibold">Forçar Atualização</FormLabel>
+                  <FormDescription>
+                    Se ativado, o app não abrirá até que o usuário atualize para a versão mínima
+                  </FormDescription>
+                </div>
+                <FormControl>
+                  <Switch checked={field.value} onCheckedChange={field.onChange} />
+                </FormControl>
+              </FormItem>
+            )}
+          />
+
+          <div className="flex justify-end">
+            <Button type="submit" disabled={createMutation.isPending || updateMutation.isPending}>
+              <Save className="mr-2 h-4 w-4" />
+              {createMutation.isPending || updateMutation.isPending ? "Salvando..." : "Salvar"}
+            </Button>
+          </div>
+        </form>
+      </Form>
+    </div>
+  );
+}
 
 // Componente de Comissões Progressivas
 function CommissionTiersTable({ disabled = false }: { disabled?: boolean }) {
@@ -581,12 +803,13 @@ export default function Configuracoes() {
           <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)}>
               <Tabs defaultValue="geral" className="w-full">
-                <TabsList className="grid w-full grid-cols-5">
+                <TabsList className="grid w-full grid-cols-6">
                   <TabsTrigger value="geral">Geral</TabsTrigger>
                   <TabsTrigger value="precos">Comissão</TabsTrigger>
                   <TabsTrigger value="integracao">Integrações</TabsTrigger>
                   <TabsTrigger value="referral">Indicação</TabsTrigger>
                   <TabsTrigger value="smtp">E-mail</TabsTrigger>
+                  <TabsTrigger value="app">App</TabsTrigger>
                 </TabsList>
 
                 {/* Configurações Gerais */}
@@ -1215,6 +1438,11 @@ export default function Configuracoes() {
                       </FormItem>
                     )}
                   />
+                </TabsContent>
+
+                {/* Versão do App */}
+                <TabsContent value="app" className="space-y-4">
+                  <AppVersionSettings />
                 </TabsContent>
               </Tabs>
 
