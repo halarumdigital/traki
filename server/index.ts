@@ -16,6 +16,7 @@ import { startAllocationJobs, setAllocationJobsSocketIO } from "./allocation-job
 import { startHeartbeatJob } from "./driver-heartbeat-job";
 import { startWeeklyClosingJob, startOverdueCheckJob } from "./weekly-closing-job";
 import { startMonthlyInvoiceJob } from "./monthly-invoice-job";
+import { startIFoodWorker } from "./services/ifood/worker";
 
 const app = express();
 const httpServer = createServer(app);
@@ -136,5 +137,6 @@ app.use((req, res, next) => {
     startMonthlyInvoiceJob(); // Emissão de NFS-e mensal (último dia do mês 23:59) // Verificar cobranças vencidas (diariamente 08:00)
     setAllocationJobsSocketIO(io); // Configurar Socket.IO para jobs de alocação
     startAllocationJobs(); // Jobs de alocação de entregadores
+    startIFoodWorker(); // Worker de polling do iFood (30s)
   });
 })();

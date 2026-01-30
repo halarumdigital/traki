@@ -9,7 +9,9 @@ import {
   Calculator,
   FileText,
   DollarSign,
-  UserPlus
+  UserPlus,
+  Settings,
+  UtensilsCrossed
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
@@ -119,6 +121,16 @@ export function EmpresaSidebar() {
           label: "Boletos",
           icon: DollarSign,
           path: "/empresa/financeiro",
+        },
+      ],
+    },
+    {
+      title: "Configurações",
+      items: [
+        {
+          label: "iFood",
+          icon: UtensilsCrossed,
+          path: "/empresa/configuracoes/ifood",
         },
       ],
     },

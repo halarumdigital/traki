@@ -127,6 +127,13 @@ import {
   driverAvailabilityLogs,
   type DriverAvailabilityLog,
   type InsertDriverAvailabilityLog,
+  // iFood Integration
+  ifoodCredentials,
+  ifoodProcessedEvents,
+  type IfoodCredentials,
+  type InsertIfoodCredentials,
+  type IfoodProcessedEvent,
+  type InsertIfoodProcessedEvent,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, desc, sql, inArray, gt, ne, or, isNull } from "drizzle-orm";
@@ -408,6 +415,19 @@ export interface IStorage {
   getAllocationAlertForDriver(allocationId: string, driverId: string): Promise<AllocationAlert | undefined>;
   updateAllocationAlert(id: string, data: Partial<AllocationAlert>): Promise<AllocationAlert | undefined>;
   expireAllocationAlerts(allocationId: string): Promise<void>;
+
+  // ===== IFOOD INTEGRATION =====
+  getIfoodCredentials(id: string): Promise<IfoodCredentials | undefined>;
+  getIfoodCredentialsByCompany(companyId: string): Promise<IfoodCredentials | undefined>;
+  getAllActiveIfoodCredentials(): Promise<IfoodCredentials[]>;
+  createIfoodCredentials(data: InsertIfoodCredentials): Promise<IfoodCredentials>;
+  updateIfoodCredentials(id: string, data: Partial<IfoodCredentials>): Promise<IfoodCredentials | undefined>;
+  deleteIfoodCredentials(id: string): Promise<void>;
+
+  // ===== IFOOD PROCESSED EVENTS =====
+  getIfoodProcessedEvent(eventId: string): Promise<IfoodProcessedEvent | undefined>;
+  getIfoodProcessedEventsByOrder(orderId: string): Promise<IfoodProcessedEvent[]>;
+  createIfoodProcessedEvent(data: InsertIfoodProcessedEvent): Promise<IfoodProcessedEvent>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2977,6 +2997,58 @@ export class DatabaseStorage implements IStorage {
           eq(allocationAlerts.status, "notified")
         )
       );
+  }
+
+  // ========================================
+  // IFOOD INTEGRATION
+  // ========================================
+  async getIfoodCredentials(id: string): Promise<IfoodCredentials | undefined> {
+    const [cred] = await db.select().from(ifoodCredentials).where(eq(ifoodCredentials.id, id));
+    return cred || undefined;
+  }
+
+  async getIfoodCredentialsByCompany(companyId: string): Promise<IfoodCredentials | undefined> {
+    const [cred] = await db.select().from(ifoodCredentials).where(eq(ifoodCredentials.companyId, companyId));
+    return cred || undefined;
+  }
+
+  async getAllActiveIfoodCredentials(): Promise<IfoodCredentials[]> {
+    return db.select().from(ifoodCredentials).where(eq(ifoodCredentials.active, true));
+  }
+
+  async createIfoodCredentials(data: InsertIfoodCredentials): Promise<IfoodCredentials> {
+    const [cred] = await db.insert(ifoodCredentials).values(data).returning();
+    return cred;
+  }
+
+  async updateIfoodCredentials(id: string, data: Partial<IfoodCredentials>): Promise<IfoodCredentials | undefined> {
+    const [cred] = await db
+      .update(ifoodCredentials)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(ifoodCredentials.id, id))
+      .returning();
+    return cred || undefined;
+  }
+
+  async deleteIfoodCredentials(id: string): Promise<void> {
+    await db.delete(ifoodCredentials).where(eq(ifoodCredentials.id, id));
+  }
+
+  // ========================================
+  // IFOOD PROCESSED EVENTS
+  // ========================================
+  async getIfoodProcessedEvent(eventId: string): Promise<IfoodProcessedEvent | undefined> {
+    const [event] = await db.select().from(ifoodProcessedEvents).where(eq(ifoodProcessedEvents.eventId, eventId));
+    return event || undefined;
+  }
+
+  async getIfoodProcessedEventsByOrder(orderId: string): Promise<IfoodProcessedEvent[]> {
+    return db.select().from(ifoodProcessedEvents).where(eq(ifoodProcessedEvents.orderId, orderId));
+  }
+
+  async createIfoodProcessedEvent(data: InsertIfoodProcessedEvent): Promise<IfoodProcessedEvent> {
+    const [event] = await db.insert(ifoodProcessedEvents).values(data).returning();
+    return event;
   }
 }
 

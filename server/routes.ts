@@ -10055,6 +10055,387 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ========================================
+  // IFOOD INTEGRATION (Configuração pela Empresa)
+  // ========================================
+
+  // GET /api/empresa/ifood/credentials - Obter credenciais iFood da empresa
+  app.get("/api/empresa/ifood/credentials", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const credentials = await storage.getIfoodCredentialsByCompany(req.session.companyId);
+
+      if (!credentials) {
+        return res.json({ configured: false, credentials: null });
+      }
+
+      // Não retorna clientSecret por segurança
+      return res.json({
+        configured: true,
+        credentials: {
+          id: credentials.id,
+          merchantId: credentials.merchantId,
+          clientId: credentials.clientId,
+          active: credentials.active,
+          triggerOnReadyToPickup: credentials.triggerOnReadyToPickup,
+          triggerOnDispatched: credentials.triggerOnDispatched,
+          pickupAddress: credentials.pickupAddress,
+          pickupLat: credentials.pickupLat,
+          pickupLng: credentials.pickupLng,
+          defaultVehicleTypeId: credentials.defaultVehicleTypeId,
+          lastSyncAt: credentials.lastSyncAt,
+          lastSyncStatus: credentials.lastSyncStatus,
+          lastSyncError: credentials.lastSyncError,
+          totalDeliveriesCreated: credentials.totalDeliveriesCreated,
+          createdAt: credentials.createdAt,
+          updatedAt: credentials.updatedAt,
+        },
+      });
+    } catch (error) {
+      console.error("Erro ao buscar credenciais iFood:", error);
+      return res.status(500).json({ message: "Erro ao buscar credenciais" });
+    }
+  });
+
+  // POST /api/empresa/ifood/credentials - Criar/Atualizar credenciais iFood
+  app.post("/api/empresa/ifood/credentials", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const {
+        merchantId,
+        clientId,
+        clientSecret,
+        triggerOnReadyToPickup,
+        triggerOnDispatched,
+        pickupAddress,
+        pickupLat,
+        pickupLng,
+        defaultVehicleTypeId,
+        active,
+      } = req.body;
+
+      // Validação básica
+      if (!merchantId || !clientId || !clientSecret) {
+        return res.status(400).json({
+          message: "Merchant ID, Client ID e Client Secret são obrigatórios",
+        });
+      }
+
+      if (!pickupAddress || !pickupLat || !pickupLng) {
+        return res.status(400).json({
+          message: "Endereço de coleta (restaurante) é obrigatório",
+        });
+      }
+
+      if (!defaultVehicleTypeId) {
+        return res.status(400).json({
+          message: "Tipo de veículo padrão é obrigatório",
+        });
+      }
+
+      // Verificar se já existe
+      const existing = await storage.getIfoodCredentialsByCompany(req.session.companyId);
+
+      if (existing) {
+        // Atualizar
+        const updated = await storage.updateIfoodCredentials(existing.id, {
+          merchantId,
+          clientId,
+          clientSecret,
+          triggerOnReadyToPickup: triggerOnReadyToPickup ?? true,
+          triggerOnDispatched: triggerOnDispatched ?? false,
+          pickupAddress,
+          pickupLat: pickupLat.toString(),
+          pickupLng: pickupLng.toString(),
+          defaultVehicleTypeId,
+          active: active ?? true,
+          // Limpar token para forçar reautenticação
+          accessToken: null,
+          tokenExpiresAt: null,
+        });
+
+        console.log(`[IFOOD] Credenciais atualizadas para empresa ${req.session.companyId}`);
+
+        return res.json({
+          message: "Credenciais atualizadas com sucesso",
+          credentials: {
+            id: updated?.id,
+            merchantId: updated?.merchantId,
+            active: updated?.active,
+          },
+        });
+      } else {
+        // Criar
+        const created = await storage.createIfoodCredentials({
+          companyId: req.session.companyId,
+          merchantId,
+          clientId,
+          clientSecret,
+          triggerOnReadyToPickup: triggerOnReadyToPickup ?? true,
+          triggerOnDispatched: triggerOnDispatched ?? false,
+          pickupAddress,
+          pickupLat: pickupLat.toString(),
+          pickupLng: pickupLng.toString(),
+          defaultVehicleTypeId,
+          active: active ?? true,
+        });
+
+        console.log(`[IFOOD] Credenciais criadas para empresa ${req.session.companyId}`);
+
+        return res.json({
+          message: "Integração iFood configurada com sucesso",
+          credentials: {
+            id: created.id,
+            merchantId: created.merchantId,
+            active: created.active,
+          },
+        });
+      }
+    } catch (error) {
+      console.error("Erro ao salvar credenciais iFood:", error);
+      return res.status(500).json({ message: "Erro ao salvar credenciais" });
+    }
+  });
+
+  // POST /api/empresa/ifood/test-connection - Testar conexão com iFood
+  app.post("/api/empresa/ifood/test-connection", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const credentials = await storage.getIfoodCredentialsByCompany(req.session.companyId);
+
+      if (!credentials) {
+        return res.status(400).json({ message: "Integração iFood não configurada" });
+      }
+
+      // Importar cliente iFood
+      const { authenticate } = await import("./services/ifood/client");
+
+      try {
+        const authResponse = await authenticate(credentials);
+
+        // Atualizar token no banco
+        await storage.updateIfoodCredentials(credentials.id, {
+          accessToken: authResponse.accessToken,
+          tokenExpiresAt: new Date(Date.now() + authResponse.expiresIn * 1000),
+          lastSyncStatus: "success",
+          lastSyncError: null,
+        });
+
+        return res.json({
+          success: true,
+          message: "Conexão com iFood estabelecida com sucesso!",
+          tokenExpiresIn: authResponse.expiresIn,
+        });
+      } catch (authError) {
+        console.error("Erro de autenticação iFood:", authError);
+
+        await storage.updateIfoodCredentials(credentials.id, {
+          lastSyncStatus: "error",
+          lastSyncError: authError instanceof Error ? authError.message : "Erro de autenticação",
+        });
+
+        return res.status(400).json({
+          success: false,
+          message: "Falha na autenticação com iFood. Verifique suas credenciais.",
+          error: authError instanceof Error ? authError.message : "Erro desconhecido",
+        });
+      }
+    } catch (error) {
+      console.error("Erro ao testar conexão iFood:", error);
+      return res.status(500).json({ message: "Erro ao testar conexão" });
+    }
+  });
+
+  // DELETE /api/empresa/ifood/credentials - Remover integração iFood
+  app.delete("/api/empresa/ifood/credentials", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const credentials = await storage.getIfoodCredentialsByCompany(req.session.companyId);
+
+      if (!credentials) {
+        return res.status(404).json({ message: "Integração não encontrada" });
+      }
+
+      await storage.deleteIfoodCredentials(credentials.id);
+
+      console.log(`[IFOOD] Credenciais removidas para empresa ${req.session.companyId}`);
+
+      return res.json({ message: "Integração iFood removida com sucesso" });
+    } catch (error) {
+      console.error("Erro ao remover credenciais iFood:", error);
+      return res.status(500).json({ message: "Erro ao remover integração" });
+    }
+  });
+
+  // PUT /api/empresa/ifood/toggle - Ativar/Desativar integração
+  app.put("/api/empresa/ifood/toggle", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { active } = req.body;
+
+      const credentials = await storage.getIfoodCredentialsByCompany(req.session.companyId);
+
+      if (!credentials) {
+        return res.status(404).json({ message: "Integração não encontrada" });
+      }
+
+      await storage.updateIfoodCredentials(credentials.id, { active });
+
+      console.log(`[IFOOD] Integração ${active ? "ativada" : "desativada"} para empresa ${req.session.companyId}`);
+
+      return res.json({
+        message: `Integração ${active ? "ativada" : "desativada"} com sucesso`,
+        active,
+      });
+    } catch (error) {
+      console.error("Erro ao alterar status da integração:", error);
+      return res.status(500).json({ message: "Erro ao alterar status" });
+    }
+  });
+
+  // GET /api/empresa/ifood/stats - Estatísticas da integração
+  app.get("/api/empresa/ifood/stats", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const credentials = await storage.getIfoodCredentialsByCompany(req.session.companyId);
+
+      if (!credentials) {
+        return res.json({ configured: false });
+      }
+
+      // Buscar entregas vindas do iFood
+      const { rows: stats } = await pool.query(`
+        SELECT
+          COUNT(*) as total_deliveries,
+          COUNT(CASE WHEN is_completed = true THEN 1 END) as completed,
+          COUNT(CASE WHEN is_cancelled = true THEN 1 END) as cancelled,
+          COUNT(CASE WHEN is_completed = false AND is_cancelled = false THEN 1 END) as in_progress
+        FROM requests
+        WHERE company_id = $1
+          AND external_source = 'ifood'
+      `, [req.session.companyId]);
+
+      return res.json({
+        configured: true,
+        active: credentials.active,
+        lastSyncAt: credentials.lastSyncAt,
+        lastSyncStatus: credentials.lastSyncStatus,
+        totalDeliveriesCreated: credentials.totalDeliveriesCreated,
+        stats: stats[0] || { total_deliveries: 0, completed: 0, cancelled: 0, in_progress: 0 },
+      });
+    } catch (error) {
+      console.error("Erro ao buscar estatísticas iFood:", error);
+      return res.status(500).json({ message: "Erro ao buscar estatísticas" });
+    }
+  });
+
+  // ========================================
+  // ADMIN IFOOD ROUTES
+  // ========================================
+
+  // GET /api/admin/ifood/integrations - Listar todas as integrações iFood
+  app.get("/api/admin/ifood/integrations", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { rows } = await pool.query(`
+        SELECT
+          ic.id,
+          ic.company_id AS "companyId",
+          c.name AS "companyName",
+          ic.merchant_id AS "merchantId",
+          ic.active,
+          ic.trigger_on_ready_to_pickup AS "triggerOnReadyToPickup",
+          ic.trigger_on_dispatched AS "triggerOnDispatched",
+          ic.last_sync_at AS "lastSyncAt",
+          ic.last_sync_status AS "lastSyncStatus",
+          ic.last_sync_error AS "lastSyncError",
+          ic.total_deliveries_created AS "totalDeliveriesCreated",
+          ic.created_at AS "createdAt",
+          ic.updated_at AS "updatedAt"
+        FROM ifood_credentials ic
+        JOIN companies c ON ic.company_id = c.id
+        ORDER BY c.name
+      `);
+
+      return res.json(rows);
+    } catch (error) {
+      console.error("Erro ao listar integrações iFood:", error);
+      return res.status(500).json({ message: "Erro ao buscar integrações" });
+    }
+  });
+
+  // GET /api/admin/ifood/stats - Estatísticas gerais das integrações iFood
+  app.get("/api/admin/ifood/stats", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { rows } = await pool.query(`
+        SELECT
+          COUNT(*) AS "totalIntegrations",
+          COUNT(*) FILTER (WHERE active = true) AS "activeIntegrations",
+          COALESCE(SUM(total_deliveries_created), 0) AS "totalDeliveries",
+          COUNT(*) FILTER (WHERE last_sync_status = 'error') AS "lastSyncErrors"
+        FROM ifood_credentials
+      `);
+
+      return res.json(rows[0] || {
+        totalIntegrations: 0,
+        activeIntegrations: 0,
+        totalDeliveries: 0,
+        lastSyncErrors: 0,
+      });
+    } catch (error) {
+      console.error("Erro ao buscar estatísticas iFood:", error);
+      return res.status(500).json({ message: "Erro ao buscar estatísticas" });
+    }
+  });
+
+  // PUT /api/admin/ifood/integrations/:id/toggle - Ativar/Desativar integração
+  app.put("/api/admin/ifood/integrations/:id/toggle", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+      const { active } = req.body;
+
+      await pool.query(`
+        UPDATE ifood_credentials
+        SET active = $1, updated_at = NOW()
+        WHERE id = $2
+      `, [active, id]);
+
+      return res.json({ success: true, active });
+    } catch (error) {
+      console.error("Erro ao alterar status da integração:", error);
+      return res.status(500).json({ message: "Erro ao alterar status" });
+    }
+  });
+
+  // ========================================
   // DRIVER API ROUTES (Mobile App)
   // ========================================
 
@@ -14219,6 +14600,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         timestamp: new Date().toISOString()
       });
 
+      // Notificar iFood se for pedido de lá
+      try {
+        const { notifyIfoodStatusChange } = await import("./services/ifood/callbacks");
+        await notifyIfoodStatusChange(deliveryId, "accepted");
+      } catch (e) {
+        console.error("[IFOOD] Erro ao notificar aceitação:", e);
+      }
+
       return res.json({
         success: true,
         message: "Entrega aceita com sucesso",
@@ -14432,6 +14821,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
+      // Notificar iFood se for pedido de lá
+      try {
+        const { notifyIfoodStatusChange } = await import("./services/ifood/callbacks");
+        await notifyIfoodStatusChange(deliveryId, "arrived_pickup");
+      } catch (e) {
+        console.error("[IFOOD] Erro ao notificar chegada no restaurante:", e);
+      }
+
       return res.json({
         success: true,
         message: "Status atualizado",
@@ -14529,6 +14926,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
           status: "Pedido retirado - Indo para entrega",
           timestamp: new Date().toISOString()
         });
+      }
+
+      // Notificar iFood se for pedido de lá (dispatch = saiu para entrega)
+      try {
+        const { notifyIfoodStatusChange } = await import("./services/ifood/callbacks");
+        await notifyIfoodStatusChange(deliveryId, "picked_up");
+      } catch (e) {
+        console.error("[IFOOD] Erro ao notificar coleta:", e);
       }
 
       return res.json({
@@ -15379,6 +15784,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
           status: "Entrega concluída",
           timestamp: new Date().toISOString()
         });
+      }
+
+      // Notificar iFood se for pedido de lá (confirmDelivery)
+      try {
+        const { notifyIfoodStatusChange } = await import("./services/ifood/callbacks");
+        await notifyIfoodStatusChange(deliveryId, "completed");
+      } catch (e) {
+        console.error("[IFOOD] Erro ao notificar conclusão:", e);
       }
 
       return res.json({

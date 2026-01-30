@@ -52,6 +52,8 @@ import EntregasCanceladas from "@/pages/entregas-canceladas";
 import AdminEntregasIntermunicipais from "@/pages/admin-entregas-intermunicipais";
 import AdminViagensIntermunicipais from "@/pages/admin-viagens-intermunicipais";
 import EmpresaAlocacoes from "@/pages/empresa-alocacoes";
+import EmpresaConfiguracoesIfood from "@/pages/empresa-configuracoes-ifood";
+import AdminIntegracoesIfood from "@/pages/admin-integracoes-ifood";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -114,6 +116,7 @@ function Router() {
               <Route path="/empresa/entregas" component={EmpresaEntregas} />
               <Route path="/empresa/entregas-intermunicipais" component={EntregasIntermunicipais} />
               <Route path="/empresa/alocacoes" component={EmpresaAlocacoes} />
+              <Route path="/empresa/configuracoes/ifood" component={EmpresaConfiguracoesIfood} />
               <Route component={NotFound} />
             </Switch>
           </main>
@@ -163,6 +166,7 @@ function Router() {
               <Route path="/entregas/canceladas" component={EntregasCanceladas} />
               <Route path="/admin/entregas-intermunicipais" component={AdminEntregasIntermunicipais} />
               <Route path="/admin/viagens-intermunicipais" component={AdminViagensIntermunicipais} />
+              <Route path="/integracoes/ifood" component={AdminIntegracoesIfood} />
               <Route path="/configuracoes" component={Configuracoes} />
               <Route path="/pesquisas" component={Pesquisas} />
               <Route component={NotFound} />

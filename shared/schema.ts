@@ -511,6 +511,11 @@ export const requests = pgTable("requests", {
   // Polyline
   polyLine: text("poly_line"),
 
+  // Integração Externa (iFood, etc)
+  externalSource: varchar("external_source", { length: 20 }), // 'ifood', 'rappi', etc
+  externalOrderId: varchar("external_order_id", { length: 100 }), // ID do pedido na plataforma externa
+  externalDisplayId: varchar("external_display_id", { length: 50 }), // ID legível (ex: #1234)
+
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -2644,3 +2649,111 @@ export const insertDriverAvailabilityLogSchema = createInsertSchema(driverAvaila
 
 export type DriverAvailabilityLog = typeof driverAvailabilityLogs.$inferSelect;
 export type InsertDriverAvailabilityLog = z.infer<typeof insertDriverAvailabilityLogSchema>;
+
+// ========================================
+// IFOOD CREDENTIALS (Credenciais iFood por Empresa)
+// ========================================
+export const ifoodCredentials = pgTable("ifood_credentials", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Vínculo com empresa
+  companyId: varchar("company_id").notNull().unique()
+    .references(() => companies.id, { onDelete: 'cascade' }),
+
+  // Credenciais iFood
+  merchantId: varchar("merchant_id", { length: 100 }).notNull(),
+  clientId: varchar("client_id", { length: 255 }).notNull(),
+  clientSecret: varchar("client_secret", { length: 255 }).notNull(),
+
+  // Token de acesso (gerenciado automaticamente)
+  accessToken: text("access_token"),
+  tokenExpiresAt: timestamp("token_expires_at"),
+
+  // Configurações de gatilho
+  active: boolean("active").default(true),
+  triggerOnReadyToPickup: boolean("trigger_on_ready_to_pickup").default(true),
+  triggerOnDispatched: boolean("trigger_on_dispatched").default(false),
+
+  // Endereço de coleta (restaurante)
+  pickupAddress: text("pickup_address"),
+  pickupLat: numeric("pickup_lat", { precision: 10, scale: 7 }),
+  pickupLng: numeric("pickup_lng", { precision: 10, scale: 7 }),
+
+  // Tipo de veículo padrão para entregas iFood
+  defaultVehicleTypeId: varchar("default_vehicle_type_id").references(() => vehicleTypes.id),
+
+  // Estatísticas
+  lastSyncAt: timestamp("last_sync_at"),
+  lastSyncStatus: varchar("last_sync_status", { length: 50 }), // success, error, no_events
+  lastSyncError: text("last_sync_error"),
+  totalDeliveriesCreated: integer("total_deliveries_created").default(0),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertIfoodCredentialsSchema = createInsertSchema(ifoodCredentials, {
+  companyId: z.string().min(1, "Empresa é obrigatória"),
+  merchantId: z.string().min(1, "Merchant ID é obrigatório"),
+  clientId: z.string().min(1, "Client ID é obrigatório"),
+  clientSecret: z.string().min(1, "Client Secret é obrigatório"),
+  pickupAddress: z.string().optional(),
+  pickupLat: z.string().optional(),
+  pickupLng: z.string().optional(),
+}).omit({
+  id: true,
+  accessToken: true,
+  tokenExpiresAt: true,
+  lastSyncAt: true,
+  lastSyncStatus: true,
+  lastSyncError: true,
+  totalDeliveriesCreated: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type IfoodCredentials = typeof ifoodCredentials.$inferSelect;
+export type InsertIfoodCredentials = z.infer<typeof insertIfoodCredentialsSchema>;
+
+// ========================================
+// IFOOD PROCESSED EVENTS (Controle de Idempotência)
+// ========================================
+export const ifoodProcessedEvents = pgTable("ifood_processed_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Identificadores do evento
+  eventId: varchar("event_id", { length: 100 }).notNull().unique(),
+  orderId: varchar("order_id", { length: 100 }).notNull(),
+  ifoodOrderDisplayId: varchar("ifood_order_display_id", { length: 50 }), // ID legível do pedido no iFood
+
+  // Vínculo com credenciais
+  ifoodCredentialId: varchar("ifood_credential_id").notNull()
+    .references(() => ifoodCredentials.id, { onDelete: 'cascade' }),
+
+  // Vínculo com entrega criada no app (se criada)
+  requestId: varchar("request_id").references(() => requests.id, { onDelete: 'set null' }),
+
+  // Dados do evento
+  eventCode: varchar("event_code", { length: 20 }).notNull(), // RTP, DSP, etc
+  eventFullCode: varchar("event_full_code", { length: 50 }).notNull(), // READY_TO_PICKUP, DISPATCHED, etc
+
+  // Status do processamento
+  status: varchar("status", { length: 20 }).notNull().default("processed"), // processed, error, skipped
+  errorMessage: text("error_message"),
+
+  processedAt: timestamp("processed_at").notNull().defaultNow(),
+});
+
+export const insertIfoodProcessedEventSchema = createInsertSchema(ifoodProcessedEvents, {
+  eventId: z.string().min(1, "Event ID é obrigatório"),
+  orderId: z.string().min(1, "Order ID é obrigatório"),
+  ifoodCredentialId: z.string().min(1, "Credential ID é obrigatório"),
+  eventCode: z.string().min(1, "Event code é obrigatório"),
+  eventFullCode: z.string().min(1, "Event full code é obrigatório"),
+}).omit({
+  id: true,
+  processedAt: true,
+});
+
+export type IfoodProcessedEvent = typeof ifoodProcessedEvents.$inferSelect;
+export type InsertIfoodProcessedEvent = z.infer<typeof insertIfoodProcessedEventSchema>;
