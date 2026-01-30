@@ -37,28 +37,24 @@ interface NotaFiscal {
   competencia: string;
   dataEmissao: string;
   valor: number;
-  status: "emitida" | "pendente" | "cancelada";
+  status: "emitida" | "pendente" | "cancelada" | "erro";
   xmlUrl?: string;
   pdfUrl?: string;
+  asaasId?: string;
 }
 
 export default function EmpresaNotasFiscais() {
   const [anoFiltro, setAnoFiltro] = useState<string>(new Date().getFullYear().toString());
   const [searchTerm, setSearchTerm] = useState("");
 
-  // Por enquanto, dados mock - substituir por API quando disponível
   const { data: notasFiscais, isLoading, refetch } = useQuery<NotaFiscal[]>({
     queryKey: ["/api/empresa/notas-fiscais", anoFiltro],
     queryFn: async () => {
-      // TODO: Implementar endpoint no backend
-      // const response = await fetch(`/api/empresa/notas-fiscais?ano=${anoFiltro}`, {
-      //   credentials: "include",
-      // });
-      // if (!response.ok) throw new Error("Erro ao buscar notas fiscais");
-      // return response.json();
-
-      // Dados mock por enquanto
-      return [];
+      const response = await fetch(`/api/empresa/notas-fiscais?year=${anoFiltro}`, {
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Erro ao buscar notas fiscais");
+      return response.json();
     },
     enabled: true,
   });
@@ -88,6 +84,12 @@ export default function EmpresaNotasFiscais() {
         return (
           <Badge className="bg-red-100 text-red-700 hover:bg-red-100 border-red-200">
             Cancelada
+          </Badge>
+        );
+      case "erro":
+        return (
+          <Badge className="bg-orange-100 text-orange-700 hover:bg-orange-100 border-orange-200">
+            Erro
           </Badge>
         );
       default:

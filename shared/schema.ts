@@ -753,6 +753,22 @@ export const settings = pgTable("settings", {
   smtpFromName: varchar("smtp_from_name", { length: 255 }),
   smtpSecure: boolean("smtp_secure").default(true),
 
+  // Configuração Fiscal (NFS-e)
+  nfseEnabled: boolean("nfse_enabled").default(false),
+  nfseAutoEmit: boolean("nfse_auto_emit").default(false),
+  nfseMunicipalServiceCode: varchar("nfse_municipal_service_code", { length: 20 }),
+  nfseMunicipalServiceName: varchar("nfse_municipal_service_name", { length: 255 }),
+  nfseDefaultDescription: text("nfse_default_description"),
+
+  // Alíquotas padrão de impostos (NFS-e)
+  nfseIssRate: numeric("nfse_iss_rate", { precision: 5, scale: 2 }).default("0"),
+  nfseIssRetained: boolean("nfse_iss_retained").default(false),
+  nfseCofinsRate: numeric("nfse_cofins_rate", { precision: 5, scale: 2 }).default("0"),
+  nfseCsllRate: numeric("nfse_csll_rate", { precision: 5, scale: 2 }).default("0"),
+  nfseInssRate: numeric("nfse_inss_rate", { precision: 5, scale: 2 }).default("0"),
+  nfseIrRate: numeric("nfse_ir_rate", { precision: 5, scale: 2 }).default("0"),
+  nfsePisRate: numeric("nfse_pis_rate", { precision: 5, scale: 2 }).default("0"),
+
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -909,6 +925,22 @@ export const insertSettingsSchema = z.object({
   smtpFromEmail: z.string().nullable().optional(),
   smtpFromName: z.string().nullable().optional(),
   smtpSecure: z.boolean().nullable().optional(),
+
+  // Configuração Fiscal (NFS-e)
+  nfseEnabled: z.boolean().nullable().optional(),
+  nfseAutoEmit: z.boolean().nullable().optional(),
+  nfseMunicipalServiceCode: z.string().nullable().optional(),
+  nfseMunicipalServiceName: z.string().nullable().optional(),
+  nfseDefaultDescription: z.string().nullable().optional(),
+
+  // Alíquotas padrão de impostos (NFS-e)
+  nfseIssRate: z.union([z.string(), z.number(), z.null()]).transform(val => val === null ? null : String(val)).nullable().optional(),
+  nfseIssRetained: z.boolean().nullable().optional(),
+  nfseCofinsRate: z.union([z.string(), z.number(), z.null()]).transform(val => val === null ? null : String(val)).nullable().optional(),
+  nfseCsllRate: z.union([z.string(), z.number(), z.null()]).transform(val => val === null ? null : String(val)).nullable().optional(),
+  nfseInssRate: z.union([z.string(), z.number(), z.null()]).transform(val => val === null ? null : String(val)).nullable().optional(),
+  nfseIrRate: z.union([z.string(), z.number(), z.null()]).transform(val => val === null ? null : String(val)).nullable().optional(),
+  nfsePisRate: z.union([z.string(), z.number(), z.null()]).transform(val => val === null ? null : String(val)).nullable().optional(),
 });
 
 // ========================================
@@ -2251,6 +2283,93 @@ export const insertWithdrawalSchema = createInsertSchema(withdrawals, {
 
 export type Withdrawal = typeof withdrawals.$inferSelect;
 export type InsertWithdrawal = z.infer<typeof insertWithdrawalSchema>;
+
+// ========================================
+// INVOICES (Notas Fiscais de Serviço - NFS-e)
+// ========================================
+export const invoices = pgTable("invoices", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Relacionamentos
+  companyId: varchar("company_id").notNull().references(() => companies.id),
+  chargeId: varchar("charge_id").references(() => charges.id),
+
+  // Dados Asaas
+  asaasId: varchar("asaas_id", { length: 100 }),
+  asaasPaymentId: varchar("asaas_payment_id", { length: 100 }),
+  asaasCustomerId: varchar("asaas_customer_id", { length: 100 }),
+
+  // Dados da Nota Fiscal
+  invoiceNumber: varchar("invoice_number", { length: 50 }),
+  verificationCode: varchar("verification_code", { length: 100 }),
+
+  // Serviço
+  serviceDescription: text("service_description").notNull(),
+  municipalServiceCode: varchar("municipal_service_code", { length: 20 }),
+  municipalServiceId: varchar("municipal_service_id", { length: 50 }),
+  municipalServiceName: varchar("municipal_service_name", { length: 255 }),
+
+  // Valores
+  value: numeric("value", { precision: 15, scale: 2 }).notNull(),
+  deductions: numeric("deductions", { precision: 15, scale: 2 }).default("0"),
+  netValue: numeric("net_value", { precision: 15, scale: 2 }),
+
+  // Impostos
+  issRate: numeric("iss_rate", { precision: 5, scale: 2 }).default("0"),
+  issValue: numeric("iss_value", { precision: 15, scale: 2 }).default("0"),
+  issRetained: boolean("iss_retained").default(false),
+  cofinsRate: numeric("cofins_rate", { precision: 5, scale: 2 }).default("0"),
+  csllRate: numeric("csll_rate", { precision: 5, scale: 2 }).default("0"),
+  inssRate: numeric("inss_rate", { precision: 5, scale: 2 }).default("0"),
+  irRate: numeric("ir_rate", { precision: 5, scale: 2 }).default("0"),
+  pisRate: numeric("pis_rate", { precision: 5, scale: 2 }).default("0"),
+
+  // Datas
+  effectiveDate: timestamp("effective_date").notNull(), // Data de competência
+  issuedAt: timestamp("issued_at"), // Data de emissão (quando autorizada)
+  cancelledAt: timestamp("cancelled_at"), // Data de cancelamento
+
+  // Competência (mês/ano)
+  competenceMonth: integer("competence_month").notNull(), // 1-12
+  competenceYear: integer("competence_year").notNull(), // 2024, 2025, etc.
+
+  // Status: scheduled, synchronized, authorized, error, processing_cancellation, cancelled, cancellation_denied
+  status: varchar("status", { length: 30 }).notNull().default("scheduled"),
+  statusDescription: text("status_description"),
+  errorMessage: text("error_message"),
+
+  // URLs dos arquivos
+  pdfUrl: text("pdf_url"),
+  xmlUrl: text("xml_url"),
+
+  // Observações
+  observations: text("observations"),
+
+  // Metadata
+  metadata: json("metadata").$type<Record<string, unknown>>(),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertInvoiceSchema = createInsertSchema(invoices, {
+  companyId: z.string().min(1, "Empresa é obrigatória"),
+  serviceDescription: z.string().min(1, "Descrição do serviço é obrigatória"),
+  value: z.union([z.string(), z.number()]).transform(val => String(val)),
+  competenceMonth: z.number().int().min(1).max(12),
+  competenceYear: z.number().int().min(2020).max(2100),
+  status: z.enum([
+    "scheduled", "synchronized", "authorized",
+    "error", "processing_cancellation", "cancelled", "cancellation_denied"
+  ]).default("scheduled"),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type Invoice = typeof invoices.$inferSelect;
+export type InsertInvoice = z.infer<typeof insertInvoiceSchema>;
 
 // ========================================
 // WEBHOOKS LOG (Log de Webhooks do Asaas)

@@ -32,6 +32,8 @@ import MotoristasAtivos from "@/pages/motoristas-ativos";
 import MotoristasBloqueados from "@/pages/motoristas-bloqueados";
 import MotoristasAguardando from "@/pages/motoristas-aguardando";
 import Configuracoes from "@/pages/configuracoes";
+import ConfiguracaoFiscal from "@/pages/configuracao-fiscal";
+import AdminNotasFiscais from "@/pages/admin-notas-fiscais";
 import Pesquisas from "@/pages/pesquisas";
 import PesquisaPublica from "@/pages/pesquisa-publica";
 import Register from "@/pages/register";
@@ -149,6 +151,8 @@ function Router() {
               <Route path="/financeiro" component={Financeiro} />
               <Route path="/financeiro/saques" component={FinanceiroSaques} />
               <Route path="/financeiro/boletos" component={AdminBoletos} />
+              <Route path="/financeiro/configuracao-fiscal" component={ConfiguracaoFiscal} />
+              <Route path="/financeiro/notas-fiscais" component={AdminNotasFiscais} />
               <Route path="/precos" component={Precos} />
               <Route path="/rotas-intermunicipais" component={RotasIntermunicipais} />
               <Route path="/motoristas/ativos" component={MotoristasAtivos} />

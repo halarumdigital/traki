@@ -15,6 +15,7 @@ import { startPaymentSyncJob } from "./scheduled-payments-job";
 import { startAllocationJobs, setAllocationJobsSocketIO } from "./allocation-job";
 import { startHeartbeatJob } from "./driver-heartbeat-job";
 import { startWeeklyClosingJob, startOverdueCheckJob } from "./weekly-closing-job";
+import { startMonthlyInvoiceJob } from "./monthly-invoice-job";
 
 const app = express();
 const httpServer = createServer(app);
@@ -131,7 +132,8 @@ app.use((req, res, next) => {
     startPaymentSyncJob(io);
     startHeartbeatJob(io); // Verificar motoristas inativos a cada 30s
     startWeeklyClosingJob(); // Fechamento semanal pós-pago (domingos 00:00)
-    startOverdueCheckJob(); // Verificar cobranças vencidas (diariamente 08:00)
+    startOverdueCheckJob();
+    startMonthlyInvoiceJob(); // Emissão de NFS-e mensal (último dia do mês 23:59) // Verificar cobranças vencidas (diariamente 08:00)
     setAllocationJobsSocketIO(io); // Configurar Socket.IO para jobs de alocação
     startAllocationJobs(); // Jobs de alocação de entregadores
   });

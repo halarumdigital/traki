@@ -19,7 +19,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { RefreshCw, Clock, Search, ArrowUpFromLine, CheckCircle, XCircle, Loader2 } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { RefreshCw, Clock, Search, ArrowUpFromLine, CheckCircle, XCircle, Loader2, Receipt, ExternalLink, Copy } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 
 interface Withdrawal {
   id: string;
@@ -29,6 +37,7 @@ interface Withdrawal {
   netAmount: number;
   pixKeyType: string;
   pixKey: string;
+  asaasTransferId: string | null;
   status: string;
   failureReason: string | null;
   createdAt: string;
@@ -36,6 +45,22 @@ interface Withdrawal {
   driverName: string;
   driverCpf: string | null;
   driverMobile: string;
+}
+
+interface TransferReceipt {
+  transferId: string;
+  status: string;
+  value?: number;
+  netValue?: number;
+  transferFee?: number;
+  effectiveDate?: string;
+  endToEndIdentifier?: string;
+  transactionReceiptUrl?: string | null;
+  pixAddressKey?: string;
+  pixAddressKeyType?: string;
+  dateCreated?: string;
+  failReason?: string;
+  message?: string;
 }
 
 interface WithdrawalsResponse {
@@ -47,6 +72,11 @@ interface WithdrawalsResponse {
 export default function FinanceiroSaques() {
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [receiptDialogOpen, setReceiptDialogOpen] = useState(false);
+  const [selectedWithdrawal, setSelectedWithdrawal] = useState<Withdrawal | null>(null);
+  const [receiptLoading, setReceiptLoading] = useState(false);
+  const [receiptData, setReceiptData] = useState<TransferReceipt | null>(null);
+  const { toast } = useToast();
 
   // Buscar saques
   const { data: withdrawalsData, isLoading: withdrawalsLoading, refetch: refetchWithdrawals } = useQuery<WithdrawalsResponse>({
@@ -64,6 +94,44 @@ export default function FinanceiroSaques() {
       return response.json();
     },
   });
+
+  const fetchReceipt = async (withdrawal: Withdrawal) => {
+    setSelectedWithdrawal(withdrawal);
+    setReceiptDialogOpen(true);
+    setReceiptLoading(true);
+    setReceiptData(null);
+
+    try {
+      const response = await fetch(`/api/admin/withdrawals/${withdrawal.id}/receipt`, {
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || "Erro ao buscar comprovante");
+      }
+
+      const data = await response.json();
+      setReceiptData(data);
+    } catch (error: any) {
+      toast({
+        title: "Erro",
+        description: error.message || "Erro ao buscar comprovante",
+        variant: "destructive",
+      });
+      setReceiptDialogOpen(false);
+    } finally {
+      setReceiptLoading(false);
+    }
+  };
+
+  const copyToClipboard = (text: string, label: string) => {
+    navigator.clipboard.writeText(text);
+    toast({
+      title: "Copiado!",
+      description: `${label} copiado para a área de transferência`,
+    });
+  };
 
   const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
@@ -238,6 +306,7 @@ export default function FinanceiroSaques() {
                     <TableHead>Valor</TableHead>
                     <TableHead>Chave PIX</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead className="text-center">Comprovante</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -285,6 +354,20 @@ export default function FinanceiroSaques() {
                           )}
                         </div>
                       </TableCell>
+                      <TableCell className="text-center">
+                        {withdrawal.asaasTransferId ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => fetchReceipt(withdrawal)}
+                            title="Ver comprovante"
+                          >
+                            <Receipt className="h-4 w-4" />
+                          </Button>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">-</span>
+                        )}
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -293,6 +376,143 @@ export default function FinanceiroSaques() {
           )}
         </CardContent>
       </Card>
+
+      {/* Dialog de Comprovante */}
+      <Dialog open={receiptDialogOpen} onOpenChange={setReceiptDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Receipt className="h-5 w-5" />
+              Comprovante de Saque
+            </DialogTitle>
+            <DialogDescription>
+              {selectedWithdrawal?.driverName} - {formatCurrency(selectedWithdrawal?.amount || 0)}
+            </DialogDescription>
+          </DialogHeader>
+
+          {receiptLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+            </div>
+          ) : receiptData ? (
+            <div className="space-y-4">
+              {/* Status da Transferência */}
+              <div className="flex items-center justify-between p-3 bg-muted rounded-lg">
+                <span className="text-sm font-medium">Status</span>
+                <span className={`text-sm font-semibold ${
+                  receiptData.status === "DONE" ? "text-green-600" :
+                  receiptData.status === "FAILED" ? "text-red-600" :
+                  receiptData.status === "CANCELLED" ? "text-gray-600" :
+                  "text-blue-600"
+                }`}>
+                  {receiptData.status === "DONE" ? "Concluído" :
+                   receiptData.status === "FAILED" ? "Falhou" :
+                   receiptData.status === "CANCELLED" ? "Cancelado" :
+                   receiptData.status === "PENDING" ? "Pendente" :
+                   receiptData.status === "BANK_PROCESSING" ? "Processando" :
+                   receiptData.status}
+                </span>
+              </div>
+
+              {/* Informações da Transferência */}
+              <div className="space-y-2">
+                {receiptData.transferId && (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">ID Transferência</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-xs">{receiptData.transferId.substring(0, 20)}...</span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        onClick={() => copyToClipboard(receiptData.transferId, "ID da transferência")}
+                      >
+                        <Copy className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {receiptData.endToEndIdentifier && (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">ID End-to-End (PIX)</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-xs">{receiptData.endToEndIdentifier.substring(0, 15)}...</span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        onClick={() => copyToClipboard(receiptData.endToEndIdentifier!, "ID End-to-End")}
+                      >
+                        <Copy className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {receiptData.value && (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">Valor</span>
+                    <span className="font-medium">{formatCurrency(receiptData.value)}</span>
+                  </div>
+                )}
+
+                {receiptData.transferFee !== undefined && receiptData.transferFee > 0 && (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">Taxa</span>
+                    <span className="font-medium text-red-600">-{formatCurrency(receiptData.transferFee)}</span>
+                  </div>
+                )}
+
+                {receiptData.netValue && (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">Valor Líquido</span>
+                    <span className="font-medium text-green-600">{formatCurrency(receiptData.netValue)}</span>
+                  </div>
+                )}
+
+                {receiptData.effectiveDate && (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">Data Efetiva</span>
+                    <span>{new Date(receiptData.effectiveDate).toLocaleString('pt-BR')}</span>
+                  </div>
+                )}
+
+                {receiptData.pixAddressKey && (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">Chave PIX</span>
+                    <span className="font-mono text-xs">{receiptData.pixAddressKey}</span>
+                  </div>
+                )}
+
+                {receiptData.failReason && (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+                    <p className="text-sm font-medium text-red-800">Motivo da Falha:</p>
+                    <p className="text-sm text-red-600">{receiptData.failReason}</p>
+                  </div>
+                )}
+
+                {receiptData.message && (
+                  <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+                    <p className="text-sm text-yellow-800">{receiptData.message}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Botão para Ver Comprovante Completo */}
+              {receiptData.transactionReceiptUrl && (
+                <Button
+                  className="w-full"
+                  onClick={() => window.open(receiptData.transactionReceiptUrl!, "_blank")}
+                >
+                  <ExternalLink className="h-4 w-4 mr-2" />
+                  Ver Comprovante Completo
+                </Button>
+              )}
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

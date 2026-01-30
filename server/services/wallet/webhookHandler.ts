@@ -1,6 +1,6 @@
 /**
  * Handler de Webhooks do Asaas
- * Processa eventos de pagamento e transferência
+ * Processa eventos de pagamento, transferência e notas fiscais
  */
 
 import { storage } from "../../storage";
@@ -14,6 +14,7 @@ import {
   processWithdrawalFailure,
   getWithdrawalByTransferId,
 } from "./withdrawalService";
+import { handleInvoiceWebhook } from "./invoiceService";
 
 /**
  * Eventos do Asaas que nos interessam:
@@ -24,6 +25,7 @@ import {
  * - PAYMENT_REFUNDED: Pagamento estornado
  * - TRANSFER_CONFIRMED: Transferência confirmada (saques)
  * - TRANSFER_FAILED: Transferência falhou
+ * - INVOICE_*: Eventos de notas fiscais (NFS-e)
  */
 
 interface AsaasWebhookPayload {
@@ -44,6 +46,16 @@ interface AsaasWebhookPayload {
     netValue?: number;
     status: string;
     failReason?: string;
+  };
+  invoice?: {
+    id: string;
+    status: string;
+    number?: string;
+    validationCode?: string;
+    pdfUrl?: string;
+    xmlUrl?: string;
+    statusDescription?: string;
+    payment?: string;
   };
 }
 
@@ -100,6 +112,18 @@ export async function handleAsaasWebhook(
 
       case "TRANSFER_FAILED":
         result = await handleTransferFailed(transfer!);
+        break;
+
+      // Eventos de Nota Fiscal (NFS-e)
+      case "INVOICE_CREATED":
+      case "INVOICE_UPDATED":
+      case "INVOICE_SYNCHRONIZED":
+      case "INVOICE_AUTHORIZED":
+      case "INVOICE_PROCESSING_CANCELLATION":
+      case "INVOICE_CANCELED":
+      case "INVOICE_CANCELLATION_DENIED":
+      case "INVOICE_ERROR":
+        result = await handleInvoiceEvent(payload.invoice!, event);
         break;
 
       default:
@@ -329,4 +353,46 @@ async function handleTransferFailed(
     message: "Saque marcado como falho, saldo desbloqueado",
     data: { withdrawalId: withdrawal.id, reason: transfer.failReason },
   };
+}
+
+/**
+ * Processa evento de nota fiscal (NFS-e)
+ */
+async function handleInvoiceEvent(
+  invoice: AsaasWebhookPayload["invoice"],
+  event: string
+): Promise<WebhookResult> {
+  if (!invoice) {
+    return { processed: false, event, message: "Invoice data missing" };
+  }
+
+  try {
+    const updatedInvoice = await handleInvoiceWebhook(invoice);
+
+    if (!updatedInvoice) {
+      console.log(`⚠️ NFS-e não encontrada no sistema: ${invoice.id}`);
+      return {
+        processed: false,
+        event,
+        message: "NFS-e não encontrada no sistema",
+      };
+    }
+
+    console.log(`📄 NFS-e ${updatedInvoice.id} atualizada: ${updatedInvoice.status}`);
+
+    return {
+      processed: true,
+      event,
+      message: `NFS-e atualizada: ${updatedInvoice.status}`,
+      data: {
+        invoiceId: updatedInvoice.id,
+        status: updatedInvoice.status,
+        invoiceNumber: updatedInvoice.invoiceNumber,
+      },
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Erro desconhecido";
+    console.error(`❌ Erro ao processar evento de NFS-e ${event}:`, message);
+    return { processed: false, event, message };
+  }
 }

@@ -12,11 +12,13 @@ import {
   CreditCard,
   Copy,
   ExternalLink,
-  Building2
+  Building2,
+  Search
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -71,6 +73,7 @@ interface BoletosResponse {
 
 export default function AdminBoletos() {
   const [statusFiltro, setStatusFiltro] = useState<string>("all");
+  const [buscaEmpresa, setBuscaEmpresa] = useState<string>("");
   const [selectedBoleto, setSelectedBoleto] = useState<Boleto | null>(null);
   const { toast } = useToast();
 
@@ -122,9 +125,11 @@ export default function AdminBoletos() {
     }
   };
 
-  const filteredBoletos = statusFiltro === "all"
-    ? data?.boletos
-    : data?.boletos?.filter(b => b.status === statusFiltro) || [];
+  const filteredBoletos = data?.boletos?.filter(b => {
+    const matchStatus = statusFiltro === "all" || b.status === statusFiltro;
+    const matchNome = buscaEmpresa === "" || b.empresaNome.toLowerCase().includes(buscaEmpresa.toLowerCase());
+    return matchStatus && matchNome;
+  }) || [];
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -203,18 +208,29 @@ export default function AdminBoletos() {
                 <CardTitle className="text-base font-medium">Boletos Semanais</CardTitle>
                 <CardDescription>Lista de boletos gerados por semana de todas as empresas</CardDescription>
               </div>
-              <Select value={statusFiltro} onValueChange={setStatusFiltro}>
-                <SelectTrigger className="w-[180px]">
-                  <Filter className="mr-2 h-4 w-4" />
-                  <SelectValue placeholder="Filtrar por Status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos</SelectItem>
-                  <SelectItem value="open">Em Aberto</SelectItem>
-                  <SelectItem value="overdue">Atrasados</SelectItem>
-                  <SelectItem value="paid">Pagos</SelectItem>
-                </SelectContent>
-              </Select>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Buscar empresa..."
+                    value={buscaEmpresa}
+                    onChange={(e) => setBuscaEmpresa(e.target.value)}
+                    className="pl-9 w-[200px]"
+                  />
+                </div>
+                <Select value={statusFiltro} onValueChange={setStatusFiltro}>
+                  <SelectTrigger className="w-[180px]">
+                    <Filter className="mr-2 h-4 w-4" />
+                    <SelectValue placeholder="Filtrar por Status" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos</SelectItem>
+                    <SelectItem value="open">Em Aberto</SelectItem>
+                    <SelectItem value="overdue">Atrasados</SelectItem>
+                    <SelectItem value="paid">Pagos</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           </CardHeader>
           <CardContent className="p-0">
@@ -312,9 +328,11 @@ export default function AdminBoletos() {
                   Nenhum boleto encontrado
                 </h3>
                 <p className="text-sm text-muted-foreground/70 max-w-sm">
-                  {statusFiltro !== "all"
-                    ? `Não há boletos com status "${statusFiltro === "open" ? "em aberto" : statusFiltro === "paid" ? "pago" : "atrasado"}"`
-                    : "Não há boletos gerados ainda"}
+                  {buscaEmpresa
+                    ? `Nenhum boleto encontrado para "${buscaEmpresa}"`
+                    : statusFiltro !== "all"
+                      ? `Não há boletos com status "${statusFiltro === "open" ? "em aberto" : statusFiltro === "paid" ? "pago" : "atrasado"}"`
+                      : "Não há boletos gerados ainda"}
                 </p>
               </div>
             )}

@@ -19,6 +19,7 @@ import { sentryUserContext } from "./sentry-middleware";
 import { uploadToR2, deleteFromR2, isValidImage, isValidDocument, isValidFileSize } from "./r2-storage";
 import { r2ProxyHandler, transformR2Urls } from "./r2-proxy";
 import { processDeliverySplit, canCompanyRequestDelivery } from "./services/wallet/deliverySplitService";
+import { getTransfer } from "./services/asaas/transfers";
 
 const PgSession = connectPgSimple(session);
 
@@ -6486,6 +6487,296 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ========================================
+  // FISCAL SETTINGS ROUTES (Configuração de NFS-e)
+  // ========================================
+
+  // GET /api/settings/fiscal - Buscar configurações fiscais
+  app.get("/api/settings/fiscal", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(401).json({ message: "Não autorizado" });
+      }
+
+      const settings = await storage.getSettings();
+
+      if (!settings) {
+        return res.status(404).json({ message: "Configurações não encontradas" });
+      }
+
+      // Retorna apenas os campos fiscais
+      res.json({
+        nfseEnabled: settings.nfseEnabled,
+        nfseAutoEmit: settings.nfseAutoEmit,
+        nfseMunicipalServiceCode: settings.nfseMunicipalServiceCode,
+        nfseMunicipalServiceName: settings.nfseMunicipalServiceName,
+        nfseDefaultDescription: settings.nfseDefaultDescription,
+        nfseIssRate: settings.nfseIssRate,
+        nfseIssRetained: settings.nfseIssRetained,
+        nfseCofinsRate: settings.nfseCofinsRate,
+        nfseCsllRate: settings.nfseCsllRate,
+        nfseInssRate: settings.nfseInssRate,
+        nfseIrRate: settings.nfseIrRate,
+        nfsePisRate: settings.nfsePisRate,
+      });
+    } catch (error: any) {
+      console.error("Erro ao buscar configurações fiscais:", error);
+      res.status(500).json({ message: "Erro ao buscar configurações fiscais" });
+    }
+  });
+
+  // PUT /api/settings/fiscal - Atualizar configurações fiscais
+  app.put("/api/settings/fiscal", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(401).json({ message: "Não autorizado" });
+      }
+
+      const {
+        nfseEnabled,
+        nfseAutoEmit,
+        nfseMunicipalServiceCode,
+        nfseMunicipalServiceName,
+        nfseDefaultDescription,
+        nfseIssRate,
+        nfseIssRetained,
+        nfseCofinsRate,
+        nfseCsllRate,
+        nfseInssRate,
+        nfseIrRate,
+        nfsePisRate,
+      } = req.body;
+
+      const settings = await storage.updateSettings({
+        nfseEnabled,
+        nfseAutoEmit,
+        nfseMunicipalServiceCode,
+        nfseMunicipalServiceName,
+        nfseDefaultDescription,
+        nfseIssRate,
+        nfseIssRetained,
+        nfseCofinsRate,
+        nfseCsllRate,
+        nfseInssRate,
+        nfseIrRate,
+        nfsePisRate,
+      });
+
+      if (!settings) {
+        return res.status(500).json({ message: "Erro ao salvar configurações fiscais" });
+      }
+
+      res.json({
+        message: "Configurações fiscais salvas com sucesso",
+        settings: {
+          nfseEnabled: settings.nfseEnabled,
+          nfseAutoEmit: settings.nfseAutoEmit,
+          nfseMunicipalServiceCode: settings.nfseMunicipalServiceCode,
+          nfseMunicipalServiceName: settings.nfseMunicipalServiceName,
+          nfseDefaultDescription: settings.nfseDefaultDescription,
+          nfseIssRate: settings.nfseIssRate,
+          nfseIssRetained: settings.nfseIssRetained,
+          nfseCofinsRate: settings.nfseCofinsRate,
+          nfseCsllRate: settings.nfseCsllRate,
+          nfseInssRate: settings.nfseInssRate,
+          nfseIrRate: settings.nfseIrRate,
+          nfsePisRate: settings.nfsePisRate,
+        },
+      });
+    } catch (error: any) {
+      console.error("Erro ao salvar configurações fiscais:", error);
+      res.status(500).json({ message: "Erro ao salvar configurações fiscais" });
+    }
+  });
+
+  // GET /api/fiscal/municipal-services - Lista serviços municipais do Asaas
+  app.get("/api/fiscal/municipal-services", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(401).json({ message: "Não autorizado" });
+      }
+
+      const { listMunicipalServices } = await import("./services/wallet/invoiceService");
+      const services = await listMunicipalServices();
+      return res.json(services);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao buscar serviços municipais";
+      console.error("Erro ao buscar serviços municipais:", error);
+      return res.status(500).json({ message });
+    }
+  });
+
+  // GET /api/fiscal/municipal-options - Opções de configuração municipal do Asaas
+  app.get("/api/fiscal/municipal-options", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(401).json({ message: "Não autorizado" });
+      }
+
+      const { getMunicipalOptionsConfig } = await import("./services/wallet/invoiceService");
+      const options = await getMunicipalOptionsConfig();
+      return res.json(options);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao buscar opções municipais";
+      console.error("Erro ao buscar opções municipais:", error);
+      return res.status(500).json({ message });
+    }
+  });
+
+  // POST /api/fiscal/emit-monthly - Emitir NFS-e mensal manualmente (admin)
+  app.post("/api/fiscal/emit-monthly", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(401).json({ message: "Não autorizado" });
+      }
+
+      const { companyId, month, year } = req.body;
+
+      if (!companyId) {
+        return res.status(400).json({ message: "ID da empresa é obrigatório" });
+      }
+
+      const { emitMonthlyInvoice } = await import("./services/wallet/invoiceService");
+
+      const now = new Date();
+      const targetMonth = month ?? now.getMonth() + 1;
+      const targetYear = year ?? now.getFullYear();
+
+      const result = await emitMonthlyInvoice(companyId, targetMonth, targetYear);
+
+      if (result.success) {
+        return res.json({
+          message: "NFS-e emitida com sucesso",
+          invoice: result.invoice,
+        });
+      } else {
+        return res.status(400).json({ message: result.error });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao emitir NFS-e";
+      console.error("Erro ao emitir NFS-e:", error);
+      return res.status(500).json({ message });
+    }
+  });
+
+  // POST /api/fiscal/emit-all-monthly - Emitir NFS-e para todas as empresas (admin)
+  app.post("/api/fiscal/emit-all-monthly", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(401).json({ message: "Não autorizado" });
+      }
+
+      const { month, year } = req.body;
+
+      const { processAllCompaniesMonthlyInvoices } = await import("./services/wallet/invoiceService");
+
+      const results = await processAllCompaniesMonthlyInvoices(month, year);
+
+      const successful = results.filter(r => r.success && r.invoiceId).length;
+      const totalAmount = results
+        .filter(r => r.success && r.invoiceId)
+        .reduce((sum, r) => sum + (r.totalAmount || 0), 0);
+
+      return res.json({
+        message: `Processamento concluído: ${successful}/${results.length} NFS-e emitidas`,
+        totalAmount,
+        results,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao emitir NFS-e";
+      console.error("Erro ao emitir NFS-e em lote:", error);
+      return res.status(500).json({ message });
+    }
+  });
+
+  // GET /api/fiscal/invoices - Lista todas as notas fiscais (admin)
+  app.get("/api/fiscal/invoices", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(401).json({ message: "Não autorizado" });
+      }
+
+      const { year, status, companyId } = req.query;
+
+      const { db } = await import("./db");
+      const { invoices, companies } = await import("@shared/schema");
+      const { eq, desc, and } = await import("drizzle-orm");
+
+      let query = db
+        .select({
+          invoice: invoices,
+          companyName: companies.name,
+        })
+        .from(invoices)
+        .leftJoin(companies, eq(invoices.companyId, companies.id));
+
+      // Aplicar filtros
+      const conditions = [];
+      if (year) {
+        conditions.push(eq(invoices.competenceYear, parseInt(year as string)));
+      }
+      if (status) {
+        conditions.push(eq(invoices.status, status as string));
+      }
+      if (companyId) {
+        conditions.push(eq(invoices.companyId, companyId as string));
+      }
+
+      if (conditions.length > 0) {
+        query = query.where(and(...conditions)) as typeof query;
+      }
+
+      const results = await query
+        .orderBy(desc(invoices.competenceYear), desc(invoices.competenceMonth))
+        .limit(100);
+
+      return res.json(results.map(r => ({
+        ...r.invoice,
+        companyName: r.companyName,
+      })));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao buscar notas fiscais";
+      console.error("Erro ao buscar notas fiscais:", error);
+      return res.status(500).json({ message });
+    }
+  });
+
+  // GET /api/fiscal/companies-pending - Lista empresas com NFS-e pendente no mês
+  app.get("/api/fiscal/companies-pending", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(401).json({ message: "Não autorizado" });
+      }
+
+      const { month, year } = req.query;
+
+      // Se não informado, usa o mês atual
+      const now = new Date();
+      const targetMonth = month ? parseInt(month as string) : now.getMonth() + 1;
+      const targetYear = year ? parseInt(year as string) : now.getFullYear();
+
+      const { getCompaniesWithPendingInvoices } = await import("./services/wallet/invoiceService");
+
+      const companies = await getCompaniesWithPendingInvoices(targetMonth, targetYear);
+
+      return res.json({
+        month: targetMonth,
+        year: targetYear,
+        companies,
+        summary: {
+          totalCompanies: companies.length,
+          withInvoice: companies.filter(c => c.hasInvoice).length,
+          withoutInvoice: companies.filter(c => !c.hasInvoice).length,
+          totalPendingAmount: companies.filter(c => !c.hasInvoice).reduce((sum, c) => sum + c.pendingAmount, 0),
+        }
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao buscar empresas pendentes";
+      console.error("Erro ao buscar empresas pendentes:", error);
+      return res.status(500).json({ message });
+    }
+  });
+
+  // ========================================
   // COMMISSION TIERS ROUTES
   // ========================================
 
@@ -10209,6 +10500,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           w.net_amount as "netAmount",
           w.pix_key_type as "pixKeyType",
           w.pix_key as "pixKey",
+          w.asaas_transfer_id as "asaasTransferId",
           w.status,
           w.failure_reason as "failureReason",
           w.created_at as "createdAt",
@@ -10306,6 +10598,73 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Erro ao buscar saques:", error);
       return res.status(500).json({ message: "Erro ao buscar saques" });
+    }
+  });
+
+  // GET /api/admin/withdrawals/:id/receipt - Buscar comprovante de saque do Asaas (Admin)
+  app.get("/api/admin/withdrawals/:id/receipt", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(401).json({ message: "Acesso negado. Apenas administradores." });
+      }
+
+      const { id } = req.params;
+
+      // Buscar o saque pelo ID
+      const withdrawalResult = await pool.query(
+        `SELECT asaas_transfer_id as "asaasTransferId", status FROM withdrawals WHERE id = $1`,
+        [id]
+      );
+
+      if (withdrawalResult.rows.length === 0) {
+        return res.status(404).json({ message: "Saque não encontrado" });
+      }
+
+      const withdrawal = withdrawalResult.rows[0];
+
+      if (!withdrawal.asaasTransferId) {
+        return res.status(400).json({ message: "Este saque não possui ID de transferência do Asaas" });
+      }
+
+      // Buscar detalhes da transferência no Asaas
+      try {
+        const transfer = await getTransfer(withdrawal.asaasTransferId);
+
+        return res.json({
+          transferId: transfer.id,
+          status: transfer.status,
+          value: transfer.value,
+          netValue: transfer.netValue,
+          transferFee: transfer.transferFee,
+          effectiveDate: transfer.effectiveDate,
+          endToEndIdentifier: transfer.endToEndIdentifier,
+          transactionReceiptUrl: transfer.transactionReceiptUrl,
+          pixAddressKey: transfer.pixAddressKey,
+          pixAddressKeyType: transfer.pixAddressKeyType,
+          dateCreated: transfer.dateCreated,
+          failReason: transfer.failReason,
+        });
+      } catch (asaasError: any) {
+        console.error("Erro ao buscar transferência no Asaas:", asaasError);
+
+        // Se for transferência simulada do sandbox, retorna informação básica
+        if (withdrawal.asaasTransferId.startsWith("sandbox_")) {
+          return res.json({
+            transferId: withdrawal.asaasTransferId,
+            status: withdrawal.status === "completed" ? "DONE" : "PENDING",
+            message: "Transferência simulada em ambiente sandbox",
+            transactionReceiptUrl: null,
+          });
+        }
+
+        return res.status(500).json({
+          message: "Erro ao buscar comprovante no Asaas",
+          error: asaasError?.message || "Erro desconhecido"
+        });
+      }
+    } catch (error) {
+      console.error("Erro ao buscar comprovante de saque:", error);
+      return res.status(500).json({ message: "Erro ao buscar comprovante de saque" });
     }
   });
 
@@ -17934,6 +18293,122 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Erro ao buscar boletos:", error);
       return res.status(500).json({ message: "Erro ao buscar boletos" });
+    }
+  });
+
+  // ========================================
+  // NOTAS FISCAIS - APIs da Empresa
+  // ========================================
+
+  const {
+    getCompanyInvoices,
+    getInvoiceById,
+    emitMonthlyInvoice,
+    cancelInvoiceById,
+    syncInvoiceStatus,
+    listMunicipalServices,
+    getMunicipalOptionsConfig,
+  } = await import("./services/wallet/invoiceService");
+
+  // GET /api/empresa/notas-fiscais - Lista notas fiscais da empresa
+  app.get("/api/empresa/notas-fiscais", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado como empresa" });
+      }
+
+      const { year, status } = req.query;
+
+      const invoices = await getCompanyInvoices(req.session.companyId, {
+        year: year ? parseInt(year as string) : undefined,
+        status: status as string,
+      });
+
+      // Transforma para formato do frontend
+      const formattedInvoices = invoices.map(invoice => {
+        const competencia = new Date(invoice.competenceYear, invoice.competenceMonth - 1)
+          .toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+
+        let frontendStatus: "emitida" | "pendente" | "cancelada" | "erro" = "pendente";
+        if (invoice.status === "authorized") frontendStatus = "emitida";
+        else if (invoice.status === "cancelled" || invoice.status === "cancellation_denied") frontendStatus = "cancelada";
+        else if (invoice.status === "error") frontendStatus = "erro";
+
+        return {
+          id: invoice.id,
+          numero: invoice.invoiceNumber || "-",
+          competencia,
+          dataEmissao: invoice.issuedAt
+            ? new Date(invoice.issuedAt).toLocaleDateString("pt-BR")
+            : "-",
+          valor: parseFloat(invoice.value),
+          status: frontendStatus,
+          pdfUrl: invoice.pdfUrl,
+          xmlUrl: invoice.xmlUrl,
+          asaasId: invoice.asaasId,
+        };
+      });
+
+      return res.json(formattedInvoices);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao buscar notas fiscais";
+      console.error("Erro ao buscar notas fiscais:", error);
+      return res.status(500).json({ message });
+    }
+  });
+
+  // GET /api/empresa/notas-fiscais/:id - Detalhes de uma nota fiscal
+  app.get("/api/empresa/notas-fiscais/:id", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado como empresa" });
+      }
+
+      const invoice = await getInvoiceById(req.params.id);
+
+      if (!invoice) {
+        return res.status(404).json({ message: "Nota fiscal não encontrada" });
+      }
+
+      if (invoice.companyId !== req.session.companyId) {
+        return res.status(403).json({ message: "Acesso não autorizado" });
+      }
+
+      return res.json(invoice);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao buscar nota fiscal";
+      console.error("Erro ao buscar nota fiscal:", error);
+      return res.status(500).json({ message });
+    }
+  });
+
+  // POST /api/empresa/notas-fiscais/:id/sync - Sincroniza status da nota fiscal
+  app.post("/api/empresa/notas-fiscais/:id/sync", async (req, res) => {
+    try {
+      if (!req.session.companyId) {
+        return res.status(401).json({ message: "Não autenticado como empresa" });
+      }
+
+      const invoice = await getInvoiceById(req.params.id);
+
+      if (!invoice) {
+        return res.status(404).json({ message: "Nota fiscal não encontrada" });
+      }
+
+      if (invoice.companyId !== req.session.companyId) {
+        return res.status(403).json({ message: "Acesso não autorizado" });
+      }
+
+      const updatedInvoice = await syncInvoiceStatus(req.params.id);
+
+      return res.json({
+        message: "Status sincronizado",
+        invoice: updatedInvoice,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao sincronizar nota fiscal";
+      console.error("Erro ao sincronizar nota fiscal:", error);
+      return res.status(500).json({ message });
     }
   });
 
