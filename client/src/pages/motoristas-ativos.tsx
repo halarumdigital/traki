@@ -45,7 +45,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Pencil, Trash2, Plus, Eye, Ban, MessageSquare, Search, Users, UserCheck, Star, Circle, DollarSign, TrendingUp, MapPin, ArrowUpDown, ArrowUp, ArrowDown, Wallet, ArrowDownToLine, ArrowUpFromLine, CreditCard, Key, PackageX, PackageCheck } from "lucide-react";
+import { Pencil, Trash2, Plus, Eye, Ban, MessageSquare, Search, Users, UserCheck, Star, Circle, DollarSign, TrendingUp, MapPin, ArrowUpDown, ArrowUp, ArrowDown, Wallet, ArrowDownToLine, ArrowUpFromLine, CreditCard, Key, PackageX, PackageCheck, History, Clock } from "lucide-react";
 import { useForm } from "react-hook-form";
 import type { VehicleType, Brand, VehicleModel } from "@shared/schema";
 
@@ -222,6 +222,20 @@ export default function MotoristasAtivos() {
 
   const { data: driverTrips = [] } = useQuery<any[]>({
     queryKey: ["/api/drivers", viewingDriver?.id, "trips"],
+    enabled: !!viewingDriver?.id,
+  });
+
+  const { data: driverAvailabilityLogs = [] } = useQuery<{
+    id: string;
+    driverId: string;
+    previousStatus: boolean;
+    newStatus: boolean;
+    latitude: string | null;
+    longitude: string | null;
+    source: string;
+    createdAt: string;
+  }[]>({
+    queryKey: ["/api/drivers", viewingDriver?.id, "availability-logs"],
     enabled: !!viewingDriver?.id,
   });
 
@@ -1119,10 +1133,11 @@ export default function MotoristasAtivos() {
           </DialogHeader>
           {viewingDriver && (
             <Tabs defaultValue="cadastro" className="w-full">
-              <TabsList className="grid w-full grid-cols-3">
+              <TabsList className="grid w-full grid-cols-4">
                 <TabsTrigger value="cadastro">Cadastro</TabsTrigger>
                 <TabsTrigger value="corridas">Corridas</TabsTrigger>
                 <TabsTrigger value="financeiro">Financeiro</TabsTrigger>
+                <TabsTrigger value="disponibilidade">Disponibilidade</TabsTrigger>
               </TabsList>
 
               <TabsContent value="cadastro" className="space-y-6 mt-4">
@@ -1724,6 +1739,160 @@ export default function MotoristasAtivos() {
                     )}
                   </div>
                 )}
+              </TabsContent>
+
+              <TabsContent value="disponibilidade" className="space-y-6 mt-4">
+                {(() => {
+                  // Calcular tempo total online
+                  const sortedLogs = [...driverAvailabilityLogs].sort(
+                    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+                  );
+
+                  let totalOnlineMs = 0;
+                  let lastOnlineTime: Date | null = null;
+
+                  for (const log of sortedLogs) {
+                    if (log.newStatus === true) {
+                      lastOnlineTime = new Date(log.createdAt);
+                    } else if (log.newStatus === false && lastOnlineTime) {
+                      const offlineTime = new Date(log.createdAt);
+                      totalOnlineMs += offlineTime.getTime() - lastOnlineTime.getTime();
+                      lastOnlineTime = null;
+                    }
+                  }
+
+                  // Se ainda está online, calcular até agora
+                  if (lastOnlineTime && viewingDriver?.available) {
+                    totalOnlineMs += Date.now() - lastOnlineTime.getTime();
+                  }
+
+                  const totalHours = totalOnlineMs / (1000 * 60 * 60);
+                  const hours = Math.floor(totalHours);
+                  const minutes = Math.floor((totalHours - hours) * 60);
+
+                  return (
+                    <>
+                      {/* Estatísticas de Disponibilidade */}
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <Card>
+                          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                            <CardTitle className="text-sm font-medium">Tempo Disponível</CardTitle>
+                            <Clock className="h-4 w-4 text-muted-foreground" />
+                          </CardHeader>
+                          <CardContent>
+                            <div className="text-2xl font-bold">
+                              {hours}h {minutes}min
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              Total de horas online
+                            </p>
+                          </CardContent>
+                        </Card>
+
+                        <Card>
+                          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                            <CardTitle className="text-sm font-medium">Vezes Online</CardTitle>
+                            <Circle className="h-4 w-4 fill-green-500 text-green-500" />
+                          </CardHeader>
+                          <CardContent>
+                            <div className="text-2xl font-bold text-green-600">
+                              {driverAvailabilityLogs.filter(log => log.newStatus === true).length}
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              Vezes que ficou online
+                            </p>
+                          </CardContent>
+                        </Card>
+
+                        <Card>
+                          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                            <CardTitle className="text-sm font-medium">Vezes Offline</CardTitle>
+                            <Circle className="h-4 w-4 fill-gray-400 text-gray-400" />
+                          </CardHeader>
+                          <CardContent>
+                            <div className="text-2xl font-bold text-gray-600">
+                              {driverAvailabilityLogs.filter(log => log.newStatus === false).length}
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              Vezes que ficou offline
+                            </p>
+                          </CardContent>
+                        </Card>
+                      </div>
+
+                      {/* Lista de Histórico */}
+                      <div className="border rounded-lg">
+                        <div className="p-4 border-b bg-muted/50">
+                          <h3 className="font-semibold text-lg flex items-center gap-2">
+                            <History className="h-5 w-5" />
+                            Histórico de Disponibilidade
+                          </h3>
+                        </div>
+                        <div className="max-h-[400px] overflow-y-auto">
+                          {driverAvailabilityLogs.length === 0 ? (
+                            <p className="text-muted-foreground text-center py-8">
+                              Nenhum registro de disponibilidade ainda
+                            </p>
+                          ) : (
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead>Data/Hora</TableHead>
+                                  <TableHead>Status Anterior</TableHead>
+                                  <TableHead>Novo Status</TableHead>
+                                  <TableHead>Origem</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {driverAvailabilityLogs.map((log) => (
+                                  <TableRow key={log.id}>
+                                    <TableCell className="font-medium">
+                                      {new Date(log.createdAt).toLocaleString('pt-BR')}
+                                    </TableCell>
+                                    <TableCell>
+                                      <div className="flex items-center gap-1">
+                                        <Circle
+                                          className={`h-2 w-2 ${log.previousStatus ? 'fill-green-500 text-green-500' : 'fill-gray-400 text-gray-400'}`}
+                                        />
+                                        <span className={`text-sm ${log.previousStatus ? 'text-green-600' : 'text-gray-500'}`}>
+                                          {log.previousStatus ? 'Online' : 'Offline'}
+                                        </span>
+                                      </div>
+                                    </TableCell>
+                                    <TableCell>
+                                      <div className="flex items-center gap-1">
+                                        <Circle
+                                          className={`h-2 w-2 ${log.newStatus ? 'fill-green-500 text-green-500' : 'fill-gray-400 text-gray-400'}`}
+                                        />
+                                        <span className={`text-sm font-medium ${log.newStatus ? 'text-green-600' : 'text-gray-500'}`}>
+                                          {log.newStatus ? 'Online' : 'Offline'}
+                                        </span>
+                                      </div>
+                                    </TableCell>
+                                    <TableCell>
+                                      <span className={`text-xs px-2 py-1 rounded ${
+                                        log.source === 'app' ? 'bg-blue-100 text-blue-700' :
+                                        log.source === 'logout' ? 'bg-orange-100 text-orange-700' :
+                                        log.source === 'admin' ? 'bg-purple-100 text-purple-700' :
+                                        'bg-gray-100 text-gray-700'
+                                      }`}>
+                                        {log.source === 'app' ? 'Aplicativo' :
+                                         log.source === 'logout' ? 'Logout' :
+                                         log.source === 'admin' ? 'Admin' :
+                                         log.source === 'system' ? 'Sistema' :
+                                         log.source}
+                                      </span>
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  );
+                })()}
               </TabsContent>
             </Tabs>
           )}

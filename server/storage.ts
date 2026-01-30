@@ -123,6 +123,10 @@ import {
   type InsertAllocation,
   type AllocationAlert,
   type InsertAllocationAlert,
+  // Driver Availability Logs
+  driverAvailabilityLogs,
+  type DriverAvailabilityLog,
+  type InsertDriverAvailabilityLog,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, desc, sql, inArray, gt, ne, or, isNull } from "drizzle-orm";
@@ -213,6 +217,10 @@ export interface IStorage {
   updateDriver(id: string, data: Partial<InsertDriver>): Promise<Driver | undefined>;
   updateDriverLocation(id: string, latitude: string, longitude: string): Promise<void>;
   deleteDriver(id: string): Promise<void>;
+
+  // ===== DRIVER AVAILABILITY LOGS (Histórico Online/Offline) =====
+  createDriverAvailabilityLog(data: InsertDriverAvailabilityLog): Promise<DriverAvailabilityLog>;
+  getDriverAvailabilityLogs(driverId: string, limit?: number): Promise<DriverAvailabilityLog[]>;
 
   // ===== REQUESTS (Corridas) =====
   getAllRequests(): Promise<Request[]>;
@@ -1068,6 +1076,23 @@ export class DatabaseStorage implements IStorage {
 
   async deleteDriver(id: string): Promise<void> {
     await db.delete(drivers).where(eq(drivers.id, id));
+  }
+
+  // ========================================
+  // DRIVER AVAILABILITY LOGS (Histórico Online/Offline)
+  // ========================================
+  async createDriverAvailabilityLog(data: InsertDriverAvailabilityLog): Promise<DriverAvailabilityLog> {
+    const [log] = await db.insert(driverAvailabilityLogs).values(data).returning();
+    return log;
+  }
+
+  async getDriverAvailabilityLogs(driverId: string, limit: number = 50): Promise<DriverAvailabilityLog[]> {
+    return await db
+      .select()
+      .from(driverAvailabilityLogs)
+      .where(eq(driverAvailabilityLogs.driverId, driverId))
+      .orderBy(desc(driverAvailabilityLogs.createdAt))
+      .limit(limit);
   }
 
   // ========================================

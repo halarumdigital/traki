@@ -2490,3 +2490,38 @@ export const insertAllocationAlertSchema = createInsertSchema(allocationAlerts, 
 
 export type AllocationAlert = typeof allocationAlerts.$inferSelect;
 export type InsertAllocationAlert = z.infer<typeof insertAllocationAlertSchema>;
+
+// ========================================
+// DRIVER AVAILABILITY LOGS (Histórico de Online/Offline)
+// ========================================
+export const driverAvailabilityLogs = pgTable("driver_availability_logs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  driverId: varchar("driver_id").notNull().references(() => drivers.id, { onDelete: "cascade" }),
+
+  // Status anterior e novo
+  previousStatus: boolean("previous_status").notNull(), // true = online, false = offline
+  newStatus: boolean("new_status").notNull(), // true = online, false = offline
+
+  // Localização no momento da mudança (opcional)
+  latitude: numeric("latitude", { precision: 10, scale: 7 }),
+  longitude: numeric("longitude", { precision: 10, scale: 7 }),
+
+  // Informações adicionais
+  source: varchar("source", { length: 50 }).default("app"), // 'app', 'admin', 'system', 'logout'
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertDriverAvailabilityLogSchema = createInsertSchema(driverAvailabilityLogs, {
+  driverId: z.string().min(1, "Motorista é obrigatório"),
+  previousStatus: z.boolean(),
+  newStatus: z.boolean(),
+  source: z.enum(["app", "admin", "system", "logout"]).default("app"),
+}).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type DriverAvailabilityLog = typeof driverAvailabilityLogs.$inferSelect;
+export type InsertDriverAvailabilityLog = z.infer<typeof insertDriverAvailabilityLogSchema>;

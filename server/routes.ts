@@ -7407,6 +7407,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // GET /api/drivers/:id/availability-logs - Buscar histórico de online/offline do motorista
+  app.get("/api/drivers/:id/availability-logs", async (req, res) => {
+    try {
+      if (!req.session.userId) {
+        return res.status(401).json({ message: "Não autenticado" });
+      }
+
+      const { id } = req.params;
+      const limit = parseInt(req.query.limit as string) || 50;
+
+      const logs = await storage.getDriverAvailabilityLogs(id, limit);
+
+      return res.json(logs);
+    } catch (error) {
+      console.error("Erro ao buscar histórico de disponibilidade:", error);
+      return res.status(500).json({ message: "Erro ao buscar histórico" });
+    }
+  });
+
   // POST /api/drivers/:id/notes - Adicionar nota a um motorista
   app.post("/api/drivers/:id/notes", async (req, res) => {
     try {
@@ -13326,10 +13345,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Atualiza disponibilidade e heartbeat
       const newAvailability = availability === 1 || availability === true;
+      const previousAvailability = driver.available;
+
       await storage.updateDriver(driverId, {
         available: newAvailability,
         lastHeartbeat: newAvailability ? new Date() : null // Atualiza heartbeat ao ficar online
       });
+
+      // Salvar histórico de mudança de status (apenas se realmente mudou)
+      if (previousAvailability !== newAvailability) {
+        await storage.createDriverAvailabilityLog({
+          driverId: driverId,
+          previousStatus: previousAvailability,
+          newStatus: newAvailability,
+          latitude: driver.latitude || undefined,
+          longitude: driver.longitude || undefined,
+          source: "app"
+        });
+      }
 
       // 🔴 Emitir evento Socket.IO para o painel em tempo real
       const { io } = await import('./index');
@@ -13517,10 +13550,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ message: "Não autenticado" });
       }
 
+      const driverId = req.session.driverId;
+
+      // Busca motorista para verificar status atual
+      const driver = await storage.getDriver(driverId);
+
       // Marca motorista como offline antes de fazer logout
-      await storage.updateDriver(req.session.driverId, {
+      await storage.updateDriver(driverId, {
         available: false
       });
+
+      // Salvar histórico se estava online
+      if (driver && driver.available) {
+        await storage.createDriverAvailabilityLog({
+          driverId: driverId,
+          previousStatus: true,
+          newStatus: false,
+          latitude: driver.latitude || undefined,
+          longitude: driver.longitude || undefined,
+          source: "logout"
+        });
+      }
 
       req.session.destroy((err) => {
         if (err) {
