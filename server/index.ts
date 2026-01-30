@@ -12,6 +12,7 @@ import { startMonthlyResetJob } from "./monthly-reset-job";
 import { startScheduledDeliveriesJob } from "./scheduled-deliveries-job";
 import { startViagemRemindersJob } from "./viagens-intermunicipais-reminder-job";
 import { startPaymentSyncJob } from "./scheduled-payments-job";
+import { startAllocationJobs, setAllocationJobsSocketIO } from "./allocation-job";
 import { startHeartbeatJob } from "./driver-heartbeat-job";
 import { startWeeklyClosingJob, startOverdueCheckJob } from "./weekly-closing-job";
 
@@ -131,5 +132,7 @@ app.use((req, res, next) => {
     startHeartbeatJob(io); // Verificar motoristas inativos a cada 30s
     startWeeklyClosingJob(); // Fechamento semanal pós-pago (domingos 00:00)
     startOverdueCheckJob(); // Verificar cobranças vencidas (diariamente 08:00)
+    setAllocationJobsSocketIO(io); // Configurar Socket.IO para jobs de alocação
+    startAllocationJobs(); // Jobs de alocação de entregadores
   });
 })();

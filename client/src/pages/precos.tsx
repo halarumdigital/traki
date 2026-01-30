@@ -48,7 +48,7 @@ import { Switch } from "@/components/ui/switch";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { PlusCircle, Edit, DollarSign, Trash2 } from "lucide-react";
+import { PlusCircle, Edit, DollarSign, Trash2, Clock } from "lucide-react";
 
 type CityPrice = {
   id: string;
@@ -68,6 +68,7 @@ type CityPrice = {
 type ServiceLocation = {
   id: string;
   name: string;
+  state?: string;
 };
 
 type VehicleType = {
@@ -78,6 +79,25 @@ type VehicleType = {
 type RotaIntermunicipal = {
   id: string;
   nomeRota: string;
+};
+
+type AllocationSlotItem = {
+  name: string;
+  startTime: string;
+  endTime: string;
+  basePrice: string;
+  active: boolean;
+};
+
+type AllocationTimeSlot = {
+  id: string;
+  name: string;
+  startTime: string;
+  endTime: string;
+  basePrice: string;
+  serviceLocationId: string | null;
+  cityName?: string | null;
+  active: boolean;
 };
 
 const priceSchema = z.object({
@@ -98,11 +118,9 @@ const priceSchema = z.object({
   dynamicPriceActive: z.boolean().default(false),
   active: z.boolean().default(true),
 }).refine((data) => {
-  // Se for rota intermunicipal, precisa ter rotaIntermunicipalId
   if (data.tipo === "rota_intermunicipal") {
     return !!data.rotaIntermunicipalId;
   }
-  // Se for entrega rápida, precisa ter serviceLocationId
   if (data.tipo === "entrega_rapida") {
     return !!data.serviceLocationId;
   }
@@ -126,61 +144,69 @@ export default function Precos() {
   const { toast } = useToast();
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingPrice, setEditingPrice] = useState<CityPrice | null>(null);
+  const [pendingSlots, setPendingSlots] = useState<AllocationSlotItem[]>([]);
+  const [newSlotName, setNewSlotName] = useState("");
+  const [newSlotStart, setNewSlotStart] = useState("");
+  const [newSlotEnd, setNewSlotEnd] = useState("");
+  const [newSlotPrice, setNewSlotPrice] = useState("");
 
-  // Buscar preços da API
   const { data: precos = [], isLoading } = useQuery<CityPrice[]>({
     queryKey: ["/api/city-prices"],
   });
 
-  // Buscar cidades
   const { data: cities = [] } = useQuery<ServiceLocation[]>({
     queryKey: ["/api/cities"],
   });
 
-  // Buscar categorias
   const { data: categories = [] } = useQuery<VehicleType[]>({
     queryKey: ["/api/vehicle-types"],
   });
 
-  // Buscar rotas intermunicipais
   const { data: rotas = [] } = useQuery<RotaIntermunicipal[]>({
     queryKey: ["/api/rotas-intermunicipais"],
   });
 
-  // Mutation para criar preço
+  const { data: allocationSlots = [] } = useQuery<AllocationTimeSlot[]>({
+    queryKey: ["/api/admin/allocation-time-slots"],
+  });
+
+  const deleteSlotMutation = useMutation({
+    mutationFn: async (id: string) => {
+      return await apiRequest("DELETE", `/api/admin/allocation-time-slots/${id}`, {});
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/allocation-time-slots"] });
+      toast({ title: "Sucesso!", description: "Faixa excluída" });
+    },
+    onError: (error: any) => {
+      toast({ title: "Erro", description: error.message, variant: "destructive" });
+    },
+  });
+
   const createMutation = useMutation({
     mutationFn: async (data: PriceForm) => {
       return await apiRequest("POST", "/api/city-prices", data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/city-prices"] });
-      toast({ title: "Sucesso!", description: "Preço criado com sucesso" });
-      setIsDialogOpen(false);
-      form.reset();
     },
     onError: (error: any) => {
       toast({ title: "Erro", description: error.message, variant: "destructive" });
     },
   });
 
-  // Mutation para atualizar preço
   const updateMutation = useMutation({
     mutationFn: async ({ id, data }: { id: string; data: PriceForm }) => {
       return await apiRequest("PUT", `/api/city-prices/${id}`, data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/city-prices"] });
-      toast({ title: "Sucesso!", description: "Preço atualizado com sucesso" });
-      setIsDialogOpen(false);
-      setEditingPrice(null);
-      form.reset();
     },
     onError: (error: any) => {
       toast({ title: "Erro", description: error.message, variant: "destructive" });
     },
   });
 
-  // Mutation para excluir preço
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
       return await apiRequest("DELETE", `/api/city-prices/${id}`, {});
@@ -216,19 +242,66 @@ export default function Precos() {
     },
   });
 
-  // Watch tipo field to conditionally show rota selector
   const tipoValue = form.watch("tipo");
 
-  const onSubmit = (data: PriceForm) => {
-    if (editingPrice) {
-      updateMutation.mutate({ id: editingPrice.id, data });
-    } else {
-      createMutation.mutate(data);
+  const onSubmit = async (data: PriceForm) => {
+    try {
+      if (editingPrice) {
+        await updateMutation.mutateAsync({ id: editingPrice.id, data });
+        toast({ title: "Sucesso!", description: "Preço atualizado com sucesso" });
+      } else {
+        await createMutation.mutateAsync(data);
+        toast({ title: "Sucesso!", description: "Preço criado com sucesso" });
+      }
+
+      // Criar faixas de alocação pendentes
+      console.log("Verificando faixas pendentes:", {
+        tipo: data.tipo,
+        serviceLocationId: data.serviceLocationId,
+        pendingSlotsLength: pendingSlots.length,
+        pendingSlots
+      });
+
+      if (data.tipo === "entrega_rapida" && data.serviceLocationId && pendingSlots.length > 0) {
+        console.log("Iniciando criação de faixas...");
+        let slotsCreated = 0;
+        for (const slot of pendingSlots) {
+          try {
+            console.log("Criando faixa:", slot);
+            const response = await apiRequest("POST", "/api/admin/allocation-time-slots", {
+              ...slot,
+              serviceLocationId: data.serviceLocationId,
+            });
+            console.log("Faixa criada com sucesso:", response);
+            slotsCreated++;
+          } catch (error: any) {
+            console.error("Erro ao criar faixa:", error);
+            toast({ title: "Erro ao criar faixa", description: error.message || "Erro desconhecido", variant: "destructive" });
+          }
+        }
+        queryClient.invalidateQueries({ queryKey: ["/api/admin/allocation-time-slots"] });
+        if (slotsCreated > 0) {
+          toast({ title: "Sucesso!", description: `${slotsCreated} faixa(s) de alocação criada(s)` });
+        }
+        setPendingSlots([]);
+      }
+
+      setIsDialogOpen(false);
+      setEditingPrice(null);
+      form.reset();
+    } catch (error: any) {
+      console.error("Erro no onSubmit:", error);
+      toast({ title: "Erro", description: error.message || "Erro ao salvar", variant: "destructive" });
     }
   };
 
   const handleEdit = (preco: any) => {
     setEditingPrice(preco);
+    setPendingSlots([]);
+    setNewSlotName("");
+    setNewSlotStart("");
+    setNewSlotEnd("");
+    setNewSlotPrice("");
     form.reset({
       tipo: preco.tipo || "entrega_rapida",
       rotaIntermunicipalId: preco.rotaIntermunicipalId || "",
@@ -252,6 +325,11 @@ export default function Precos() {
 
   const handleNewPrice = () => {
     setEditingPrice(null);
+    setPendingSlots([]);
+    setNewSlotName("");
+    setNewSlotStart("");
+    setNewSlotEnd("");
+    setNewSlotPrice("");
     form.reset({
       tipo: "entrega_rapida",
       rotaIntermunicipalId: "",
@@ -271,6 +349,28 @@ export default function Precos() {
       active: true,
     });
     setIsDialogOpen(true);
+  };
+
+  const handleAddPendingSlot = () => {
+    if (!newSlotName || !newSlotStart || !newSlotEnd || !newSlotPrice) {
+      toast({ title: "Erro", description: "Preencha todos os campos da faixa", variant: "destructive" });
+      return;
+    }
+    setPendingSlots([...pendingSlots, {
+      name: newSlotName,
+      startTime: newSlotStart,
+      endTime: newSlotEnd,
+      basePrice: newSlotPrice,
+      active: true,
+    }]);
+    setNewSlotName("");
+    setNewSlotStart("");
+    setNewSlotEnd("");
+    setNewSlotPrice("");
+  };
+
+  const handleRemovePendingSlot = (index: number) => {
+    setPendingSlots(pendingSlots.filter((_, i) => i !== index));
   };
 
   const handleDelete = (id: string, cityName?: string, vehicleName?: string) => {
@@ -293,362 +393,30 @@ export default function Precos() {
   }
 
   return (
-    <div className="container mx-auto py-6">
+    <div className="container mx-auto py-6 space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+          <DollarSign className="h-6 w-6" />
+          Precificação
+        </h1>
+        <p className="text-muted-foreground">
+          Configure preços de entrega por cidade e categoria
+        </p>
+      </div>
+
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle className="flex items-center gap-2">
-                <DollarSign className="h-6 w-6" />
-                Tabela de Preços
-              </CardTitle>
+              <CardTitle>Tabela de Preços</CardTitle>
               <CardDescription>
                 Configure os preços por cidade e categoria de veículo
               </CardDescription>
             </div>
-            <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-              <Button onClick={handleNewPrice}>
-                <PlusCircle className="mr-2 h-4 w-4" />
-                Novo Preço
-              </Button>
-              <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-                <DialogHeader>
-                  <DialogTitle>{editingPrice ? "Editar Preço" : "Novo Preço"}</DialogTitle>
-                  <DialogDescription>
-                    {editingPrice
-                      ? "Atualize as configurações de preço"
-                      : "Configure os preços para uma cidade e categoria específica"}
-                  </DialogDescription>
-                </DialogHeader>
-
-                <Form {...form}>
-                  <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-                    {/* Seleção de Tipo */}
-                    <FormField
-                      control={form.control}
-                      name="tipo"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Tipo de Preço</FormLabel>
-                          <Select onValueChange={field.onChange} value={field.value}>
-                            <FormControl>
-                              <SelectTrigger>
-                                <SelectValue placeholder="Selecione o tipo" />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              <SelectItem value="entrega_rapida">Entrega Rápida</SelectItem>
-                              <SelectItem value="rota_intermunicipal">Rota Intermunicipal</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <FormDescription>
-                            Escolha se este preço é para entrega rápida na cidade ou para rota intermunicipal
-                          </FormDescription>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-
-                    {/* Seleção de Rota Intermunicipal (apenas se tipo = rota_intermunicipal) */}
-                    {tipoValue === "rota_intermunicipal" && (
-                      <FormField
-                        control={form.control}
-                        name="rotaIntermunicipalId"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>Rota Intermunicipal</FormLabel>
-                            <Select onValueChange={field.onChange} value={field.value}>
-                              <FormControl>
-                                <SelectTrigger>
-                                  <SelectValue placeholder="Selecione a rota" />
-                                </SelectTrigger>
-                              </FormControl>
-                              <SelectContent>
-                                {rotas.map((rota) => (
-                                  <SelectItem key={rota.id} value={rota.id}>
-                                    {rota.nomeRota}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                    )}
-
-                    {/* Seleção de Cidade e Categoria */}
-                    <div className={tipoValue === "entrega_rapida" ? "grid grid-cols-2 gap-4" : ""}>
-                      {/* Mostrar campo Cidade apenas para entrega_rapida */}
-                      {tipoValue === "entrega_rapida" && (
-                        <FormField
-                          control={form.control}
-                          name="serviceLocationId"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Cidade</FormLabel>
-                              <Select onValueChange={field.onChange} value={field.value}>
-                                <FormControl>
-                                  <SelectTrigger>
-                                    <SelectValue placeholder="Selecione a cidade" />
-                                  </SelectTrigger>
-                                </FormControl>
-                                <SelectContent>
-                                  {cities.map((city) => (
-                                    <SelectItem key={city.id} value={city.id}>
-                                      {city.name}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-                      )}
-
-                      <FormField
-                        control={form.control}
-                        name="vehicleTypeId"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>Categoria</FormLabel>
-                            <Select onValueChange={field.onChange} value={field.value}>
-                              <FormControl>
-                                <SelectTrigger>
-                                  <SelectValue placeholder="Selecione a categoria" />
-                                </SelectTrigger>
-                              </FormControl>
-                              <SelectContent>
-                                {categories.map((category) => (
-                                  <SelectItem key={category.id} value={category.id}>
-                                    {category.name}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                    </div>
-
-                    {/* Preços Principais */}
-                    <div className="space-y-2">
-                      <h3 className="font-medium">Precificação</h3>
-                      <div className="grid grid-cols-3 gap-4">
-                        <FormField
-                          control={form.control}
-                          name="basePrice"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Tarifa Base (R$)</FormLabel>
-                              <FormControl>
-                                <Input type="number" step="0.01" placeholder="5.00" {...field} />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-
-                        <FormField
-                          control={form.control}
-                          name="pricePerDistance"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Preço por KM (R$)</FormLabel>
-                              <FormControl>
-                                <Input type="number" step="0.01" placeholder="2.00" {...field} />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-
-                        <FormField
-                          control={form.control}
-                          name="pricePerTime"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Preço por Min (R$)</FormLabel>
-                              <FormControl>
-                                <Input type="number" step="0.01" placeholder="0.50" {...field} />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-                      </div>
-                    </div>
-
-                    {/* Configurações Adicionais */}
-                    <div className="space-y-2">
-                      <h3 className="font-medium">Configurações Adicionais</h3>
-                      <div className="grid grid-cols-2 gap-4">
-                        <FormField
-                          control={form.control}
-                          name="baseDistance"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Distância Base (km)</FormLabel>
-                              <FormControl>
-                                <Input type="number" step="0.1" {...field} />
-                              </FormControl>
-                              <FormDescription>Distância incluída na tarifa base</FormDescription>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-
-                        <FormField
-                          control={form.control}
-                          name="cancellationFee"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Taxa de Cancelamento (%)</FormLabel>
-                              <FormControl>
-                                <Input type="number" step="0.01" {...field} />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-
-                        <FormField
-                          control={form.control}
-                          name="waitingChargePerMinute"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Cobrança por Min de Espera (R$)</FormLabel>
-                              <FormControl>
-                                <Input type="number" step="0.01" {...field} />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-
-                        <FormField
-                          control={form.control}
-                          name="freeWaitingTimeMins"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Tempo de Espera Grátis (min)</FormLabel>
-                              <FormControl>
-                                <Input type="number" {...field} />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-
-                        <FormField
-                          control={form.control}
-                          name="stopPrice"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Valor Parada (R$)</FormLabel>
-                              <FormControl>
-                                <Input type="number" step="0.01" {...field} />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-
-                        <FormField
-                          control={form.control}
-                          name="returnPrice"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Valor Volta (R$)</FormLabel>
-                              <FormControl>
-                                <Input type="number" step="0.01" {...field} />
-                              </FormControl>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-
-                      </div>
-                    </div>
-
-                    {/* Tarifa Dinâmica */}
-                    <div className="space-y-2">
-                      <h3 className="font-medium">Tarifa Dinâmica</h3>
-                      <div className="rounded-lg border p-4 space-y-4">
-                        <FormField
-                          control={form.control}
-                          name="dynamicPriceActive"
-                          render={({ field }) => (
-                            <FormItem className="flex flex-row items-center justify-between">
-                              <div className="space-y-0.5">
-                                <FormLabel className="text-base">Ativar Tarifa Dinâmica</FormLabel>
-                                <FormDescription>
-                                  Quando ativado, o valor abaixo será somado ao preço da entrega rápida
-                                </FormDescription>
-                              </div>
-                              <FormControl>
-                                <Switch
-                                  checked={field.value}
-                                  onCheckedChange={field.onChange}
-                                />
-                              </FormControl>
-                            </FormItem>
-                          )}
-                        />
-                        <FormField
-                          control={form.control}
-                          name="dynamicPrice"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>Valor Dinâmica (R$)</FormLabel>
-                              <FormControl>
-                                <Input type="number" step="0.01" {...field} />
-                              </FormControl>
-                              <FormDescription>
-                                Este valor será adicionado ao total quando a tarifa dinâmica estiver ativa
-                              </FormDescription>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-                      </div>
-                    </div>
-
-                    {/* Status Ativo */}
-                    <FormField
-                      control={form.control}
-                      name="active"
-                      render={({ field }) => (
-                        <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-                          <div className="space-y-0.5">
-                            <FormLabel className="text-base">Ativo</FormLabel>
-                            <FormDescription>
-                              Desative para pausar temporariamente este preço
-                            </FormDescription>
-                          </div>
-                          <FormControl>
-                            <Switch
-                              checked={field.value}
-                              onCheckedChange={field.onChange}
-                            />
-                          </FormControl>
-                        </FormItem>
-                      )}
-                    />
-
-                    <DialogFooter>
-                      <Button type="submit" disabled={createMutation.isPending || updateMutation.isPending}>
-                        {editingPrice
-                          ? (updateMutation.isPending ? "Atualizando..." : "Atualizar Preço")
-                          : (createMutation.isPending ? "Criando..." : "Criar Preço")}
-                      </Button>
-                    </DialogFooter>
-                  </form>
-                </Form>
-              </DialogContent>
-            </Dialog>
+            <Button onClick={handleNewPrice}>
+              <PlusCircle className="mr-2 h-4 w-4" />
+              Novo Preço
+            </Button>
           </div>
         </CardHeader>
         <CardContent>
@@ -716,6 +484,448 @@ export default function Precos() {
           </Table>
         </CardContent>
       </Card>
+
+      <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{editingPrice ? "Editar Preço" : "Novo Preço"}</DialogTitle>
+            <DialogDescription>
+              {editingPrice
+                ? "Atualize as configurações de preço"
+                : "Configure os preços para uma cidade e categoria específica"}
+            </DialogDescription>
+          </DialogHeader>
+
+          <Form {...form}>
+            <form onSubmit={form.handleSubmit(onSubmit, (errors) => {
+              console.log("Erros de validação:", errors);
+              toast({ title: "Erro de validação", description: "Preencha todos os campos obrigatórios", variant: "destructive" });
+            })} className="space-y-4">
+              <FormField
+                control={form.control}
+                name="tipo"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Tipo de Preço</FormLabel>
+                    <Select onValueChange={field.onChange} value={field.value}>
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Selecione o tipo" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="entrega_rapida">Entrega Rápida</SelectItem>
+                        <SelectItem value="rota_intermunicipal">Rota Intermunicipal</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormDescription>
+                      Escolha se este preço é para entrega rápida na cidade ou para rota intermunicipal
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              {tipoValue === "rota_intermunicipal" && (
+                <FormField
+                  control={form.control}
+                  name="rotaIntermunicipalId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Rota Intermunicipal</FormLabel>
+                      <Select onValueChange={field.onChange} value={field.value}>
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Selecione a rota" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {rotas.map((rota) => (
+                            <SelectItem key={rota.id} value={rota.id}>
+                              {rota.nomeRota}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
+
+              <div className={tipoValue === "entrega_rapida" ? "grid grid-cols-2 gap-4" : ""}>
+                {tipoValue === "entrega_rapida" && (
+                  <FormField
+                    control={form.control}
+                    name="serviceLocationId"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Cidade</FormLabel>
+                        <Select onValueChange={field.onChange} value={field.value}>
+                          <FormControl>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Selecione a cidade" />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            {cities.map((city) => (
+                              <SelectItem key={city.id} value={city.id}>
+                                {city.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                )}
+
+                <FormField
+                  control={form.control}
+                  name="vehicleTypeId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Categoria</FormLabel>
+                      <Select onValueChange={field.onChange} value={field.value}>
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Selecione a categoria" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {categories.map((category) => (
+                            <SelectItem key={category.id} value={category.id}>
+                              {category.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <h3 className="font-medium">Precificação</h3>
+                <div className="grid grid-cols-3 gap-4">
+                  <FormField
+                    control={form.control}
+                    name="basePrice"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Tarifa Base (R$)</FormLabel>
+                        <FormControl>
+                          <Input type="number" step="0.01" placeholder="5.00" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="pricePerDistance"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Por KM (R$)</FormLabel>
+                        <FormControl>
+                          <Input type="number" step="0.01" placeholder="1.50" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="pricePerTime"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Por Minuto (R$)</FormLabel>
+                        <FormControl>
+                          <Input type="number" step="0.01" placeholder="0.30" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <h3 className="font-medium">Configurações Adicionais</h3>
+                <div className="grid grid-cols-3 gap-4">
+                  <FormField
+                    control={form.control}
+                    name="baseDistance"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Distância Base (km)</FormLabel>
+                        <FormControl>
+                          <Input type="number" step="0.1" placeholder="0" {...field} />
+                        </FormControl>
+                        <FormDescription className="text-xs">Incluída na tarifa base</FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="waitingChargePerMinute"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Espera/Min (R$)</FormLabel>
+                        <FormControl>
+                          <Input type="number" step="0.01" placeholder="0" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="freeWaitingTimeMins"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Espera Grátis (min)</FormLabel>
+                        <FormControl>
+                          <Input type="number" placeholder="5" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+                <div className="grid grid-cols-3 gap-4 mt-2">
+                  <FormField
+                    control={form.control}
+                    name="cancellationFee"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Taxa Cancelamento (R$)</FormLabel>
+                        <FormControl>
+                          <Input type="number" step="0.01" placeholder="0" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="stopPrice"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Parada Extra (R$)</FormLabel>
+                        <FormControl>
+                          <Input type="number" step="0.01" placeholder="0" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="returnPrice"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Retorno (R$)</FormLabel>
+                        <FormControl>
+                          <Input type="number" step="0.01" placeholder="0" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2 border-t pt-4">
+                <h3 className="font-medium">Preço Dinâmico (Surge)</h3>
+                <div className="grid grid-cols-2 gap-4">
+                  <FormField
+                    control={form.control}
+                    name="dynamicPrice"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Multiplicador</FormLabel>
+                        <FormControl>
+                          <Input type="number" step="0.1" placeholder="1.5" {...field} />
+                        </FormControl>
+                        <FormDescription className="text-xs">Ex: 1.5 = 50% mais caro</FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="dynamicPriceActive"
+                    render={({ field }) => (
+                      <FormItem className="flex flex-row items-center justify-between rounded-lg border p-3 mt-2">
+                        <div className="space-y-0.5">
+                          <FormLabel>Ativar Surge</FormLabel>
+                        </div>
+                        <FormControl>
+                          <Switch checked={field.value} onCheckedChange={field.onChange} />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
+                </div>
+              </div>
+
+              {/* Faixas de Alocação - apenas para Entrega Rápida com cidade selecionada */}
+              {tipoValue === "entrega_rapida" && form.watch("serviceLocationId") && (
+                <div className="space-y-3 border-t pt-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-medium flex items-center gap-2">
+                      <Clock className="h-4 w-4" />
+                      Faixas de Alocação (opcional)
+                    </h3>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Configure horários para alocação de entregadores exclusivos nesta cidade
+                  </p>
+
+                  {/* Faixas existentes salvas no banco */}
+                  {(() => {
+                    const selectedCityId = form.watch("serviceLocationId");
+                    const existingSlots = allocationSlots.filter(
+                      (slot) => slot.serviceLocationId === selectedCityId
+                    );
+                    console.log("Debug faixas:", {
+                      selectedCityId,
+                      allocationSlotsTotal: allocationSlots.length,
+                      allocationSlots: allocationSlots.map(s => ({ id: s.id, name: s.name, serviceLocationId: s.serviceLocationId })),
+                      existingSlotsFiltered: existingSlots.length
+                    });
+                    if (existingSlots.length === 0) return null;
+                    return (
+                      <div className="space-y-2">
+                        <p className="text-xs font-medium text-muted-foreground">Faixas salvas:</p>
+                        {existingSlots.map((slot) => (
+                          <div key={slot.id} className="flex items-center justify-between p-2 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-md">
+                            <div className="flex items-center gap-3">
+                              <Badge variant="default">{slot.name}</Badge>
+                              <span className="text-sm">{slot.startTime.slice(0, 5)} - {slot.endTime.slice(0, 5)}</span>
+                              <span className="text-sm font-medium text-green-600">R$ {slot.basePrice}</span>
+                              {!slot.active && <Badge variant="secondary">Inativo</Badge>}
+                            </div>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                if (confirm("Excluir esta faixa de alocação?")) {
+                                  deleteSlotMutation.mutate(slot.id);
+                                }
+                              }}
+                              disabled={deleteSlotMutation.isPending}
+                            >
+                              <Trash2 className="h-4 w-4 text-red-500" />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Faixas pendentes (ainda não salvas) */}
+                  {pendingSlots.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium text-muted-foreground">Novas faixas (serão salvas ao clicar Salvar):</p>
+                      {pendingSlots.map((slot, index) => (
+                        <div key={index} className="flex items-center justify-between p-2 bg-yellow-50 dark:bg-yellow-950 border border-yellow-200 dark:border-yellow-800 rounded-md">
+                          <div className="flex items-center gap-3">
+                            <Badge variant="outline">{slot.name}</Badge>
+                            <span className="text-sm">{slot.startTime} - {slot.endTime}</span>
+                            <span className="text-sm font-medium text-green-600">R$ {slot.basePrice}</span>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleRemovePendingSlot(index)}
+                          >
+                            <Trash2 className="h-4 w-4 text-red-500" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-5 gap-2 items-end">
+                    <div>
+                      <label className="text-xs text-muted-foreground">Nome</label>
+                      <Input
+                        placeholder="Almoço"
+                        value={newSlotName}
+                        onChange={(e) => setNewSlotName(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted-foreground">Início</label>
+                      <Input
+                        type="time"
+                        value={newSlotStart}
+                        onChange={(e) => setNewSlotStart(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted-foreground">Fim</label>
+                      <Input
+                        type="time"
+                        value={newSlotEnd}
+                        onChange={(e) => setNewSlotEnd(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted-foreground">Preço (R$)</label>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        placeholder="35.00"
+                        value={newSlotPrice}
+                        onChange={(e) => setNewSlotPrice(e.target.value)}
+                      />
+                    </div>
+                    <Button type="button" variant="outline" onClick={handleAddPendingSlot}>
+                      <PlusCircle className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              <FormField
+                control={form.control}
+                name="active"
+                render={({ field }) => (
+                  <FormItem className="flex flex-row items-center justify-between rounded-lg border p-3">
+                    <div className="space-y-0.5">
+                      <FormLabel>Status</FormLabel>
+                      <FormDescription>Preço ativo para uso</FormDescription>
+                    </div>
+                    <FormControl>
+                      <Switch checked={field.value} onCheckedChange={field.onChange} />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setIsDialogOpen(false)}>
+                  Cancelar
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={createMutation.isPending || updateMutation.isPending}
+                >
+                  {createMutation.isPending || updateMutation.isPending ? "Salvando..." : "Salvar"}
+                </Button>
+              </DialogFooter>
+            </form>
+          </Form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

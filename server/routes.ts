@@ -2,11 +2,11 @@ import express, { type Express } from "express";
 import { createServer, type Server } from "http";
 import { Server as SocketIOServer } from "socket.io";
 import { storage } from "./storage";
-import { loginSchema, forgotPasswordSchema, resetPasswordSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications, cityPrices, settings, companyCancellationTypes, insertCompanyCancellationTypeSchema, promotions, insertPromotionSchema, companyDriverRatings, driverCompanyRatings, deliveryStops, faqs, insertFaqSchema, pushNotifications, referralSettings, driverReferrals, companyReferrals, ticketSubjects, insertTicketSubjectSchema, supportTickets, insertSupportTicketSchema, ticketReplies, insertTicketReplySchema, entregadorRotas, entregasIntermunicipais, rotasIntermunicipais, viagemColetas, viagemEntregas, users, deliveryFinancials } from "@shared/schema";
+import { loginSchema, forgotPasswordSchema, resetPasswordSchema, insertSettingsSchema, serviceLocations, vehicleTypes, brands, vehicleModels, driverDocumentTypes, driverDocuments, drivers, companies, requests, requestPlaces, requestBills, driverNotifications, cityPrices, settings, companyCancellationTypes, insertCompanyCancellationTypeSchema, promotions, insertPromotionSchema, companyDriverRatings, driverCompanyRatings, deliveryStops, faqs, insertFaqSchema, pushNotifications, referralSettings, driverReferrals, companyReferrals, ticketSubjects, insertTicketSubjectSchema, supportTickets, insertSupportTicketSchema, ticketReplies, insertTicketReplySchema, entregadorRotas, entregasIntermunicipais, rotasIntermunicipais, viagemColetas, viagemEntregas, users, deliveryFinancials, allocations, allocationAlerts, allocationTimeSlots, insertAllocationTimeSlotSchema, createAllocationRequestSchema } from "@shared/schema";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import { pool, db } from "./db";
-import { eq, and, or, sql, desc, isNotNull, ilike } from "drizzle-orm";
+import { eq, and, or, sql, desc, isNotNull, ilike, inArray } from "drizzle-orm";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
 import { EmailService } from "./emailService";
@@ -934,6 +934,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         state: company.state,
         cep: company.cep,
         reference: company.reference,
+        paymentType: company.paymentType,
         isCompany: true,
       });
     } catch (error) {
@@ -1270,6 +1271,59 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log(`✅ ${availableDrivers.length} motorista(s) encontrado(s) no raio de ${driverSearchRadius} km`);
 
+      // Verificar se a empresa tem entregadores alocados ativos
+      const companyId = req.session.companyId;
+      const companyActiveAllocations = await storage.getActiveAllocationsForCompany(companyId);
+      const allocatedDriverIds = companyActiveAllocations.map(a => a.driverId).filter(id => id !== null);
+
+      let filteredDrivers: typeof availableDrivers = [];
+
+      if (allocatedDriverIds.length > 0) {
+        // Empresa TEM entregadores alocados - APENAS eles recebem
+        console.log(`🔒 Empresa tem ${allocatedDriverIds.length} entregador(es) alocado(s) - apenas eles receberão a notificação`);
+
+        for (const driver of availableDrivers) {
+          if (allocatedDriverIds.includes(driver.id)) {
+            console.log(`  ✅ Motorista ${driver.name} está alocado para ESTA empresa - incluído`);
+            filteredDrivers.push(driver);
+          } else {
+            // Verificar se está alocado para outra empresa (log informativo)
+            const otherAllocation = await storage.getActiveAllocationForDriver(driver.id);
+            if (otherAllocation) {
+              console.log(`  🚫 Motorista ${driver.name} está alocado para OUTRA empresa - excluído`);
+            } else {
+              console.log(`  🚫 Motorista ${driver.name} é avulso - excluído (empresa tem alocações ativas)`);
+            }
+          }
+        }
+      } else {
+        // Empresa NÃO tem entregadores alocados - incluir todos exceto os alocados para OUTRAS empresas
+        console.log(`📍 Empresa não tem entregadores alocados - incluindo motoristas disponíveis`);
+
+        for (const driver of availableDrivers) {
+          const activeAllocation = await storage.getActiveAllocationForDriver(driver.id);
+          if (activeAllocation) {
+            console.log(`  🚫 Motorista ${driver.name} está alocado para OUTRA empresa - excluído`);
+          } else {
+            filteredDrivers.push(driver);
+          }
+        }
+      }
+
+      if (availableDrivers.length !== filteredDrivers.length) {
+        console.log(`🔒 ${availableDrivers.length - filteredDrivers.length} motorista(s) excluído(s) pelo filtro de alocação`);
+      }
+
+      if (filteredDrivers.length === 0) {
+        console.log("❌ Nenhum motorista disponível após filtro de alocação");
+        return res.status(404).json({
+          message: "Nenhum motorista disponível no momento",
+          details: allocatedDriverIds.length > 0
+            ? "Seus entregadores alocados não estão disponíveis no momento. Aguarde ou libere a alocação."
+            : "Todos os motoristas no raio estão alocados para outras empresas. Tente novamente mais tarde."
+        });
+      }
+
       // 5. Gerar número da solicitação
       const requestNumber = `REQ-${Date.now()}`;
 
@@ -1332,7 +1386,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // 11. Criar notificações para cada motorista e disparar push
       const fcmTokens: string[] = [];
-      const notificationPromises = availableDrivers.map(async (driver) => {
+      const notificationPromises = filteredDrivers.map(async (driver) => {
         // Criar registro de notificação
         await db
           .insert(driverNotifications)
@@ -1403,7 +1457,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           estimatedTime,
           totalAmount: totalAmount.toFixed(2),
           driverAmount: driverAmount.toFixed(2),
-          driversNotified: availableDrivers.length,
+          driversNotified: filteredDrivers.length,
           expiresAt: expiresAt.toISOString(),
         },
       });
@@ -3176,23 +3230,34 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Se não houver entregas
-      if (result.deliveriesCount === 0) {
+      // Se não houver entregas nem alocações
+      if (result.deliveriesCount === 0 && (result.allocationsCount || 0) === 0) {
         return res.json({
           success: true,
-          message: "Nenhuma entrega pendente para cobrar",
+          message: "Nenhuma entrega ou alocação pendente para cobrar",
           deliveriesCount: 0,
+          allocationsCount: 0,
         });
       }
 
       // Buscar dados do boleto gerado
       const charge = result.chargeId ? await storage.getCharge(result.chargeId) : null;
 
+      // Montar mensagem de sucesso
+      const messageParts: string[] = [];
+      if (result.deliveriesCount && result.deliveriesCount > 0) {
+        messageParts.push(`${result.deliveriesCount} entrega(s)`);
+      }
+      if (result.allocationsCount && result.allocationsCount > 0) {
+        messageParts.push(`${result.allocationsCount} alocação(ões)`);
+      }
+
       return res.json({
         success: true,
-        message: `Boleto gerado com sucesso para ${result.deliveriesCount} entrega(s)`,
+        message: `Boleto gerado com sucesso para ${messageParts.join(" e ")}`,
         chargeId: result.chargeId,
         deliveriesCount: result.deliveriesCount,
+        allocationsCount: result.allocationsCount || 0,
         totalAmount: result.totalAmount,
         charge: charge ? {
           id: charge.id,
@@ -3286,10 +3351,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log(`[DEBUG] Empresa ${id} - Entregas concluídas não registradas: ${completedDeliveries.length}`);
       }
 
-      const totalAmount = pendingDeliveries.reduce(
+      const deliveriesTotalAmount = pendingDeliveries.reduce(
         (sum, d) => sum + parseFloat(d.totalAmount),
         0
       );
+
+      // Buscar alocações pendentes de cobrança (completed ou released_early, sem chargeId)
+      const { allocations } = await import("@shared/schema");
+
+      const allocationConditions = [
+        eq(allocations.companyId, id),
+        isNull(allocations.chargeId),
+        inArray(allocations.status, ["completed", "released_early"]),
+      ];
+
+      // Filtrar alocações pelo período
+      if (dateFromParsed) {
+        const dateFromStr = dateFromParsed.toISOString().split('T')[0];
+        allocationConditions.push(gte(allocations.allocationDate, dateFromStr));
+      }
+      if (dateToFinal) {
+        const dateToStr = dateToFinal.toISOString().split('T')[0];
+        allocationConditions.push(lte(allocations.allocationDate, dateToStr));
+      }
+
+      const pendingAllocations = await db
+        .select()
+        .from(allocations)
+        .where(and(...allocationConditions));
+
+      const allocationsTotalAmount = pendingAllocations.reduce(
+        (sum, a) => sum + parseFloat(a.totalAmount),
+        0
+      );
+
+      const totalAmount = deliveriesTotalAmount + allocationsTotalAmount;
 
       // Debug: buscar todas as entregas da empresa para entender o estado
       const allCompanyDeliveries = await db
@@ -3326,6 +3422,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.json({
         count: pendingDeliveries.length,
         totalAmount,
+        deliveriesTotalAmount,
+        allocationsTotalAmount,
+        allocationsCount: pendingAllocations.length,
         // Informação adicional para debug
         completedNotRegistered: completedDeliveriesNotRegistered.length,
         // Debug: entregas recentes da empresa
@@ -3345,6 +3444,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
           driverAmount: d.driverAmount,
           commissionAmount: d.commissionAmount,
           createdAt: d.createdAt,
+        })),
+        allocations: pendingAllocations.map(a => ({
+          id: a.id,
+          allocationDate: a.allocationDate,
+          totalAmount: a.totalAmount,
+          driverAmount: a.driverAmount,
+          commissionAmount: a.commissionAmount,
+          status: a.status,
+          timeSlotId: a.timeSlotId,
         })),
       });
     } catch (error) {
@@ -8935,6 +9043,48 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log(`✓ ${driversWithinRadius.length} de ${availableDrivers.rows.length} motoristas estão dentro do raio de ${searchRadius} km`);
 
+      // Verificar se a empresa tem entregadores alocados ativos
+      const companyId = req.session.companyId;
+      const companyActiveAllocationsV2 = await storage.getActiveAllocationsForCompany(companyId);
+      const allocatedDriverIdsV2 = companyActiveAllocationsV2.map(a => a.driverId).filter(id => id !== null);
+
+      let driversToNotify: typeof driversWithinRadius = [];
+
+      if (allocatedDriverIdsV2.length > 0) {
+        // Empresa TEM entregadores alocados - APENAS eles recebem
+        console.log(`🔒 Empresa tem ${allocatedDriverIdsV2.length} entregador(es) alocado(s) - apenas eles receberão a notificação`);
+
+        for (const driver of driversWithinRadius) {
+          if (allocatedDriverIdsV2.includes(driver.id)) {
+            console.log(`  ✅ Motorista ${driver.name} está alocado para ESTA empresa - incluído`);
+            driversToNotify.push(driver);
+          } else {
+            const otherAllocation = await storage.getActiveAllocationForDriver(driver.id);
+            if (otherAllocation) {
+              console.log(`  🚫 Motorista ${driver.name} está alocado para OUTRA empresa - excluído`);
+            } else {
+              console.log(`  🚫 Motorista ${driver.name} é avulso - excluído (empresa tem alocações ativas)`);
+            }
+          }
+        }
+      } else {
+        // Empresa NÃO tem entregadores alocados - incluir todos exceto os alocados para OUTRAS empresas
+        console.log(`📍 Empresa não tem entregadores alocados - incluindo motoristas disponíveis`);
+
+        for (const driver of driversWithinRadius) {
+          const activeAllocation = await storage.getActiveAllocationForDriver(driver.id);
+          if (activeAllocation) {
+            console.log(`  🚫 Motorista ${driver.name} está alocado para OUTRA empresa - excluído`);
+          } else {
+            driversToNotify.push(driver);
+          }
+        }
+      }
+
+      if (driversWithinRadius.length !== driversToNotify.length) {
+        console.log(`🔒 ${driversWithinRadius.length - driversToNotify.length} motorista(s) excluído(s) pelo filtro de alocação`);
+      }
+
       // Se a entrega é agendada, não enviar notificações agora
       if (isScheduledDelivery) {
         console.log(`📅 Entrega agendada para ${scheduledAtDate}. Notificações serão enviadas na data/hora programada.`);
@@ -8950,9 +9100,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Enviar notificação push para motoristas dentro do raio
-      if (driversWithinRadius.length > 0) {
-        const fcmTokens = driversWithinRadius
+      // Enviar notificação push para motoristas filtrados (raio + alocação)
+      if (driversToNotify.length > 0) {
+        const fcmTokens = driversToNotify
           .map(driver => driver.fcm_token)
           .filter(token => token);
 
@@ -9001,7 +9151,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
           // Salvar notificações na tabela driver_notifications
           const expiresAt = new Date(Date.now() + driverAcceptanceTimeout * 1000); // Tempo para aceitar
-          for (const driver of driversWithinRadius) {
+          for (const driver of driversToNotify) {
             await db.insert(driverNotifications).values({
               requestId: request.id,
               driverId: driver.id,
@@ -9342,8 +9492,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log(`✅ ${driversWithinRadius.length} motoristas dentro do raio de ${searchRadius} km`);
 
+      // Verificar se a empresa tem entregadores alocados ativos
+      const companyIdForRelaunch = req.session.companyId;
+      const companyActiveAllocationsRelaunch = await storage.getActiveAllocationsForCompany(companyIdForRelaunch);
+      const allocatedDriverIdsRelaunch = companyActiveAllocationsRelaunch.map(a => a.driverId).filter(id => id !== null);
+
+      let driversToNotifyRelaunch: typeof driversWithinRadius = [];
+
+      if (allocatedDriverIdsRelaunch.length > 0) {
+        // Empresa TEM entregadores alocados - APENAS eles recebem
+        console.log(`🔒 Empresa tem ${allocatedDriverIdsRelaunch.length} entregador(es) alocado(s) - apenas eles receberão a notificação`);
+
+        for (const driver of driversWithinRadius) {
+          if (allocatedDriverIdsRelaunch.includes(driver.id)) {
+            console.log(`  ✅ Motorista ${driver.name} alocado para ESTA empresa - incluído`);
+            driversToNotifyRelaunch.push(driver);
+          } else {
+            const otherAllocation = await storage.getActiveAllocationForDriver(driver.id);
+            if (otherAllocation) {
+              console.log(`  🚫 Motorista ${driver.name} alocado para OUTRA empresa - excluído`);
+            } else {
+              console.log(`  🚫 Motorista ${driver.name} é avulso - excluído (empresa tem alocações ativas)`);
+            }
+          }
+        }
+      } else {
+        // Empresa NÃO tem entregadores alocados - incluir todos exceto os alocados para OUTRAS empresas
+        console.log(`📍 Empresa não tem entregadores alocados - incluindo motoristas disponíveis`);
+
+        for (const driver of driversWithinRadius) {
+          const activeAllocation = await storage.getActiveAllocationForDriver(driver.id);
+          if (activeAllocation) {
+            console.log(`  🚫 Motorista ${driver.name} alocado para OUTRA empresa - excluído`);
+          } else {
+            driversToNotifyRelaunch.push(driver);
+          }
+        }
+      }
+
+      if (driversWithinRadius.length !== driversToNotifyRelaunch.length) {
+        console.log(`🔒 ${driversWithinRadius.length - driversToNotifyRelaunch.length} motorista(s) excluído(s) pelo filtro de alocação`);
+      }
+
       // Enviar notificações
-      if (driversWithinRadius.length > 0) {
+      if (driversToNotifyRelaunch.length > 0) {
         // Calcular estimatedTime (totalTime + 5 minutos)
         const totalTimeMinutes = originalRequest.totalTime ? parseInt(originalRequest.totalTime) : 0;
         const calculatedEstimatedTime = totalTimeMinutes + 5;
@@ -9372,10 +9564,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           needs_return: (originalRequest.needsReturn || false).toString(),
         };
 
-        console.log(`📤 Enviando notificações para ${driversWithinRadius.length} motoristas`);
+        console.log(`📤 Enviando notificações para ${driversToNotifyRelaunch.length} motoristas`);
         console.log(`📦 Dados da notificação:`, notificationData);
 
-        for (const driver of driversWithinRadius) {
+        for (const driver of driversToNotifyRelaunch) {
           if (driver.fcm_token) {
             await sendPushNotification(
               driver.fcm_token,
@@ -9401,7 +9593,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           );
         }
 
-        console.log(`✅ Notificações enviadas para ${driversWithinRadius.length} motoristas`);
+        console.log(`✅ Notificações enviadas para ${driversToNotifyRelaunch.length} motoristas`);
       }
 
       return res.json({
@@ -10377,8 +10569,60 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log(`✅ ${driversWithinRadius.length} motoristas dentro do raio de ${searchRadius} km`);
 
+      // Verificar se a empresa tem entregadores alocados ativos (Admin relaunch)
+      const companyIdForAdminRelaunch = originalRequest.companyId;
+      let driversToNotifyAdmin: typeof driversWithinRadius = [];
+
+      if (companyIdForAdminRelaunch) {
+        const companyActiveAllocationsAdmin = await storage.getActiveAllocationsForCompany(companyIdForAdminRelaunch);
+        const allocatedDriverIdsAdmin = companyActiveAllocationsAdmin.map(a => a.driverId).filter(id => id !== null);
+
+        if (allocatedDriverIdsAdmin.length > 0) {
+          // Empresa TEM entregadores alocados - APENAS eles recebem
+          console.log(`🔒 Empresa tem ${allocatedDriverIdsAdmin.length} entregador(es) alocado(s) - apenas eles receberão a notificação`);
+
+          for (const driver of driversWithinRadius) {
+            if (allocatedDriverIdsAdmin.includes(driver.id)) {
+              console.log(`  ✅ Motorista ${driver.name} alocado para empresa desta entrega - incluído`);
+              driversToNotifyAdmin.push(driver);
+            } else {
+              const otherAllocation = await storage.getActiveAllocationForDriver(driver.id);
+              if (otherAllocation) {
+                console.log(`  🚫 Motorista ${driver.name} alocado para OUTRA empresa - excluído`);
+              } else {
+                console.log(`  🚫 Motorista ${driver.name} é avulso - excluído (empresa tem alocações ativas)`);
+              }
+            }
+          }
+        } else {
+          // Empresa NÃO tem entregadores alocados - incluir todos exceto os alocados para OUTRAS empresas
+          console.log(`📍 Empresa não tem entregadores alocados - incluindo motoristas disponíveis`);
+
+          for (const driver of driversWithinRadius) {
+            const activeAllocation = await storage.getActiveAllocationForDriver(driver.id);
+            if (activeAllocation) {
+              console.log(`  🚫 Motorista ${driver.name} alocado para OUTRA empresa - excluído`);
+            } else {
+              driversToNotifyAdmin.push(driver);
+            }
+          }
+        }
+      } else {
+        // Sem companyId, incluir todos exceto os alocados
+        for (const driver of driversWithinRadius) {
+          const activeAllocation = await storage.getActiveAllocationForDriver(driver.id);
+          if (!activeAllocation) {
+            driversToNotifyAdmin.push(driver);
+          }
+        }
+      }
+
+      if (driversWithinRadius.length !== driversToNotifyAdmin.length) {
+        console.log(`🔒 ${driversWithinRadius.length - driversToNotifyAdmin.length} motorista(s) excluído(s) pelo filtro de alocação`);
+      }
+
       // Enviar notificações para motoristas próximos
-      if (driversWithinRadius.length > 0) {
+      if (driversToNotifyAdmin.length > 0) {
         const minTimeToFindDriver = settingsResult.rows[0]?.min_time_to_find_driver || 120;
         const driverAcceptanceTimeout = settingsResult.rows[0]?.driver_acceptance_timeout || 30;
 
@@ -10411,10 +10655,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
           type: 'new_delivery',
         };
 
-        console.log(`📤 Enviando notificações para ${driversWithinRadius.length} motoristas`);
+        console.log(`📤 Enviando notificações para ${driversToNotifyAdmin.length} motoristas`);
         console.log(`📦 Dados da notificação:`, notificationData);
 
-        for (const driver of driversWithinRadius) {
+        for (const driver of driversToNotifyAdmin) {
           if (driver.fcm_token) {
             await sendPushNotification(
               driver.fcm_token,
@@ -10435,14 +10679,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
           );
         }
 
-        console.log(`✅ Notificações enviadas para ${driversWithinRadius.length} motoristas`);
+        console.log(`✅ Notificações enviadas para ${driversToNotifyAdmin.length} motoristas`);
       }
 
       return res.json({
         message: "Entrega relançada com sucesso",
         requestId: newRequest.id,
         requestNumber: newRequest.requestNumber,
-        driversNotified: driversWithinRadius.length
+        driversNotified: driversToNotifyAdmin.length
       });
     } catch (error) {
       console.error("❌ Erro ao relançar entrega:", error);
@@ -17848,37 +18092,117 @@ export async function registerRoutes(app: Express): Promise<Server> {
         )
         .orderBy(desc(deliveryFinancials.createdAt));
 
-      // Calcular total a liberar
-      const totalPending = pendingDeliveries.reduce(
+      // Buscar alocações pendentes de pagamento do motorista (empresas BOLETO)
+      const pendingAllocations = await db
+        .select({
+          id: allocations.id,
+          companyId: allocations.companyId,
+          driverAmount: allocations.driverAmount,
+          totalAmount: allocations.totalAmount,
+          chargeId: allocations.chargeId,
+          allocationDate: allocations.allocationDate,
+          startTime: allocations.startTime,
+          endTime: allocations.endTime,
+          status: allocations.status,
+          companyName: companies.name,
+          companyPaymentType: companies.paymentType,
+        })
+        .from(allocations)
+        .innerJoin(companies, eq(companies.id, allocations.companyId))
+        .where(
+          and(
+            eq(allocations.driverId, driverId),
+            inArray(allocations.status, ["completed", "released_early"]),
+            eq(companies.paymentType, "BOLETO")
+          )
+        )
+        .orderBy(desc(allocations.allocationDate));
+
+      // Filtrar alocações que ainda não foram pagas (sem chargeId OU com chargeId mas charge não confirmada)
+      const unpaidAllocations = [];
+      for (const allocation of pendingAllocations) {
+        if (!allocation.chargeId) {
+          // Sem cobrança ainda - pendente
+          unpaidAllocations.push(allocation);
+        } else {
+          // Tem cobrança - verificar se foi paga
+          const charge = await storage.getCharge(allocation.chargeId);
+          if (charge && charge.status !== "confirmed") {
+            unpaidAllocations.push(allocation);
+          }
+        }
+      }
+
+      // Calcular total a liberar (entregas + alocações)
+      const totalPendingDeliveries = pendingDeliveries.reduce(
         (sum, d) => sum + parseFloat(d.driverAmount),
         0
       );
+
+      const totalPendingAllocations = unpaidAllocations.reduce(
+        (sum, a) => sum + parseFloat(a.driverAmount || "0"),
+        0
+      );
+
+      const totalPending = totalPendingDeliveries + totalPendingAllocations;
 
       // Agrupar por empresa para mostrar resumo
       const byCompany: Record<string, {
         companyId: string;
         companyName: string;
         paymentType: string;
-        count: number;
+        deliveriesCount: number;
+        allocationsCount: number;
+        deliveriesTotal: number;
+        allocationsTotal: number;
         total: number;
         chargeId: string | null;
         chargeStatus?: string;
         chargeDueDate?: string;
       }> = {};
 
+      // Agregar entregas
       for (const delivery of pendingDeliveries) {
         if (!byCompany[delivery.companyId]) {
           byCompany[delivery.companyId] = {
             companyId: delivery.companyId,
             companyName: delivery.companyName,
             paymentType: delivery.companyPaymentType || "PRE_PAGO",
-            count: 0,
+            deliveriesCount: 0,
+            allocationsCount: 0,
+            deliveriesTotal: 0,
+            allocationsTotal: 0,
             total: 0,
             chargeId: delivery.chargeId,
           };
         }
-        byCompany[delivery.companyId].count++;
+        byCompany[delivery.companyId].deliveriesCount++;
+        byCompany[delivery.companyId].deliveriesTotal += parseFloat(delivery.driverAmount);
         byCompany[delivery.companyId].total += parseFloat(delivery.driverAmount);
+      }
+
+      // Agregar alocações
+      for (const allocation of unpaidAllocations) {
+        if (!byCompany[allocation.companyId]) {
+          byCompany[allocation.companyId] = {
+            companyId: allocation.companyId,
+            companyName: allocation.companyName,
+            paymentType: allocation.companyPaymentType || "BOLETO",
+            deliveriesCount: 0,
+            allocationsCount: 0,
+            deliveriesTotal: 0,
+            allocationsTotal: 0,
+            total: 0,
+            chargeId: allocation.chargeId,
+          };
+        }
+        byCompany[allocation.companyId].allocationsCount++;
+        byCompany[allocation.companyId].allocationsTotal += parseFloat(allocation.driverAmount || "0");
+        byCompany[allocation.companyId].total += parseFloat(allocation.driverAmount || "0");
+        // Atualizar chargeId se tiver
+        if (allocation.chargeId && !byCompany[allocation.companyId].chargeId) {
+          byCompany[allocation.companyId].chargeId = allocation.chargeId;
+        }
       }
 
       // Buscar informações das cobranças (para empresas pós-pago)
@@ -17944,16 +18268,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
         })
       );
 
+      // Preparar lista de alocações pendentes
+      const allocationsWithDetails = unpaidAllocations.slice(0, 20).map((allocation) => ({
+        id: allocation.id,
+        companyName: allocation.companyName,
+        driverAmount: allocation.driverAmount,
+        allocationDate: allocation.allocationDate,
+        startTime: allocation.startTime,
+        endTime: allocation.endTime,
+        status: allocation.status,
+        chargeId: allocation.chargeId,
+      }));
+
+      // Montar mensagem
+      const itemsCount = pendingDeliveries.length + unpaidAllocations.length;
+      let message = "";
+      if (totalPending > 0) {
+        const parts: string[] = [];
+        if (pendingDeliveries.length > 0) {
+          parts.push(`${pendingDeliveries.length} entrega(s)`);
+        }
+        if (unpaidAllocations.length > 0) {
+          parts.push(`${unpaidAllocations.length} alocação(ões)`);
+        }
+        message = `Você tem R$ ${totalPending.toFixed(2)} a receber de ${parts.join(" e ")}`;
+      } else {
+        message = "Você não tem ganhos pendentes no momento";
+      }
+
       return res.json({
         success: true,
         data: {
           totalPending: totalPending.toFixed(2),
           totalDeliveries: pendingDeliveries.length,
+          totalAllocations: unpaidAllocations.length,
+          totalPendingDeliveries: totalPendingDeliveries.toFixed(2),
+          totalPendingAllocations: totalPendingAllocations.toFixed(2),
           byCompany: companySummaries,
           recentDeliveries: deliveriesWithDetails,
-          message: totalPending > 0
-            ? `Você tem R$ ${totalPending.toFixed(2)} a receber de ${pendingDeliveries.length} entrega(s)`
-            : "Você não tem ganhos pendentes no momento",
+          recentAllocations: allocationsWithDetails,
+          message,
         },
       });
     } catch (error) {
@@ -18578,6 +18932,923 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.json(version);
     } catch (error) {
       console.error("Erro ao atualizar configuração de versão:", error);
+      return res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  });
+
+  // ========================================
+  // ALLOCATION TIME SLOTS (Faixas de Horário para Alocação)
+  // ========================================
+
+  // Listar todas as faixas (admin)
+  app.get("/api/admin/allocation-time-slots", async (req, res) => {
+    if (!req.session.userId || !req.session.isAdmin) {
+      return res.status(401).json({ message: "Não autorizado" });
+    }
+    try {
+      const slots = await storage.getAllAllocationTimeSlots();
+
+      // Buscar nome das cidades
+      const slotsWithCity = await Promise.all(
+        slots.map(async (slot) => {
+          let cityName = null;
+          if (slot.serviceLocationId) {
+            const city = await storage.getServiceLocation(slot.serviceLocationId);
+            cityName = city?.name || null;
+          }
+          return { ...slot, cityName };
+        })
+      );
+
+      return res.json(slotsWithCity);
+    } catch (error) {
+      console.error("Erro ao listar faixas de alocação:", error);
+      return res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  });
+
+  // Criar faixa (admin)
+  app.post("/api/admin/allocation-time-slots", async (req, res) => {
+    if (!req.session.userId || !req.session.isAdmin) {
+      return res.status(401).json({ message: "Não autorizado" });
+    }
+    try {
+      const result = insertAllocationTimeSlotSchema.safeParse(req.body);
+      if (!result.success) {
+        return res.status(400).json({ message: "Dados inválidos", errors: result.error.errors });
+      }
+
+      const slot = await storage.createAllocationTimeSlot(result.data);
+      return res.status(201).json(slot);
+    } catch (error) {
+      console.error("Erro ao criar faixa de alocação:", error);
+      return res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  });
+
+  // Atualizar faixa (admin)
+  app.put("/api/admin/allocation-time-slots/:id", async (req, res) => {
+    if (!req.session.userId || !req.session.isAdmin) {
+      return res.status(401).json({ message: "Não autorizado" });
+    }
+    try {
+      const { id } = req.params;
+      const slot = await storage.updateAllocationTimeSlot(id, req.body);
+      if (!slot) {
+        return res.status(404).json({ message: "Faixa não encontrada" });
+      }
+      return res.json(slot);
+    } catch (error) {
+      console.error("Erro ao atualizar faixa de alocação:", error);
+      return res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  });
+
+  // Excluir faixa (admin)
+  app.delete("/api/admin/allocation-time-slots/:id", async (req, res) => {
+    if (!req.session.userId || !req.session.isAdmin) {
+      return res.status(401).json({ message: "Não autorizado" });
+    }
+    try {
+      const { id } = req.params;
+      await storage.deleteAllocationTimeSlot(id);
+      return res.json({ message: "Faixa excluída com sucesso" });
+    } catch (error) {
+      console.error("Erro ao excluir faixa de alocação:", error);
+      return res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  });
+
+  // Listar faixas ativas (público para empresa)
+  app.get("/api/allocation-time-slots", async (req, res) => {
+    try {
+      const serviceLocationId = req.query.serviceLocationId as string | undefined;
+      const slots = await storage.getActiveAllocationTimeSlots(serviceLocationId);
+      return res.json(slots);
+    } catch (error) {
+      console.error("Erro ao listar faixas de alocação:", error);
+      return res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  });
+
+  // ========================================
+  // ALLOCATIONS - EMPRESA
+  // ========================================
+
+  // Criar alocação (empresa)
+  app.post("/api/empresa/allocations", async (req, res) => {
+    if (!req.session.companyId) {
+      return res.status(401).json({ message: "Não autorizado" });
+    }
+    try {
+      const companyId = req.session.companyId;
+      const result = createAllocationRequestSchema.safeParse(req.body);
+
+      if (!result.success) {
+        return res.status(400).json({ message: "Dados inválidos", errors: result.error.errors });
+      }
+
+      const { timeSlotId, quantity } = result.data;
+
+      // Buscar empresa
+      const company = await storage.getCompany(companyId);
+      if (!company) {
+        return res.status(404).json({ message: "Empresa não encontrada" });
+      }
+
+      // Buscar faixa de horário
+      const timeSlot = await storage.getAllocationTimeSlot(timeSlotId);
+      if (!timeSlot || !timeSlot.active) {
+        return res.status(400).json({ message: "Faixa de horário inválida ou inativa" });
+      }
+
+      // Validar que é só para hoje
+      const today = new Date().toISOString().split('T')[0];
+      const now = new Date();
+      const currentTime = now.toTimeString().slice(0, 8);
+
+      // Verificar se a faixa ainda não passou
+      if (currentTime >= timeSlot.endTime) {
+        return res.status(400).json({ message: "Esta faixa de horário já passou" });
+      }
+
+      // Calcular valor total
+      const totalAmount = parseFloat(timeSlot.basePrice) * quantity;
+
+      // Verificar saldo se pré-pago
+      if (company.paymentType === "PRE_PAGO") {
+        const wallet = await storage.getWalletByOwner(companyId, "company");
+        if (!wallet || parseFloat(wallet.availableBalance) < totalAmount) {
+          return res.status(400).json({
+            message: "Saldo insuficiente",
+            required: totalAmount,
+            available: wallet?.availableBalance || 0
+          });
+        }
+      }
+
+      // Criar alocações
+      const createdAllocations = [];
+      for (let i = 0; i < quantity; i++) {
+        const allocation = await storage.createAllocation({
+          companyId,
+          timeSlotId,
+          allocationDate: today,
+          startTime: timeSlot.startTime,
+          endTime: timeSlot.endTime,
+          totalAmount: timeSlot.basePrice,
+          status: "pending",
+        });
+        createdAllocations.push(allocation);
+      }
+
+      // Buscar entregadores disponíveis
+      const systemSettings = await storage.getSettings();
+      const acceptanceTimeout = systemSettings?.driverAcceptanceTimeout || 30;
+
+      // Query para buscar entregadores online, disponíveis, não bloqueados, não em entrega
+      const availableDriversResult = await pool.query(`
+        SELECT d.id, d.name, d.fcm_token, d.latitude, d.longitude
+        FROM drivers d
+        WHERE d.active = true
+          AND d.approve = true
+          AND d.available = true
+          AND d.on_delivery = false
+          AND (d.deliveries_blocked = false OR d.deliveries_blocked IS NULL)
+          AND (d.blocked = false OR d.blocked IS NULL)
+          AND d.fcm_token IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM allocations a
+            WHERE a.driver_id = d.id
+            AND a.allocation_date = $1
+            AND a.status IN ('accepted', 'in_progress')
+          )
+      `, [today]);
+
+      // Criar alertas para cada motorista
+      const expiresAt = new Date(Date.now() + acceptanceTimeout * 1000);
+      const fcmTokens: string[] = [];
+
+      for (const driver of availableDriversResult.rows) {
+        for (const allocation of createdAllocations) {
+          await storage.createAllocationAlert({
+            allocationId: allocation.id,
+            driverId: driver.id,
+            status: "notified",
+            expiresAt,
+          });
+        }
+        if (driver.fcm_token) {
+          fcmTokens.push(driver.fcm_token);
+        }
+      }
+
+      // Enviar push notifications
+      if (fcmTokens.length > 0) {
+        try {
+          await sendPushToMultipleDevices(
+            fcmTokens,
+            "🏢 Nova Oportunidade de Alocação!",
+            `${company.name} está buscando entregadores para o período ${timeSlot.name} (${timeSlot.startTime.slice(0,5)} - ${timeSlot.endTime.slice(0,5)})`,
+            {
+              type: "new_allocation",
+              timeSlotName: timeSlot.name,
+              startTime: timeSlot.startTime,
+              endTime: timeSlot.endTime,
+              amount: timeSlot.basePrice,
+              companyName: company.name,
+              companyLogo: company.logoUrl || "",
+              acceptanceTimeout: acceptanceTimeout.toString(),
+              allocationIds: createdAllocations.map(a => a.id).join(","),
+            }
+          );
+        } catch (pushError) {
+          console.error("Erro ao enviar push notifications:", pushError);
+        }
+      }
+
+      // Emitir via Socket.IO
+      const io = (app as any).io;
+      if (io) {
+        io.emit("new-allocation", {
+          companyId,
+          companyName: company.name,
+          timeSlotName: timeSlot.name,
+          quantity,
+          allocationIds: createdAllocations.map(a => a.id),
+        });
+      }
+
+      return res.status(201).json({
+        message: "Alocações criadas com sucesso",
+        allocations: createdAllocations,
+        driversNotified: availableDriversResult.rows.length,
+      });
+
+    } catch (error) {
+      console.error("Erro ao criar alocação:", error);
+      return res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  });
+
+  // Listar alocações da empresa
+  app.get("/api/empresa/allocations", async (req, res) => {
+    if (!req.session.companyId) {
+      return res.status(401).json({ message: "Não autorizado" });
+    }
+    try {
+      const companyId = req.session.companyId;
+      const date = req.query.date as string | undefined;
+
+      const allocationsList = await storage.getAllocationsByCompany(companyId, date);
+
+      // Enriquecer com dados do entregador e faixa
+      const enrichedAllocations = await Promise.all(
+        allocationsList.map(async (allocation) => {
+          let driver = null;
+          let timeSlot = null;
+
+          if (allocation.driverId) {
+            driver = await storage.getDriver(allocation.driverId);
+          }
+          timeSlot = await storage.getAllocationTimeSlot(allocation.timeSlotId);
+
+          // Contar entregas feitas durante a alocação
+          let deliveryCount = 0;
+          if (allocation.driverId && allocation.status === "in_progress") {
+            const deliveriesResult = await pool.query(`
+              SELECT COUNT(*) as count
+              FROM requests
+              WHERE company_id = $1
+                AND driver_id = $2
+                AND is_completed = true
+                AND completed_at >= $3
+                AND DATE(completed_at) = $4
+            `, [companyId, allocation.driverId, allocation.startedAt || allocation.acceptedAt, allocation.allocationDate]);
+            deliveryCount = parseInt(deliveriesResult.rows[0]?.count || "0");
+          }
+
+          return {
+            ...allocation,
+            driver: driver ? { id: driver.id, name: driver.name, profilePicture: driver.profilePicture, latitude: driver.latitude, longitude: driver.longitude } : null,
+            timeSlot: timeSlot ? { name: timeSlot.name, startTime: timeSlot.startTime, endTime: timeSlot.endTime } : null,
+            deliveryCount,
+          };
+        })
+      );
+
+      return res.json(enrichedAllocations);
+    } catch (error) {
+      console.error("Erro ao listar alocações:", error);
+      return res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  });
+
+  // Liberar entregador (empresa)
+  app.post("/api/empresa/allocations/:id/release", async (req, res) => {
+    if (!req.session.companyId) {
+      return res.status(401).json({ message: "Não autorizado" });
+    }
+    try {
+      const companyId = req.session.companyId;
+      const { id: allocationId } = req.params;
+      const { reason } = req.body;
+
+      // Buscar alocação
+      const allocation = await storage.getAllocation(allocationId);
+      if (!allocation || allocation.companyId !== companyId) {
+        return res.status(404).json({ message: "Alocação não encontrada" });
+      }
+
+      // Verificar status válido
+      if (!["accepted", "in_progress"].includes(allocation.status)) {
+        return res.status(400).json({ message: "Esta alocação não pode ser liberada" });
+      }
+
+      // Empresa paga valor TOTAL quando dispensa
+      const company = await storage.getCompany(companyId);
+      const totalAmount = parseFloat(allocation.totalAmount);
+      const driverAmount = parseFloat(allocation.driverAmount || "0");
+      const commissionAmount = parseFloat(allocation.commissionAmount || "0");
+
+      // Processar pagamento se pré-pago
+      if (company?.paymentType === "PRE_PAGO" && allocation.driverId) {
+        // Débito da empresa
+        const companyWallet = await storage.getWalletByOwner(companyId, "company");
+        if (companyWallet) {
+          const prevBalance = parseFloat(companyWallet.availableBalance);
+          const newBalance = prevBalance - totalAmount;
+
+          await storage.updateWalletBalance(companyWallet.id, newBalance.toFixed(2));
+
+          const transaction = await storage.createWalletTransaction({
+            walletId: companyWallet.id,
+            type: "allocation_debit",
+            status: "completed",
+            amount: (-totalAmount).toFixed(2),
+            previousBalance: prevBalance.toFixed(2),
+            newBalance: newBalance.toFixed(2),
+            description: `Alocação de entregador - Dispensa antecipada`,
+          });
+
+          await storage.updateAllocation(allocationId, {
+            walletTransactionId: transaction.id,
+          });
+        }
+
+        // Crédito do entregador (valor total pois empresa dispensou)
+        const driverWallet = await storage.getWalletByOwner(allocation.driverId, "driver");
+        if (driverWallet) {
+          const prevBalance = parseFloat(driverWallet.availableBalance);
+          const newBalance = prevBalance + driverAmount;
+
+          await storage.updateWalletBalance(driverWallet.id, newBalance.toFixed(2));
+          await storage.createWalletTransaction({
+            walletId: driverWallet.id,
+            type: "allocation_credit",
+            status: "completed",
+            amount: driverAmount.toFixed(2),
+            previousBalance: prevBalance.toFixed(2),
+            newBalance: newBalance.toFixed(2),
+            description: `Alocação de entregador - Dispensa antecipada (valor total)`,
+          });
+        }
+
+        // Comissão plataforma
+        const platformWallet = await storage.getPlatformWallet();
+        if (platformWallet) {
+          const prevBalance = parseFloat(platformWallet.availableBalance);
+          const newBalance = prevBalance + commissionAmount;
+
+          await storage.updateWalletBalance(platformWallet.id, newBalance.toFixed(2));
+          await storage.createWalletTransaction({
+            walletId: platformWallet.id,
+            type: "allocation_commission",
+            status: "completed",
+            amount: commissionAmount.toFixed(2),
+            previousBalance: prevBalance.toFixed(2),
+            newBalance: newBalance.toFixed(2),
+            description: `Comissão de alocação - Dispensa antecipada`,
+          });
+        }
+      }
+
+      // Atualizar alocação
+      await storage.updateAllocation(allocationId, {
+        status: "completed",
+        completedAt: new Date(),
+        releaseReason: reason || "Dispensado pela empresa",
+      });
+
+      // Notificar entregador
+      if (allocation.driverId) {
+        const driver = await storage.getDriver(allocation.driverId);
+        if (driver?.fcmToken) {
+          try {
+            await sendPushNotification(
+              driver.fcmToken,
+              "Alocação Encerrada",
+              `Você foi dispensado da alocação. R$ ${driverAmount.toFixed(2)} creditado.`,
+              { type: "allocation_released", allocationId }
+            );
+          } catch (pushError) {
+            console.error("Erro ao enviar push:", pushError);
+          }
+        }
+
+        // Socket.IO
+        const io = (app as any).io;
+        if (io) {
+          io.to(`driver-${allocation.driverId}`).emit("allocation-released", {
+            allocationId,
+            reason: "Dispensado pela empresa",
+            amountCredited: driverAmount,
+          });
+        }
+      }
+
+      return res.json({ message: "Entregador dispensado com sucesso" });
+
+    } catch (error) {
+      console.error("Erro ao dispensar entregador:", error);
+      return res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  });
+
+  // Cancelar alocação pendente (empresa)
+  app.post("/api/empresa/allocations/:id/cancel", async (req, res) => {
+    if (!req.session.companyId) {
+      return res.status(401).json({ message: "Não autorizado" });
+    }
+    try {
+      const companyId = req.session.companyId;
+      const { id: allocationId } = req.params;
+
+      const allocation = await storage.getAllocation(allocationId);
+      if (!allocation || allocation.companyId !== companyId) {
+        return res.status(404).json({ message: "Alocação não encontrada" });
+      }
+
+      if (allocation.status !== "pending") {
+        return res.status(400).json({ message: "Apenas alocações pendentes podem ser canceladas" });
+      }
+
+      // Expirar alertas
+      await storage.expireAllocationAlerts(allocationId);
+
+      // Cancelar alocação
+      await storage.updateAllocation(allocationId, {
+        status: "cancelled",
+        cancelledAt: new Date(),
+        cancelReason: "Cancelado pela empresa",
+      });
+
+      return res.json({ message: "Alocação cancelada com sucesso" });
+
+    } catch (error) {
+      console.error("Erro ao cancelar alocação:", error);
+      return res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  });
+
+  // Relatório de alocações (empresa)
+  app.get("/api/empresa/allocations/report", async (req, res) => {
+    if (!req.session.companyId) {
+      return res.status(401).json({ message: "Não autorizado" });
+    }
+    try {
+      const companyId = req.session.companyId;
+      const { startDate, endDate, driverId } = req.query;
+
+      let query = `
+        SELECT
+          a.*,
+          d.name as driver_name,
+          d.profile_picture as driver_picture,
+          ats.name as time_slot_name,
+          ats.start_time as slot_start_time,
+          ats.end_time as slot_end_time,
+          (
+            SELECT COUNT(*)
+            FROM requests r
+            WHERE r.company_id = a.company_id
+              AND r.driver_id = a.driver_id
+              AND r.is_completed = true
+              AND DATE(r.completed_at) = a.allocation_date
+              AND r.completed_at >= a.started_at
+          ) as delivery_count
+        FROM allocations a
+        LEFT JOIN drivers d ON a.driver_id = d.id
+        LEFT JOIN allocation_time_slots ats ON a.time_slot_id = ats.id
+        WHERE a.company_id = $1
+          AND a.status IN ('completed', 'released_early')
+      `;
+
+      const params: any[] = [companyId];
+      let paramIndex = 2;
+
+      if (startDate) {
+        query += ` AND a.allocation_date >= $${paramIndex}`;
+        params.push(startDate);
+        paramIndex++;
+      }
+
+      if (endDate) {
+        query += ` AND a.allocation_date <= $${paramIndex}`;
+        params.push(endDate);
+        paramIndex++;
+      }
+
+      if (driverId) {
+        query += ` AND a.driver_id = $${paramIndex}`;
+        params.push(driverId);
+        paramIndex++;
+      }
+
+      query += ` ORDER BY a.allocation_date DESC, a.start_time DESC`;
+
+      const result = await pool.query(query, params);
+
+      // Calcular totais
+      const totals = {
+        totalAllocations: result.rows.length,
+        totalSpent: result.rows.reduce((sum, r) => sum + parseFloat(r.total_amount || "0"), 0),
+        totalDeliveries: result.rows.reduce((sum, r) => sum + parseInt(r.delivery_count || "0"), 0),
+      };
+
+      return res.json({
+        allocations: result.rows,
+        totals,
+      });
+
+    } catch (error) {
+      console.error("Erro ao gerar relatório:", error);
+      return res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  });
+
+  // ========================================
+  // ALLOCATIONS - ENTREGADOR
+  // ========================================
+
+  // Alocação ativa do entregador
+  app.get("/api/entregador/allocations/active", async (req, res) => {
+    try {
+      // Suporta autenticação via session OU Bearer token (mobile app)
+      const driverId = getDriverIdFromRequest(req);
+      if (!driverId) {
+        return res.status(401).json({ message: "Não autorizado" });
+      }
+      const allocation = await storage.getActiveAllocationForDriver(driverId);
+
+      if (!allocation) {
+        return res.json(null);
+      }
+
+      // Enriquecer com dados da empresa e faixa
+      const company = await storage.getCompany(allocation.companyId);
+      const timeSlot = await storage.getAllocationTimeSlot(allocation.timeSlotId);
+
+      return res.json({
+        ...allocation,
+        company: company ? { id: company.id, name: company.name, logoUrl: company.logoUrl } : null,
+        timeSlot: timeSlot ? { name: timeSlot.name, startTime: timeSlot.startTime, endTime: timeSlot.endTime } : null,
+      });
+
+    } catch (error) {
+      console.error("Erro ao buscar alocação ativa:", error);
+      return res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  });
+
+  // Aceitar alocação (entregador)
+  app.post("/api/entregador/allocations/:id/accept", async (req, res) => {
+    try {
+      // Suporta autenticação via session OU Bearer token (mobile app)
+      const driverId = getDriverIdFromRequest(req);
+      if (!driverId) {
+        console.log("❌ [Allocation Accept] Driver não autenticado");
+        return res.status(401).json({ message: "Não autorizado" });
+      }
+      const { id: allocationId } = req.params;
+      console.log(`📍 [Allocation Accept] Driver: ${driverId}, Allocation: ${allocationId}`);
+
+      // Buscar alocação
+      const allocation = await storage.getAllocation(allocationId);
+      if (!allocation) {
+        console.log(`❌ [Allocation Accept] Alocação ${allocationId} não encontrada`);
+        return res.status(404).json({ message: "Alocação não encontrada" });
+      }
+      console.log(`📍 [Allocation Accept] Status da alocação: ${allocation.status}`);
+
+      // Verificar se ainda está pendente
+      if (allocation.status !== "pending") {
+        console.log(`❌ [Allocation Accept] Alocação já foi aceita. Status: ${allocation.status}`);
+        return res.status(400).json({ message: "Esta alocação já foi aceita por outro entregador" });
+      }
+
+      // Verificar se o motorista tem alerta válido
+      const alert = await storage.getAllocationAlertForDriver(allocationId, driverId);
+      console.log(`📍 [Allocation Accept] Alerta encontrado:`, alert ? { id: alert.id, status: alert.status, expiresAt: alert.expiresAt } : null);
+      if (!alert || alert.status !== "notified") {
+        console.log(`❌ [Allocation Accept] Alerta inválido ou não encontrado`);
+        return res.status(400).json({ message: "Você não pode aceitar esta alocação" });
+      }
+
+      // Verificar expiração
+      const now = new Date();
+      console.log(`📍 [Allocation Accept] Agora: ${now.toISOString()}, Expira: ${alert.expiresAt.toISOString()}`);
+      if (now > alert.expiresAt) {
+        console.log(`❌ [Allocation Accept] Tempo expirado`);
+        return res.status(400).json({ message: "O tempo para aceitar expirou" });
+      }
+
+      // Verificar se motorista já não tem outra alocação ativa hoje
+      const today = new Date().toISOString().split('T')[0];
+      const existingAllocation = await storage.getActiveAllocationForDriver(driverId);
+      console.log(`📍 [Allocation Accept] Alocação existente hoje:`, existingAllocation ? existingAllocation.id : null);
+      if (existingAllocation && existingAllocation.allocationDate === today) {
+        console.log(`❌ [Allocation Accept] Driver já tem alocação ativa hoje`);
+        return res.status(400).json({ message: "Você já possui uma alocação ativa hoje" });
+      }
+
+      console.log(`✓ [Allocation Accept] Todas verificações passaram, aceitando alocação...`);
+
+      // Calcular comissão
+      const commissionPercentage = await storage.getDriverCommissionPercentage(driverId);
+      const totalAmount = parseFloat(allocation.totalAmount);
+      const commissionAmount = totalAmount * (commissionPercentage / 100);
+      const driverAmount = totalAmount - commissionAmount;
+
+      // Atualizar alocação
+      const updatedAllocation = await storage.updateAllocation(allocationId, {
+        driverId,
+        status: "accepted",
+        acceptedAt: new Date(),
+        driverAmount: driverAmount.toFixed(2),
+        commissionAmount: commissionAmount.toFixed(2),
+        commissionPercentage: commissionPercentage.toFixed(2),
+      });
+
+      // Atualizar alerta
+      await storage.updateAllocationAlert(alert.id, {
+        status: "accepted",
+        respondedAt: new Date(),
+      });
+
+      // Expirar outros alertas desta alocação
+      await storage.expireAllocationAlerts(allocationId);
+
+      // Buscar dados para notificação
+      const driver = await storage.getDriver(driverId);
+      const company = await storage.getCompany(allocation.companyId);
+      const timeSlot = await storage.getAllocationTimeSlot(allocation.timeSlotId);
+
+      // Notificar empresa via Socket.IO
+      const io = (app as any).io;
+      if (io) {
+        io.to(`company-${allocation.companyId}`).emit("allocation-accepted", {
+          allocationId,
+          driverId,
+          driverName: driver?.name,
+          driverPicture: driver?.profilePicture,
+        });
+      }
+
+      console.log(`✅ [Allocation Accept] Alocação ${allocationId} aceita pelo driver ${driverId}`);
+      return res.json({
+        message: "Alocação aceita com sucesso",
+        allocation: {
+          ...updatedAllocation,
+          company: company ? { id: company.id, name: company.name, logoUrl: company.logoUrl } : null,
+          timeSlot: timeSlot ? { name: timeSlot.name, startTime: timeSlot.startTime, endTime: timeSlot.endTime } : null,
+        },
+      });
+
+    } catch (error) {
+      console.error("❌ [Allocation Accept] Erro ao aceitar alocação:", error);
+      return res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  });
+
+  // Recusar alocação (entregador)
+  app.post("/api/entregador/allocations/:id/reject", async (req, res) => {
+    try {
+      // Suporta autenticação via session OU Bearer token (mobile app)
+      const driverId = getDriverIdFromRequest(req);
+      if (!driverId) {
+        return res.status(401).json({ message: "Não autorizado" });
+      }
+      const { id: allocationId } = req.params;
+
+      const alert = await storage.getAllocationAlertForDriver(allocationId, driverId);
+      if (!alert) {
+        return res.status(404).json({ message: "Alerta não encontrado" });
+      }
+
+      await storage.updateAllocationAlert(alert.id, {
+        status: "rejected",
+        respondedAt: new Date(),
+      });
+
+      return res.json({ message: "Alocação recusada" });
+
+    } catch (error) {
+      console.error("Erro ao recusar alocação:", error);
+      return res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  });
+
+  // Solicitar liberação (entregador)
+  app.post("/api/entregador/allocations/:id/request-release", async (req, res) => {
+    try {
+      // Suporta autenticação via session OU Bearer token (mobile app)
+      const driverId = getDriverIdFromRequest(req);
+      if (!driverId) {
+        return res.status(401).json({ message: "Não autorizado" });
+      }
+      const { id: allocationId } = req.params;
+      const { reason } = req.body;
+
+      const allocation = await storage.getAllocation(allocationId);
+      if (!allocation || allocation.driverId !== driverId) {
+        return res.status(404).json({ message: "Alocação não encontrada" });
+      }
+
+      if (!["accepted", "in_progress"].includes(allocation.status)) {
+        return res.status(400).json({ message: "Status inválido para liberação" });
+      }
+
+      // Calcular tempo trabalhado
+      const startTime = allocation.startedAt || allocation.acceptedAt;
+      const now = new Date();
+      const workedMinutes = startTime
+        ? Math.floor((now.getTime() - new Date(startTime).getTime()) / (1000 * 60))
+        : 0;
+
+      // Calcular valor proporcional
+      const startParts = allocation.startTime.split(':').map(Number);
+      const endParts = allocation.endTime.split(':').map(Number);
+      const totalMinutes = (endParts[0] * 60 + endParts[1]) - (startParts[0] * 60 + startParts[1]);
+
+      const proportion = Math.max(0, Math.min(1, workedMinutes / totalMinutes));
+      const driverAmount = parseFloat(allocation.driverAmount || "0");
+      const proportionalAmount = driverAmount * proportion;
+
+      // Atualizar alocação
+      await storage.updateAllocation(allocationId, {
+        status: "release_requested",
+        releaseRequestedAt: now,
+        releaseReason: reason || "Solicitado pelo entregador",
+        workedMinutes,
+        proportionalAmount: proportionalAmount.toFixed(2),
+      });
+
+      // Notificar empresa
+      const io = (app as any).io;
+      if (io) {
+        io.to(`company-${allocation.companyId}`).emit("allocation-release-requested", {
+          allocationId,
+          driverId,
+          reason,
+          workedMinutes,
+          proportionalAmount: proportionalAmount.toFixed(2),
+        });
+      }
+
+      return res.json({
+        message: "Solicitação de liberação enviada",
+        workedMinutes,
+        proportionalAmount: proportionalAmount.toFixed(2),
+      });
+
+    } catch (error) {
+      console.error("Erro ao solicitar liberação:", error);
+      return res.status(500).json({ message: "Erro interno do servidor" });
+    }
+  });
+
+  // Aprovar liberação antecipada (empresa) - entregador recebe proporcional
+  app.post("/api/empresa/allocations/:id/approve-release", async (req, res) => {
+    if (!req.session.companyId) {
+      return res.status(401).json({ message: "Não autorizado" });
+    }
+    try {
+      const companyId = req.session.companyId;
+      const { id: allocationId } = req.params;
+
+      const allocation = await storage.getAllocation(allocationId);
+      if (!allocation || allocation.companyId !== companyId) {
+        return res.status(404).json({ message: "Alocação não encontrada" });
+      }
+
+      if (allocation.status !== "release_requested") {
+        return res.status(400).json({ message: "Esta alocação não tem solicitação de liberação pendente" });
+      }
+
+      // Empresa paga valor TOTAL, entregador recebe PROPORCIONAL
+      const company = await storage.getCompany(companyId);
+      const totalAmount = parseFloat(allocation.totalAmount);
+      const proportionalDriverAmount = parseFloat(allocation.proportionalAmount || "0");
+      const fullDriverAmount = parseFloat(allocation.driverAmount || "0");
+      const commissionAmount = parseFloat(allocation.commissionAmount || "0");
+
+      // A plataforma recebe a diferença entre o que a empresa pagou e o que o entregador recebeu
+      const platformExtra = fullDriverAmount - proportionalDriverAmount;
+      const totalCommission = commissionAmount + platformExtra;
+
+      // Processar pagamento se pré-pago
+      if (company?.paymentType === "PRE_PAGO" && allocation.driverId) {
+        // Débito da empresa (valor total)
+        const companyWallet = await storage.getWalletByOwner(companyId, "company");
+        if (companyWallet) {
+          const prevBalance = parseFloat(companyWallet.availableBalance);
+          const newBalance = prevBalance - totalAmount;
+
+          await storage.updateWalletBalance(companyWallet.id, newBalance.toFixed(2));
+          await storage.createWalletTransaction({
+            walletId: companyWallet.id,
+            type: "allocation_debit",
+            status: "completed",
+            amount: (-totalAmount).toFixed(2),
+            previousBalance: prevBalance.toFixed(2),
+            newBalance: newBalance.toFixed(2),
+            description: `Alocação de entregador - Liberação antecipada aprovada`,
+          });
+        }
+
+        // Crédito do entregador (valor proporcional)
+        const driverWallet = await storage.getWalletByOwner(allocation.driverId, "driver");
+        if (driverWallet) {
+          const prevBalance = parseFloat(driverWallet.availableBalance);
+          const newBalance = prevBalance + proportionalDriverAmount;
+
+          await storage.updateWalletBalance(driverWallet.id, newBalance.toFixed(2));
+          await storage.createWalletTransaction({
+            walletId: driverWallet.id,
+            type: "allocation_credit",
+            status: "completed",
+            amount: proportionalDriverAmount.toFixed(2),
+            previousBalance: prevBalance.toFixed(2),
+            newBalance: newBalance.toFixed(2),
+            description: `Alocação de entregador - Liberação antecipada (proporcional: ${allocation.workedMinutes} min)`,
+          });
+        }
+
+        // Comissão plataforma
+        const platformWallet = await storage.getPlatformWallet();
+        if (platformWallet) {
+          const prevBalance = parseFloat(platformWallet.availableBalance);
+          const newBalance = prevBalance + totalCommission;
+
+          await storage.updateWalletBalance(platformWallet.id, newBalance.toFixed(2));
+          await storage.createWalletTransaction({
+            walletId: platformWallet.id,
+            type: "allocation_commission",
+            status: "completed",
+            amount: totalCommission.toFixed(2),
+            previousBalance: prevBalance.toFixed(2),
+            newBalance: newBalance.toFixed(2),
+            description: `Comissão de alocação - Liberação antecipada`,
+          });
+        }
+      }
+
+      // Atualizar alocação
+      await storage.updateAllocation(allocationId, {
+        status: "released_early",
+        releasedAt: new Date(),
+      });
+
+      // Notificar entregador
+      if (allocation.driverId) {
+        const driver = await storage.getDriver(allocation.driverId);
+        if (driver?.fcmToken) {
+          try {
+            await sendPushNotification(
+              driver.fcmToken,
+              "Liberação Aprovada",
+              `Sua liberação foi aprovada. R$ ${proportionalDriverAmount.toFixed(2)} creditado (proporcional).`,
+              { type: "allocation_release_approved", allocationId }
+            );
+          } catch (pushError) {
+            console.error("Erro ao enviar push:", pushError);
+          }
+        }
+
+        const io = (app as any).io;
+        if (io) {
+          io.to(`driver-${allocation.driverId}`).emit("allocation-release-approved", {
+            allocationId,
+            amountCredited: proportionalDriverAmount,
+          });
+        }
+      }
+
+      return res.json({ message: "Liberação aprovada com sucesso" });
+
+    } catch (error) {
+      console.error("Erro ao aprovar liberação:", error);
       return res.status(500).json({ message: "Erro interno do servidor" });
     }
   });

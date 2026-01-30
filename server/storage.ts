@@ -113,6 +113,16 @@ import {
   appVersion,
   type AppVersion,
   type InsertAppVersion,
+  // Allocation System
+  allocationTimeSlots,
+  allocations,
+  allocationAlerts,
+  type AllocationTimeSlot,
+  type InsertAllocationTimeSlot,
+  type Allocation,
+  type InsertAllocation,
+  type AllocationAlert,
+  type InsertAllocationAlert,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, desc, sql, inArray, gt, ne, or, isNull } from "drizzle-orm";
@@ -365,6 +375,31 @@ export interface IStorage {
   getAppVersion(): Promise<AppVersion | undefined>;
   createAppVersion(data: InsertAppVersion): Promise<AppVersion>;
   updateAppVersion(id: string, data: Partial<AppVersion>): Promise<AppVersion | undefined>;
+
+  // ===== ALLOCATION TIME SLOTS (Faixas de Horário) =====
+  getAllAllocationTimeSlots(): Promise<AllocationTimeSlot[]>;
+  getAllocationTimeSlot(id: string): Promise<AllocationTimeSlot | undefined>;
+  getActiveAllocationTimeSlots(serviceLocationId?: string): Promise<AllocationTimeSlot[]>;
+  createAllocationTimeSlot(data: InsertAllocationTimeSlot): Promise<AllocationTimeSlot>;
+  updateAllocationTimeSlot(id: string, data: Partial<InsertAllocationTimeSlot>): Promise<AllocationTimeSlot | undefined>;
+  deleteAllocationTimeSlot(id: string): Promise<void>;
+
+  // ===== ALLOCATIONS (Alocações) =====
+  getAllocation(id: string): Promise<Allocation | undefined>;
+  getAllocationsByCompany(companyId: string, date?: string): Promise<Allocation[]>;
+  getAllocationsByDriver(driverId: string, date?: string): Promise<Allocation[]>;
+  getActiveAllocationForDriver(driverId: string): Promise<Allocation | undefined>;
+  getActiveAllocationsForCompany(companyId: string): Promise<Allocation[]>;
+  getPendingAllocations(): Promise<Allocation[]>;
+  createAllocation(data: InsertAllocation): Promise<Allocation>;
+  updateAllocation(id: string, data: Partial<Allocation>): Promise<Allocation | undefined>;
+
+  // ===== ALLOCATION ALERTS (Alertas) =====
+  createAllocationAlert(data: InsertAllocationAlert): Promise<AllocationAlert>;
+  getActiveAllocationAlerts(allocationId: string): Promise<AllocationAlert[]>;
+  getAllocationAlertForDriver(allocationId: string, driverId: string): Promise<AllocationAlert | undefined>;
+  updateAllocationAlert(id: string, data: Partial<AllocationAlert>): Promise<AllocationAlert | undefined>;
+  expireAllocationAlerts(allocationId: string): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -2694,6 +2729,229 @@ export class DatabaseStorage implements IStorage {
       .where(eq(appVersion.id, id))
       .returning();
     return version || undefined;
+  }
+
+  // ========================================
+  // ALLOCATION TIME SLOTS (Faixas de Horário para Alocação)
+  // ========================================
+
+  async getAllAllocationTimeSlots(): Promise<AllocationTimeSlot[]> {
+    return await db
+      .select()
+      .from(allocationTimeSlots)
+      .orderBy(allocationTimeSlots.startTime);
+  }
+
+  async getAllocationTimeSlot(id: string): Promise<AllocationTimeSlot | undefined> {
+    const [slot] = await db
+      .select()
+      .from(allocationTimeSlots)
+      .where(eq(allocationTimeSlots.id, id));
+    return slot || undefined;
+  }
+
+  async getActiveAllocationTimeSlots(serviceLocationId?: string): Promise<AllocationTimeSlot[]> {
+    if (serviceLocationId) {
+      return await db
+        .select()
+        .from(allocationTimeSlots)
+        .where(
+          and(
+            eq(allocationTimeSlots.active, true),
+            or(
+              eq(allocationTimeSlots.serviceLocationId, serviceLocationId),
+              isNull(allocationTimeSlots.serviceLocationId)
+            )
+          )
+        )
+        .orderBy(allocationTimeSlots.startTime);
+    }
+    return await db
+      .select()
+      .from(allocationTimeSlots)
+      .where(eq(allocationTimeSlots.active, true))
+      .orderBy(allocationTimeSlots.startTime);
+  }
+
+  async createAllocationTimeSlot(data: InsertAllocationTimeSlot): Promise<AllocationTimeSlot> {
+    const [slot] = await db.insert(allocationTimeSlots).values(data).returning();
+    return slot;
+  }
+
+  async updateAllocationTimeSlot(id: string, data: Partial<InsertAllocationTimeSlot>): Promise<AllocationTimeSlot | undefined> {
+    const [slot] = await db
+      .update(allocationTimeSlots)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(allocationTimeSlots.id, id))
+      .returning();
+    return slot || undefined;
+  }
+
+  async deleteAllocationTimeSlot(id: string): Promise<void> {
+    await db.delete(allocationTimeSlots).where(eq(allocationTimeSlots.id, id));
+  }
+
+  // ========================================
+  // ALLOCATIONS (Alocações de Entregadores)
+  // ========================================
+
+  async getAllocation(id: string): Promise<Allocation | undefined> {
+    const [allocation] = await db
+      .select()
+      .from(allocations)
+      .where(eq(allocations.id, id));
+    return allocation || undefined;
+  }
+
+  async getAllocationsByCompany(companyId: string, date?: string): Promise<Allocation[]> {
+    if (date) {
+      return await db
+        .select()
+        .from(allocations)
+        .where(
+          and(
+            eq(allocations.companyId, companyId),
+            eq(allocations.allocationDate, date)
+          )
+        )
+        .orderBy(desc(allocations.createdAt));
+    }
+    return await db
+      .select()
+      .from(allocations)
+      .where(eq(allocations.companyId, companyId))
+      .orderBy(desc(allocations.createdAt));
+  }
+
+  async getAllocationsByDriver(driverId: string, date?: string): Promise<Allocation[]> {
+    if (date) {
+      return await db
+        .select()
+        .from(allocations)
+        .where(
+          and(
+            eq(allocations.driverId, driverId),
+            eq(allocations.allocationDate, date)
+          )
+        )
+        .orderBy(desc(allocations.createdAt));
+    }
+    return await db
+      .select()
+      .from(allocations)
+      .where(eq(allocations.driverId, driverId))
+      .orderBy(desc(allocations.createdAt));
+  }
+
+  async getActiveAllocationForDriver(driverId: string): Promise<Allocation | undefined> {
+    const today = new Date().toISOString().split('T')[0];
+    const [allocation] = await db
+      .select()
+      .from(allocations)
+      .where(
+        and(
+          eq(allocations.driverId, driverId),
+          eq(allocations.allocationDate, today),
+          inArray(allocations.status, ["accepted", "in_progress"])
+        )
+      );
+    return allocation || undefined;
+  }
+
+  async getActiveAllocationsForCompany(companyId: string): Promise<Allocation[]> {
+    const today = new Date().toISOString().split('T')[0];
+    return await db
+      .select()
+      .from(allocations)
+      .where(
+        and(
+          eq(allocations.companyId, companyId),
+          eq(allocations.allocationDate, today),
+          inArray(allocations.status, ["accepted", "in_progress"])
+        )
+      );
+  }
+
+  async getPendingAllocations(): Promise<Allocation[]> {
+    const today = new Date().toISOString().split('T')[0];
+    return await db
+      .select()
+      .from(allocations)
+      .where(
+        and(
+          eq(allocations.allocationDate, today),
+          eq(allocations.status, "pending")
+        )
+      );
+  }
+
+  async createAllocation(data: InsertAllocation): Promise<Allocation> {
+    const [allocation] = await db.insert(allocations).values(data).returning();
+    return allocation;
+  }
+
+  async updateAllocation(id: string, data: Partial<Allocation>): Promise<Allocation | undefined> {
+    const [allocation] = await db
+      .update(allocations)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(allocations.id, id))
+      .returning();
+    return allocation || undefined;
+  }
+
+  // ========================================
+  // ALLOCATION ALERTS (Alertas de Alocação)
+  // ========================================
+
+  async createAllocationAlert(data: InsertAllocationAlert): Promise<AllocationAlert> {
+    const [alert] = await db.insert(allocationAlerts).values(data).returning();
+    return alert;
+  }
+
+  async getActiveAllocationAlerts(allocationId: string): Promise<AllocationAlert[]> {
+    return await db
+      .select()
+      .from(allocationAlerts)
+      .where(
+        and(
+          eq(allocationAlerts.allocationId, allocationId),
+          eq(allocationAlerts.status, "notified")
+        )
+      );
+  }
+
+  async getAllocationAlertForDriver(allocationId: string, driverId: string): Promise<AllocationAlert | undefined> {
+    const [alert] = await db
+      .select()
+      .from(allocationAlerts)
+      .where(
+        and(
+          eq(allocationAlerts.allocationId, allocationId),
+          eq(allocationAlerts.driverId, driverId)
+        )
+      );
+    return alert || undefined;
+  }
+
+  async updateAllocationAlert(id: string, data: Partial<AllocationAlert>): Promise<AllocationAlert | undefined> {
+    const [alert] = await db
+      .update(allocationAlerts)
+      .set(data)
+      .where(eq(allocationAlerts.id, id))
+      .returning();
+    return alert || undefined;
+  }
+
+  async expireAllocationAlerts(allocationId: string): Promise<void> {
+    await db
+      .update(allocationAlerts)
+      .set({ status: "expired" })
+      .where(
+        and(
+          eq(allocationAlerts.allocationId, allocationId),
+          eq(allocationAlerts.status, "notified")
+        )
+      );
   }
 }
 

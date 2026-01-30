@@ -5,8 +5,8 @@
 
 import { storage } from "../../storage";
 import { db } from "../../db";
-import { charges, deliveryFinancials, companies } from "@shared/schema";
-import { eq, and, isNull, sql } from "drizzle-orm";
+import { charges, deliveryFinancials, companies, allocations } from "@shared/schema";
+import { eq, and, isNull, sql, inArray } from "drizzle-orm";
 import { createOrUpdateCustomer } from "../asaas/customers";
 import { createBoletoPayment, createPixPayment } from "../asaas/payments";
 import {
@@ -24,6 +24,7 @@ interface WeeklyClosingResult {
   chargeId?: string;
   totalAmount?: number;
   deliveriesCount?: number;
+  allocationsCount?: number;
   error?: string;
 }
 
@@ -76,32 +77,65 @@ export async function processCompanyWeeklyClosing(
       .from(deliveryFinancials)
       .where(and(...conditions));
 
-    if (unprocessedDeliveries.length === 0) {
-      console.log(`ℹ️ Empresa ${company.name}: nenhuma entrega para cobrar`);
+    // Busca alocações não processadas (completed ou released_early, sem chargeId)
+    const allocationConditions: any[] = [
+      eq(allocations.companyId, companyId),
+      isNull(allocations.chargeId),
+      inArray(allocations.status, ["completed", "released_early"]),
+    ];
+
+    // Filtrar alocações pelo período (usando allocationDate)
+    if (dateFilter?.dateFrom) {
+      const dateFromStr = dateFilter.dateFrom.toISOString().split('T')[0];
+      allocationConditions.push(gte(allocations.allocationDate, dateFromStr));
+    }
+    if (dateFilter?.dateTo) {
+      const dateToStr = dateFilter.dateTo.toISOString().split('T')[0];
+      allocationConditions.push(lte(allocations.allocationDate, dateToStr));
+    }
+
+    const unprocessedAllocations = await db
+      .select()
+      .from(allocations)
+      .where(and(...allocationConditions));
+
+    if (unprocessedDeliveries.length === 0 && unprocessedAllocations.length === 0) {
+      console.log(`ℹ️ Empresa ${company.name}: nenhuma entrega ou alocação para cobrar`);
       return {
         companyId,
         companyName: company.name,
         success: true,
         deliveriesCount: 0,
+        allocationsCount: 0,
       };
     }
 
-    // Calcula total
-    const totalAmount = unprocessedDeliveries.reduce(
+    // Calcula total de entregas
+    const deliveriesTotal = unprocessedDeliveries.reduce(
       (sum, d) => sum + parseFloat(d.totalAmount),
       0
     );
 
-    // Define período (usa filtro de data se fornecido, senão usa as datas das entregas)
-    const periodStart = dateFilter?.dateFrom || new Date(
-      Math.min(...unprocessedDeliveries.map((d) => new Date(d.createdAt!).getTime()))
-    );
-    const periodEnd = dateFilter?.dateTo || new Date(
-      Math.max(...unprocessedDeliveries.map((d) => new Date(d.createdAt!).getTime()))
+    // Calcula total de alocações
+    const allocationsTotal = unprocessedAllocations.reduce(
+      (sum, a) => sum + parseFloat(a.totalAmount),
+      0
     );
 
+    // Total geral
+    const totalAmount = deliveriesTotal + allocationsTotal;
+
+    // Define período (usa filtro de data se fornecido, senão usa as datas das entregas/alocações)
+    const allDates: number[] = [];
+    unprocessedDeliveries.forEach((d) => allDates.push(new Date(d.createdAt!).getTime()));
+    unprocessedAllocations.forEach((a) => allDates.push(new Date(a.allocationDate).getTime()));
+
+    const periodStart = dateFilter?.dateFrom || new Date(Math.min(...allDates));
+    const periodEnd = dateFilter?.dateTo || new Date(Math.max(...allDates));
+
     console.log(`📊 Fechamento empresa ${company.name}:`);
-    console.log(`   Entregas: ${unprocessedDeliveries.length}`);
+    console.log(`   Entregas: ${unprocessedDeliveries.length} (R$ ${deliveriesTotal.toFixed(2)})`);
+    console.log(`   Alocações: ${unprocessedAllocations.length} (R$ ${allocationsTotal.toFixed(2)})`);
     console.log(`   Total: R$ ${totalAmount.toFixed(2)}`);
     console.log(`   Período: ${periodStart.toLocaleDateString("pt-BR")} a ${periodEnd.toLocaleDateString("pt-BR")}`);
 
@@ -115,11 +149,21 @@ export async function processCompanyWeeklyClosing(
     const dueDate = new Date();
     dueDate.setDate(dueDate.getDate() + 2);
 
+    // Monta descrição do boleto
+    const descriptionParts: string[] = [];
+    if (unprocessedDeliveries.length > 0) {
+      descriptionParts.push(`${unprocessedDeliveries.length} entrega(s)`);
+    }
+    if (unprocessedAllocations.length > 0) {
+      descriptionParts.push(`${unprocessedAllocations.length} alocação(ões)`);
+    }
+    const description = `${descriptionParts.join(" + ")} - ${periodStart.toLocaleDateString("pt-BR")} a ${periodEnd.toLocaleDateString("pt-BR")}`;
+
     // Cria cobrança (boleto com QR Code PIX)
     const { payment, boleto } = await createBoletoPayment({
       customerId: asaasCustomer.id,
       value: totalAmount,
-      description: `Entregas ${periodStart.toLocaleDateString("pt-BR")} a ${periodEnd.toLocaleDateString("pt-BR")}`,
+      description,
       externalReference: `weekly_${companyId}_${Date.now()}`,
       dueDate,
     });
@@ -130,7 +174,7 @@ export async function processCompanyWeeklyClosing(
       const { pix } = await createPixPayment({
         customerId: asaasCustomer.id,
         value: totalAmount,
-        description: `Entregas ${periodStart.toLocaleDateString("pt-BR")} a ${periodEnd.toLocaleDateString("pt-BR")}`,
+        description,
         externalReference: `weekly_pix_${companyId}_${Date.now()}`,
         dueDate,
       });
@@ -162,21 +206,40 @@ export async function processCompanyWeeklyClosing(
         metadata: {
           deliveriesIds: unprocessedDeliveries.map((d) => d.id),
           deliveriesCount: unprocessedDeliveries.length,
+          allocationsIds: unprocessedAllocations.map((a) => a.id),
+          allocationsCount: unprocessedAllocations.length,
+          deliveriesTotal: deliveriesTotal.toFixed(2),
+          allocationsTotal: allocationsTotal.toFixed(2),
           pixAsaasId: pixData?.id || null,
         },
       })
       .returning();
 
     // Vincula entregas à cobrança
-    await db
-      .update(deliveryFinancials)
-      .set({ chargeId: charge.id })
-      .where(
-        sql`${deliveryFinancials.id} IN (${sql.join(
-          unprocessedDeliveries.map((d) => sql`${d.id}`),
-          sql`, `
-        )})`
-      );
+    if (unprocessedDeliveries.length > 0) {
+      await db
+        .update(deliveryFinancials)
+        .set({ chargeId: charge.id })
+        .where(
+          sql`${deliveryFinancials.id} IN (${sql.join(
+            unprocessedDeliveries.map((d) => sql`${d.id}`),
+            sql`, `
+          )})`
+        );
+    }
+
+    // Vincula alocações à cobrança
+    if (unprocessedAllocations.length > 0) {
+      await db
+        .update(allocations)
+        .set({ chargeId: charge.id })
+        .where(
+          sql`${allocations.id} IN (${sql.join(
+            unprocessedAllocations.map((a) => sql`${a.id}`),
+            sql`, `
+          )})`
+        );
+    }
 
     console.log(`✅ Cobrança semanal criada: ${charge.id}`);
 
@@ -187,6 +250,7 @@ export async function processCompanyWeeklyClosing(
       chargeId: charge.id,
       totalAmount,
       deliveriesCount: unprocessedDeliveries.length,
+      allocationsCount: unprocessedAllocations.length,
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Erro desconhecido";
@@ -212,7 +276,7 @@ export async function confirmWeeklyPayment(
     netValue?: number;
     asaasData?: Record<string, unknown>;
   }
-): Promise<{ charge: Charge; deliveriesProcessed: number }> {
+): Promise<{ charge: Charge; deliveriesProcessed: number; allocationsProcessed: number }> {
   // Busca cobrança
   const charge = await storage.getCharge(chargeId);
   if (!charge) {
@@ -222,7 +286,7 @@ export async function confirmWeeklyPayment(
   // Verifica se já foi processada
   if (charge.status === "confirmed") {
     console.log(`⚠️ Cobrança semanal ${chargeId} já foi processada`);
-    return { charge, deliveriesProcessed: 0 };
+    return { charge, deliveriesProcessed: 0, allocationsProcessed: 0 };
   }
 
   // Atualiza status da cobrança
@@ -303,11 +367,61 @@ export async function confirmWeeklyPayment(
     }
   }
 
+  // Busca alocações vinculadas não processadas
+  const allocationsToPay = await db
+    .select()
+    .from(allocations)
+    .where(eq(allocations.chargeId, chargeId));
+
+  console.log(`💰 Processando ${allocationsToPay.length} alocações do fechamento semanal`);
+
+  // Processa cada alocação
+  for (const allocation of allocationsToPay) {
+    try {
+      // Se tem motorista alocado, credita
+      if (allocation.driverId && allocation.driverAmount) {
+        // Busca wallet do entregador
+        const driverWallet = await getDriverWallet(allocation.driverId);
+
+        // Credita entregador
+        await creditWallet(
+          driverWallet.id,
+          parseFloat(allocation.driverAmount),
+          "allocation_credit",
+          {
+            allocationId: allocation.id,
+            chargeId: charge.id,
+            description: "Alocação (pós-pago)",
+          }
+        );
+      }
+
+      // Credita comissão da plataforma
+      if (allocation.commissionAmount) {
+        await creditWallet(
+          platformWallet.id,
+          parseFloat(allocation.commissionAmount),
+          "allocation_commission",
+          {
+            allocationId: allocation.id,
+            chargeId: charge.id,
+            description: "Comissão alocação (pós-pago)",
+          }
+        );
+      }
+
+      console.log(`  ✅ Alocação ${allocation.id} processada`);
+    } catch (error) {
+      console.error(`  ❌ Erro na alocação ${allocation.id}:`, error);
+    }
+  }
+
   console.log(`✅ Pagamento semanal confirmado: ${chargeId}`);
 
   return {
     charge: updatedCharge,
     deliveriesProcessed: deliveries.length,
+    allocationsProcessed: allocationsToPay.length,
   };
 }
 

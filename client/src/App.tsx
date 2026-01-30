@@ -52,6 +52,7 @@ import EntregasConcluidas from "@/pages/entregas-concluidas";
 import EntregasCanceladas from "@/pages/entregas-canceladas";
 import AdminEntregasIntermunicipais from "@/pages/admin-entregas-intermunicipais";
 import AdminViagensIntermunicipais from "@/pages/admin-viagens-intermunicipais";
+import EmpresaAlocacoes from "@/pages/empresa-alocacoes";
 import NotFound from "@/pages/not-found";
 
 function Router() {
@@ -116,6 +117,7 @@ function Router() {
               <Route path="/empresa/entregas/canceladas" component={EmpresaEntregasCanceladas} />
               <Route path="/empresa/entregas" component={EmpresaEntregas} />
               <Route path="/empresa/entregas-intermunicipais" component={EntregasIntermunicipais} />
+              <Route path="/empresa/alocacoes" component={EmpresaAlocacoes} />
               <Route component={NotFound} />
             </Switch>
           </main>

@@ -14,7 +14,8 @@ import {
   FileText,
   DollarSign,
   Clock,
-  User
+  User,
+  UserPlus
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
@@ -119,6 +120,11 @@ export function EmpresaSidebar() {
           label: "Intermunicipais",
           icon: MapPin,
           path: "/empresa/entregas-intermunicipais",
+        },
+        {
+          label: "Alocar Entregador",
+          icon: UserPlus,
+          path: "/empresa/alocacoes",
         },
       ],
     },

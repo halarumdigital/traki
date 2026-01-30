@@ -2335,3 +2335,158 @@ export const updateAppVersionSchema = insertAppVersionSchema.partial();
 export type AppVersion = typeof appVersion.$inferSelect;
 export type InsertAppVersion = z.infer<typeof insertAppVersionSchema>;
 export type UpdateAppVersion = z.infer<typeof updateAppVersionSchema>;
+
+// ========================================
+// ALLOCATION TIME SLOTS (Faixas de Horário para Alocação de Entregadores)
+// ========================================
+export const allocationTimeSlots = pgTable("allocation_time_slots", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  name: varchar("name", { length: 100 }).notNull(), // Ex: "Almoço", "Noite"
+  startTime: varchar("start_time", { length: 8 }).notNull(), // "10:30:00"
+  endTime: varchar("end_time", { length: 8 }).notNull(), // "14:00:00"
+
+  // Preço base da alocação para esse período
+  basePrice: numeric("base_price", { precision: 10, scale: 2 }).notNull(),
+
+  // Cidade onde esta faixa é válida (opcional - null = todas)
+  serviceLocationId: varchar("service_location_id").references(() => serviceLocations.id),
+
+  active: boolean("active").notNull().default(true),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertAllocationTimeSlotSchema = createInsertSchema(allocationTimeSlots, {
+  name: z.string().min(1, "Nome é obrigatório").max(100, "Nome muito longo"),
+  startTime: z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/, "Formato inválido (HH:MM ou HH:MM:SS)"),
+  endTime: z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/, "Formato inválido (HH:MM ou HH:MM:SS)"),
+  basePrice: z.union([z.string(), z.number()]).transform(val => String(val)),
+  serviceLocationId: z.string().optional().nullable(),
+  active: z.boolean().default(true),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateAllocationTimeSlotSchema = insertAllocationTimeSlotSchema.partial();
+
+export type AllocationTimeSlot = typeof allocationTimeSlots.$inferSelect;
+export type InsertAllocationTimeSlot = z.infer<typeof insertAllocationTimeSlotSchema>;
+export type UpdateAllocationTimeSlot = z.infer<typeof updateAllocationTimeSlotSchema>;
+
+// ========================================
+// ALLOCATIONS (Alocações de Entregadores)
+// ========================================
+export const allocations = pgTable("allocations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  // Referências
+  companyId: varchar("company_id").notNull().references(() => companies.id),
+  timeSlotId: varchar("time_slot_id").notNull().references(() => allocationTimeSlots.id),
+  driverId: varchar("driver_id").references(() => drivers.id), // null até aceite
+
+  // Data e horários efetivos
+  allocationDate: varchar("allocation_date", { length: 10 }).notNull(), // "2025-01-29"
+  startTime: varchar("start_time", { length: 8 }).notNull(), // "10:30:00"
+  endTime: varchar("end_time", { length: 8 }).notNull(), // "14:00:00"
+
+  // Status: pending, accepted, in_progress, completed, cancelled, expired, release_requested, released_early
+  status: varchar("status", { length: 30 }).notNull().default("pending"),
+
+  // Valores
+  totalAmount: numeric("total_amount", { precision: 10, scale: 2 }).notNull(), // Valor total da alocação
+  driverAmount: numeric("driver_amount", { precision: 10, scale: 2 }), // Parte do entregador (calculado)
+  commissionAmount: numeric("commission_amount", { precision: 10, scale: 2 }), // Comissão plataforma
+  commissionPercentage: numeric("commission_percentage", { precision: 5, scale: 2 }), // % aplicado
+
+  // Para liberação antecipada - valor proporcional
+  workedMinutes: integer("worked_minutes"), // Minutos trabalhados até a liberação
+  proportionalAmount: numeric("proportional_amount", { precision: 10, scale: 2 }), // Valor proporcional
+
+  // Timestamps de controle
+  acceptedAt: timestamp("accepted_at"),
+  startedAt: timestamp("started_at"), // Quando começou efetivamente
+  completedAt: timestamp("completed_at"),
+  cancelledAt: timestamp("cancelled_at"),
+  releaseRequestedAt: timestamp("release_requested_at"),
+  releasedAt: timestamp("released_at"),
+
+  // Motivos
+  cancelReason: text("cancel_reason"),
+  releaseReason: text("release_reason"),
+
+  // Referências financeiras
+  walletTransactionId: varchar("wallet_transaction_id"),
+  chargeId: varchar("charge_id"),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertAllocationSchema = createInsertSchema(allocations, {
+  companyId: z.string().min(1, "Empresa é obrigatória"),
+  timeSlotId: z.string().min(1, "Faixa de horário é obrigatória"),
+  allocationDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato de data inválido (YYYY-MM-DD)"),
+  startTime: z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/, "Formato inválido"),
+  endTime: z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/, "Formato inválido"),
+  totalAmount: z.union([z.string(), z.number()]).transform(val => String(val)),
+  status: z.enum([
+    "pending", "accepted", "in_progress", "completed",
+    "cancelled", "expired", "release_requested", "released_early"
+  ]).default("pending"),
+}).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateAllocationSchema = insertAllocationSchema.partial();
+
+export type Allocation = typeof allocations.$inferSelect;
+export type InsertAllocation = z.infer<typeof insertAllocationSchema>;
+export type UpdateAllocation = z.infer<typeof updateAllocationSchema>;
+
+// Schema para criar alocação via API (usado pela empresa)
+export const createAllocationRequestSchema = z.object({
+  timeSlotId: z.string().min(1, "Faixa de horário é obrigatória"),
+  quantity: z.number().int().min(1, "Quantidade mínima é 1").max(10, "Quantidade máxima é 10"),
+});
+
+export type CreateAllocationRequest = z.infer<typeof createAllocationRequestSchema>;
+
+// ========================================
+// ALLOCATION ALERTS (Alertas de Alocação para Motoristas)
+// ========================================
+export const allocationAlerts = pgTable("allocation_alerts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  allocationId: varchar("allocation_id").notNull().references(() => allocations.id, { onDelete: "cascade" }),
+  driverId: varchar("driver_id").notNull().references(() => drivers.id, { onDelete: "cascade" }),
+
+  // Status: notified, accepted, rejected, expired
+  status: varchar("status", { length: 20 }).notNull().default("notified"),
+
+  // Timestamps
+  notifiedAt: timestamp("notified_at").notNull().defaultNow(),
+  respondedAt: timestamp("responded_at"),
+  expiresAt: timestamp("expires_at").notNull(),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertAllocationAlertSchema = createInsertSchema(allocationAlerts, {
+  allocationId: z.string().min(1, "Alocação é obrigatória"),
+  driverId: z.string().min(1, "Entregador é obrigatório"),
+  status: z.enum(["notified", "accepted", "rejected", "expired"]).default("notified"),
+  expiresAt: z.date(),
+}).omit({
+  id: true,
+  createdAt: true,
+  notifiedAt: true,
+});
+
+export type AllocationAlert = typeof allocationAlerts.$inferSelect;
+export type InsertAllocationAlert = z.infer<typeof insertAllocationAlertSchema>;
