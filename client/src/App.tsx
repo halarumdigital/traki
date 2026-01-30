@@ -39,9 +39,6 @@ import EmpresaLogin from "@/pages/empresa-login";
 import EmpresaRegister from "@/pages/empresa-register";
 import EmpresaDashboard from "@/pages/empresa-dashboard";
 import EmpresaEntregas from "@/pages/empresa-entregas";
-import EmpresaEntregasEmAndamento from "@/pages/empresa-entregas-em-andamento";
-import EmpresaEntregasConcluidas from "@/pages/empresa-entregas-concluidas";
-import EmpresaEntregasCanceladas from "@/pages/empresa-entregas-canceladas";
 import EmpresaCarteira from "@/pages/carteira";
 import EmpresaPrecificacao from "@/pages/empresa-precificacao";
 import EmpresaNotasFiscais from "@/pages/empresa-notas-fiscais";
@@ -112,9 +109,6 @@ function Router() {
               <Route path="/empresa/precificacao" component={EmpresaPrecificacao} />
               <Route path="/empresa/notas-fiscais" component={EmpresaNotasFiscais} />
               <Route path="/empresa/financeiro" component={EmpresaFinanceiro} />
-              <Route path="/empresa/entregas/em-andamento" component={EmpresaEntregasEmAndamento} />
-              <Route path="/empresa/entregas/concluidas" component={EmpresaEntregasConcluidas} />
-              <Route path="/empresa/entregas/canceladas" component={EmpresaEntregasCanceladas} />
               <Route path="/empresa/entregas" component={EmpresaEntregas} />
               <Route path="/empresa/entregas-intermunicipais" component={EntregasIntermunicipais} />
               <Route path="/empresa/alocacoes" component={EmpresaAlocacoes} />
