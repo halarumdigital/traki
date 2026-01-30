@@ -6,7 +6,7 @@ import { loginSchema, forgotPasswordSchema, resetPasswordSchema, insertSettingsS
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import { pool, db } from "./db";
-import { eq, and, or, sql, desc, isNotNull, ilike, inArray } from "drizzle-orm";
+import { eq, and, or, sql, desc, isNotNull, isNull, ilike, inArray } from "drizzle-orm";
 import bcrypt from "bcrypt";
 import crypto from "crypto";
 import { EmailService } from "./emailService";
@@ -10400,6 +10400,142 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Erro ao buscar boletos admin:", error);
       return res.status(500).json({ message: "Erro ao buscar boletos" });
+    }
+  });
+
+  // GET /api/admin/pending-boletos - Lista empresas com entregas pendentes para geração de boleto (Admin)
+  app.get("/api/admin/pending-boletos", async (req, res) => {
+    try {
+      if (!req.session.userId || !req.session.isAdmin) {
+        return res.status(401).json({ message: "Acesso negado. Apenas administradores." });
+      }
+
+      // Buscar empresas pós-pagas (BOLETO) ativas
+      const allCompanies = await storage.getAllCompanies();
+      const boletoCompanies = allCompanies.filter(c => c.paymentType === "BOLETO" && c.active);
+
+      console.log(`[pending-boletos] Encontradas ${boletoCompanies.length} empresas BOLETO ativas`);
+
+      // Para cada empresa, verificar se tem entregas pendentes
+      const companiesWithPending = [];
+
+      for (const company of boletoCompanies) {
+        // Buscar entregas não processadas e sem chargeId na tabela deliveryFinancials
+        const pendingDeliveries = await db
+          .select({
+            id: deliveryFinancials.id,
+            totalAmount: deliveryFinancials.totalAmount,
+            createdAt: deliveryFinancials.createdAt,
+          })
+          .from(deliveryFinancials)
+          .where(
+            and(
+              eq(deliveryFinancials.companyId, company.id),
+              eq(deliveryFinancials.processed, false),
+              isNull(deliveryFinancials.chargeId)
+            )
+          );
+
+        // Verificar entregas concluídas em requests que não foram para deliveryFinancials
+        // Buscar IDs de requests que já estão em deliveryFinancials
+        const registeredRequestIds = await db
+          .select({ requestId: deliveryFinancials.requestId })
+          .from(deliveryFinancials)
+          .where(eq(deliveryFinancials.companyId, company.id));
+
+        const registeredIds = registeredRequestIds
+          .map(r => r.requestId)
+          .filter(Boolean) as string[];
+
+        // Buscar entregas concluídas que não estão registradas
+        const completedRequests = await db
+          .select({
+            id: requests.id,
+            createdAt: requests.createdAt,
+          })
+          .from(requests)
+          .where(
+            and(
+              eq(requests.companyId, company.id),
+              eq(requests.isCompleted, true)
+            )
+          );
+
+        // Filtrar as que não estão registradas
+        const completedNotRegistered = completedRequests.filter(
+          r => !registeredIds.includes(r.id)
+        );
+
+        // Buscar alocações não processadas e sem chargeId
+        const pendingAllocations = await db
+          .select({
+            id: allocations.id,
+            totalAmount: allocations.totalAmount,
+            allocationDate: allocations.allocationDate,
+          })
+          .from(allocations)
+          .where(
+            and(
+              eq(allocations.companyId, company.id),
+              isNull(allocations.chargeId),
+              inArray(allocations.status, ["completed", "released_early"])
+            )
+          );
+
+        const totalEntregas = pendingDeliveries.length + completedNotRegistered.length;
+
+        if (totalEntregas > 0 || pendingAllocations.length > 0) {
+          // Calcular valor total pendente
+          const deliveriesTotal = pendingDeliveries.reduce((sum, d) => sum + parseFloat(d.totalAmount || "0"), 0);
+          const allocationsTotal = pendingAllocations.reduce((sum, a) => sum + parseFloat(a.totalAmount || "0"), 0);
+          const totalPendente = deliveriesTotal + allocationsTotal;
+
+          // Encontrar período (data mais antiga e mais recente)
+          const allDates = [
+            ...pendingDeliveries.map(d => d.createdAt),
+            ...completedNotRegistered.map(d => d.createdAt),
+            ...pendingAllocations.map(a => a.allocationDate ? new Date(a.allocationDate) : null),
+          ].filter(Boolean);
+
+          let periodo = null;
+          if (allDates.length > 0) {
+            const timestamps = allDates.map(d => new Date(d!).getTime());
+            const oldestDate = new Date(Math.min(...timestamps));
+            const newestDate = new Date(Math.max(...timestamps));
+
+            const formatDate = (date: Date) => date.toLocaleDateString("pt-BR");
+            periodo = `${formatDate(oldestDate)} a ${formatDate(newestDate)}`;
+          }
+
+          companiesWithPending.push({
+            id: company.id,
+            nome: company.name,
+            cnpj: company.cnpj,
+            logoUrl: company.logoUrl,
+            entregasPendentes: totalEntregas,
+            entregasNaoRegistradas: completedNotRegistered.length,
+            alocacoesPendentes: pendingAllocations.length,
+            totalPendente,
+            periodo,
+          });
+
+          console.log(`[pending-boletos] ${company.name}: ${pendingDeliveries.length} em deliveryFinancials, ${completedNotRegistered.length} concluídas não registradas, ${pendingAllocations.length} alocações`);
+        }
+      }
+
+      // Ordenar por valor pendente (maior primeiro)
+      companiesWithPending.sort((a, b) => b.totalPendente - a.totalPendente);
+
+      console.log(`[pending-boletos] Total de empresas com pendências: ${companiesWithPending.length}`);
+
+      return res.json({
+        empresas: companiesWithPending,
+        totalEmpresas: companiesWithPending.length,
+        valorTotalPendente: companiesWithPending.reduce((sum, c) => sum + c.totalPendente, 0),
+      });
+    } catch (error) {
+      console.error("Erro ao buscar empresas pendentes:", error);
+      return res.status(500).json({ message: "Erro ao buscar empresas com pendências" });
     }
   });
 
